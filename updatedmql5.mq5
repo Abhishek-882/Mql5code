@@ -144,7 +144,8 @@ input double   INPUT_TRAIL_STEP_POINTS       = 50.0; // Min improvement step (po
 input double   INPUT_TRAIL_ACTIVATION_POINTS = 200.0;// Activate after this profit (points)
 input bool     INPUT_ENABLE_TRAILING_TP      = true; // Enable trailing TP logic
 input bool     INPUT_ENABLE_HIGH_SPREAD_PROTECT = true; // Enable high-spread protective behavior
-input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable running positions immediately when spread spikes
+input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable running positions when spread spikes
+input double   INPUT_HIGH_SPREAD_CLOSE_PERCENT = 50.0; // Percent of profitable position volume to close on high spread (1..100)
 input bool     INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD = true; // Do not adjust losing-position SL/TP during spread spikes
 input double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
 input group    "=== Money Management / Streak Multiplier ==="
@@ -3458,7 +3459,7 @@ void HandleHighSpreadOpenPositions()
 {
    if(!IsSpreadHigh())
       return;
-
+         double closePercent = MathMax(1.0, MathMin(INPUT_HIGH_SPREAD_CLOSE_PERCENT, 100.0));
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -3469,8 +3470,30 @@ void HandleHighSpreadOpenPositions()
       double profit = PositionGetDouble(POSITION_PROFIT);
       if(profit > 0.0 && INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD)
       {
-         if(g_trade.PositionClose(ticket) && ShouldPrintOncePerWindow("high_spread_close_" + IntegerToString((int)ticket), 30))
-            LogWithRestartGuard("HIGH SPREAD: closed profitable position " + IntegerToString((int)ticket));
+          double currentLots = PositionGetDouble(POSITION_VOLUME);
+         double step = (g_lotStep > 0.0) ? g_lotStep : g_minLot;
+         if(step <= 0.0) step = 0.01;
+
+         double lotsToClose = currentLots * (closePercent / 100.0);
+         lotsToClose = MathFloor(lotsToClose / step) * step;
+         lotsToClose = NormalizeDouble(lotsToClose, (int)g_lotDigits);
+
+         // If requested percent rounds to full volume (or broker limits block partial), close full.
+         bool shouldFullClose = (closePercent >= 100.0 || lotsToClose >= currentLots);
+
+         bool closeOk = false;
+         if(shouldFullClose)
+            closeOk = g_trade.PositionClose(ticket);
+         else if(lotsToClose >= g_minLot)
+            closeOk = g_trade.PositionClosePartial(ticket, lotsToClose);
+
+         if(closeOk && ShouldPrintOncePerWindow("high_spread_close_" + IntegerToString((int)ticket), 30))
+         {
+            string action = shouldFullClose ? "closed full" : ("closed " + DoubleToString(lotsToClose, (int)g_lotDigits) + " lots");
+            LogWithRestartGuard("HIGH SPREAD: profitable position " + IntegerToString((int)ticket) +
+                               " | " + action +
+                               " | closePercent=" + DoubleToString(closePercent, 1));
+         }
       }
       else if(profit <= 0.0 && INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD)
       {
