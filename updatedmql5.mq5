@@ -196,6 +196,8 @@ input group    "=== Markov Chain Analysis ==="
 input bool     INPUT_ENABLE_MARKOV      = false;  // Enable Markov chain analysis (FIXED: Disabled for backtesting)
 input int      INPUT_MARKOV_LOOKBACK    = 100;    // Lookback for transition matrix
 input double   INPUT_STREAK_FATIGUE_ADJ = 0.05;   // Confidence reduction per streak trade
+input double   INPUT_MARKOV_WIN_R       = 0.1;    // Win threshold in normalized R units
+input double   INPUT_MARKOV_LOSS_R      = -0.1;   // Loss threshold in normalized R units
 //--- Machine Learning
 input group    "=== Machine Learning ==="
 input bool     INPUT_ENABLE_ML          = false;  // Enable ML signal analysis (FIXED: Disabled for backtesting)
@@ -479,6 +481,17 @@ struct AIResponse
    datetime lastUpdate;
    int      consecutiveErrors;
 };
+struct PositionCloseAccumulator
+{
+   ulong    positionId;
+   double   cumulativeNetProfit;
+   double   closedVolume;
+   double   openedVolume;
+   datetime firstCloseTime;
+   datetime lastCloseTime;
+   ulong    lastDealTicket;
+   bool     terminalByHistory;
+};
 //+------------------------------------------------------------------+
 //| SECTION 5: GLOBAL VARIABLES                                      |
 //+------------------------------------------------------------------+
@@ -574,6 +587,9 @@ int      g_markovQueueCount = 0;
 //--- AI Integration
 AIResponse g_aiResponse;
 datetime g_lastAIQuery = 0;
+AIResponse g_lastValidAIResponse;
+PositionCloseAccumulator g_positionCloseAccumulators[];
+int      g_positionCloseAccumulatorCount = 0;
 //--- History tracking
 ulong    g_lastProcessedDealTicket = 0;
 datetime g_lastProcessedDealTime = 0;
@@ -768,6 +784,9 @@ int OnInit()
    g_aiResponse.riskAlert = false;
    g_aiResponse.lastUpdate = 0;
    g_aiResponse.consecutiveErrors = 0;
+   g_lastValidAIResponse = g_aiResponse;
+   ArrayResize(g_positionCloseAccumulators, 0);
+   g_positionCloseAccumulatorCount = 0;
 
    //--- Load persisted learning data (only if features enabled)
    if(INPUT_ENABLE_FINGERPRINT)
@@ -2509,6 +2528,19 @@ void UpdateRLFromTrade(ulong positionId, double reward)
          matched = true;
          int state = g_pendingRL[i].state;
          ENUM_RL_ACTION action = g_pendingRL[i].action;
+
+         if(state < 0 || state >= Q_TABLE_STATES || action < 0 || action >= Q_TABLE_ACTIONS)
+         {
+            g_rlUnmatchedCloses++;
+            if(INPUT_ENABLE_LOGGING)
+               Print("RL WARNING: Dropping invalid state/action for positionId=", positionId,
+                     " | state=", state, " | action=", (int)action);
+
+            for(int j = i; j < g_pendingRLCount - 1; j++)
+               g_pendingRL[j] = g_pendingRL[j + 1];
+            g_pendingRLCount--;
+            return;
+         }
 
          // Bellman equation update
          double threat = CalculateMarketThreat();
@@ -4815,6 +4847,141 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
             " | mult=", DoubleToString(g_fingerprints[idx].confidenceMultiplier, 2));
 }
 //+------------------------------------------------------------------+
+int FindPositionCloseAccumulator(ulong positionId)
+{
+   for(int i = 0; i < g_positionCloseAccumulatorCount; i++)
+      if(g_positionCloseAccumulators[i].positionId == positionId)
+         return i;
+   return -1;
+}
+
+int EnsurePositionCloseAccumulator(ulong positionId)
+{
+   int idx = FindPositionCloseAccumulator(positionId);
+   if(idx >= 0)
+      return idx;
+
+   idx = g_positionCloseAccumulatorCount;
+   g_positionCloseAccumulatorCount++;
+   ArrayResize(g_positionCloseAccumulators, g_positionCloseAccumulatorCount);
+   ZeroMemory(g_positionCloseAccumulators[idx]);
+   g_positionCloseAccumulators[idx].positionId = positionId;
+   return idx;
+}
+
+void RemovePositionCloseAccumulator(int idx)
+{
+   if(idx < 0 || idx >= g_positionCloseAccumulatorCount)
+      return;
+
+   for(int i = idx; i < g_positionCloseAccumulatorCount - 1; i++)
+      g_positionCloseAccumulators[i] = g_positionCloseAccumulators[i + 1];
+
+   g_positionCloseAccumulatorCount--;
+   ArrayResize(g_positionCloseAccumulators, g_positionCloseAccumulatorCount);
+}
+
+bool GetPositionHistoryVolumes(ulong positionId, double &openedVolume, double &closedVolume)
+{
+   openedVolume = 0.0;
+   closedVolume = 0.0;
+
+   if(!HistorySelectByPosition(positionId))
+      return false;
+
+   int total = HistoryDealsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      if(HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol) continue;
+      if((ulong)HistoryDealGetInteger(deal, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
+
+      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(deal, DEAL_ENTRY);
+      double vol = HistoryDealGetDouble(deal, DEAL_VOLUME);
+      if(entry == DEAL_ENTRY_IN || entry == DEAL_ENTRY_INOUT) openedVolume += vol;
+      if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT) closedVolume += vol;
+   }
+
+   return true;
+}
+
+bool IsPositionTerminalClose(ulong positionId, double &remainingVolume, bool &terminalByHistory)
+{
+   remainingVolume = 0.0;
+   terminalByHistory = false;
+
+   bool stillOpen = PositionSelectByTicket(positionId);
+   if(stillOpen)
+      remainingVolume = PositionGetDouble(POSITION_VOLUME);
+
+   double opened = 0.0;
+   double closed = 0.0;
+   bool historyOk = GetPositionHistoryVolumes(positionId, opened, closed);
+   if(historyOk && opened > 0.0)
+   {
+      double epsilon = MathMax(0.0000001, g_lotStep * 0.5);
+      terminalByHistory = (closed + epsilon >= opened);
+   }
+
+   return ((!stillOpen && remainingVolume <= 0.0) || terminalByHistory);
+}
+
+ENUM_MARKOV_STATE ClassifyMarkovStateFromR(double normalizedR)
+{
+   if(normalizedR > INPUT_MARKOV_WIN_R) return MARKOV_WIN;
+   if(normalizedR < INPUT_MARKOV_LOSS_R) return MARKOV_LOSS;
+   return MARKOV_EVEN;
+}
+
+void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetime closeTime, double finalNetProfit, bool terminalByHistory)
+{
+   bool isWin = (finalNetProfit > 0.0);
+
+   if(isWin)
+   {
+      g_consecutiveWins++;
+      g_consecutiveLosses = 0;
+      g_daily.winsToday++;
+      g_daily.profitToday += finalNetProfit;
+      if(INPUT_ENABLE_STREAK_LOT_MULTIPLIER && INPUT_STREAK_TRIGGER_WINS > 0 && INPUT_STREAK_MULTIPLIER_ORDERS > 0 && g_consecutiveWins >= INPUT_STREAK_TRIGGER_WINS && dealTicket != g_lastStreakActivatedDeal)
+      {
+         g_streakMultiplierOrdersRemaining = INPUT_STREAK_MULTIPLIER_ORDERS;
+         g_lastStreakActivatedDeal = dealTicket;
+      }
+   }
+   else
+   {
+      g_consecutiveLosses++;
+      g_consecutiveWins = 0;
+      g_streakMultiplierOrdersRemaining = 0;
+      g_daily.lossesToday++;
+      g_daily.lossToday += MathAbs(finalNetProfit);
+   }
+
+   double entryPrice = 0.0, slDistance = 0.0, lot = 0.0, tickValue = 0.0, riskBasis = 0.0, normalizedReward = finalNetProfit;
+   ComputeNormalizedRLReward(positionId, finalNetProfit, normalizedReward, entryPrice, slDistance, lot, tickValue, riskBasis);
+
+   if(INPUT_ENABLE_MARKOV)
+      UpdateMarkovTransition(g_lastMarkovState, ClassifyMarkovStateFromR(normalizedReward));
+
+   if(INPUT_ENABLE_RL)
+      UpdateRLFromTrade(positionId, INPUT_RL_USE_RAW_REWARD ? finalNetProfit : normalizedReward);
+
+   if(INPUT_ENABLE_ML || INPUT_ENABLE_COMBINATION_ADAPTIVE)
+      RecordTrainingData(positionId, dealTicket, finalNetProfit, isWin);
+
+   UpdateFingerprintOnClose(positionId, finalNetProfit, isWin, closeTime);
+
+   Print("CLOSED POSITION FINAL: DealTicket ", dealTicket,
+         " | PositionTicket: ", positionId,
+         " | P&L: ", finalNetProfit,
+         " | NormR: ", DoubleToString(normalizedReward, 4),
+         " | TerminalByHistory: ", terminalByHistory,
+         " | Win: ", isWin, " | ConsWin: ", g_consecutiveWins,
+         " | ConsLoss: ", g_consecutiveLosses);
+}
+
 void ProcessClosedPositions()
 {
    datetime now = TimeCurrent();
@@ -4823,18 +4990,9 @@ void ProcessClosedPositions()
    g_lastHistoryProcessTime = now;
 
    int safetyMargin = MathMax(0, INPUT_HISTORY_SAFETY_MARGIN_SECONDS);
-   datetime fromTime = 0;
-
-   if(g_lastProcessedDealTime > 0)
-      fromTime = g_lastProcessedDealTime - safetyMargin;
-   else
-      fromTime = now - (datetime)(MathMax(1, INPUT_HISTORY_BOOTSTRAP_DAYS) * 86400);
-
-   if(fromTime < 0)
-      fromTime = 0;
-
-   if(!HistorySelect(fromTime, now))
-      return;
+   datetime fromTime = (g_lastProcessedDealTime > 0) ? g_lastProcessedDealTime - safetyMargin : now - (datetime)(MathMax(1, INPUT_HISTORY_BOOTSTRAP_DAYS) * 86400);
+   if(fromTime < 0) fromTime = 0;
+   if(!HistorySelect(fromTime, now)) return;
 
    int dealsTotal = HistoryDealsTotal();
    datetime maxProcessedDealTime = g_lastProcessedDealTime;
@@ -4844,114 +5002,60 @@ void ProcessClosedPositions()
    {
       ulong dealTicket = HistoryDealGetTicket(i);
       if(dealTicket == 0) continue;
-
       if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
-      if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
+      if((ulong)HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
 
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT) continue;
 
       datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
-
-      // Time watermark filter with ticket deduplication at the boundary timestamp
       if(closeTime < g_lastProcessedDealTime) continue;
       if(closeTime == g_lastProcessedDealTime && dealTicket <= g_lastProcessedDealTicket) continue;
 
-      double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
-      double swap = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
-      double commission = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
-      double netProfit = profit + swap + commission;
+      ulong posId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      if(posId == 0) continue;
 
-      bool isWin = (netProfit > 0);
+      double netProfit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT) + HistoryDealGetDouble(dealTicket, DEAL_SWAP) + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      double dealVolume = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+
       g_daily.closedDealsToday++;
       g_closedDealsProcessedTotal++;
-
-      // Always persist minimal closed-trade record (independent from ML/RL/Markov)
       RecordClosedDealData(dealTicket, netProfit);
 
-      // Update consecutive streak counters
-      if(isWin)
-      {
-         g_consecutiveWins++;
-         g_consecutiveLosses = 0;
-         g_daily.winsToday++;
-         g_daily.profitToday += netProfit;
+      int accIdx = EnsurePositionCloseAccumulator(posId);
+      g_positionCloseAccumulators[accIdx].cumulativeNetProfit += netProfit;
+      g_positionCloseAccumulators[accIdx].closedVolume += dealVolume;
+      g_positionCloseAccumulators[accIdx].lastDealTicket = dealTicket;
+      g_positionCloseAccumulators[accIdx].lastCloseTime = closeTime;
+      if(g_positionCloseAccumulators[accIdx].firstCloseTime == 0)
+         g_positionCloseAccumulators[accIdx].firstCloseTime = closeTime;
 
-         if(INPUT_ENABLE_STREAK_LOT_MULTIPLIER &&
-            INPUT_STREAK_TRIGGER_WINS > 0 &&
-            INPUT_STREAK_MULTIPLIER_ORDERS > 0 &&
-            g_consecutiveWins >= INPUT_STREAK_TRIGGER_WINS &&
-            dealTicket != g_lastStreakActivatedDeal)
-         {
-            g_streakMultiplierOrdersRemaining = INPUT_STREAK_MULTIPLIER_ORDERS;
-            g_lastStreakActivatedDeal = dealTicket;
-            if(INPUT_ENABLE_LOGGING)
-               LogWithRestartGuard("STREAK LOT BOOST ARMED: consecutiveWins=" + IntegerToString(g_consecutiveWins) +
-                                  " | nextOrders=" + IntegerToString(g_streakMultiplierOrdersRemaining) +
-                                  " | multiplier=" + DoubleToString(INPUT_STREAK_LOT_MULTIPLIER, 2));
-         }
+      double openedVol = 0.0, closedVol = 0.0;
+      if(GetPositionHistoryVolumes(posId, openedVol, closedVol))
+      {
+         g_positionCloseAccumulators[accIdx].openedVolume = openedVol;
+         g_positionCloseAccumulators[accIdx].closedVolume = closedVol;
+      }
+
+      double remainingVolume = 0.0;
+      bool terminalByHistory = false;
+      bool terminal = IsPositionTerminalClose(posId, remainingVolume, terminalByHistory);
+      g_positionCloseAccumulators[accIdx].terminalByHistory = terminalByHistory;
+
+      if(!terminal)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            Print("CLOSED DEAL (PARTIAL TELEMETRY): deal=", dealTicket,
+                  " | pos=", posId,
+                  " | legPnL=", DoubleToString(netProfit, 2),
+                  " | cumulativePnL=", DoubleToString(g_positionCloseAccumulators[accIdx].cumulativeNetProfit, 2),
+                  " | remainingVol=", DoubleToString(remainingVolume, 4));
       }
       else
       {
-         g_consecutiveLosses++;
-         g_consecutiveWins = 0;
-         g_streakMultiplierOrdersRemaining = 0;
-         g_daily.lossesToday++;
-         g_daily.lossToday += MathAbs(netProfit);
+         ApplyFinalClosedPositionOutcome(posId, dealTicket, closeTime, g_positionCloseAccumulators[accIdx].cumulativeNetProfit, g_positionCloseAccumulators[accIdx].terminalByHistory);
+         RemovePositionCloseAccumulator(accIdx);
       }
-
-      // Markov update (if enabled)
-      if(INPUT_ENABLE_MARKOV)
-      {
-         ENUM_MARKOV_STATE newState;
-         if(netProfit > 1) newState = MARKOV_WIN;
-         else if(netProfit < -1) newState = MARKOV_LOSS;
-         else newState = MARKOV_EVEN;
-
-         UpdateMarkovTransition(g_lastMarkovState, newState);
-      }
-
-      ulong posId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
-
-      // Q-learning update (if enabled)
-      if(INPUT_ENABLE_RL)
-      {
-         double entryPrice = 0.0;
-         double slDistance = 0.0;
-         double lot = 0.0;
-         double tickValue = 0.0;
-         double riskBasis = 0.0;
-         double normalizedReward = netProfit;
-
-         bool hasRiskBasis = ComputeNormalizedRLReward(posId, netProfit,
-                                                       normalizedReward,
-                                                       entryPrice, slDistance,
-                                                       lot, tickValue,
-                                                       riskBasis);
-
-         double rlReward = INPUT_RL_USE_RAW_REWARD ? netProfit : normalizedReward;
-
-         if(INPUT_ENABLE_LOGGING)
-            Print("RL Reward: PositionId=", posId,
-                  " | NetProfit=", DoubleToString(netProfit, 2),
-                  " | Entry=", DoubleToString(entryPrice, _Digits),
-                  " | SLDistance=", DoubleToString(slDistance, _Digits),
-                  " | Lot=", DoubleToString(lot, 2),
-                  " | TickValue=", DoubleToString(tickValue, 6),
-                  " | RiskBasis=", DoubleToString(riskBasis, 2),
-                  " | Normalized=", DoubleToString(normalizedReward, 6),
-                  " | UsingRaw=", INPUT_RL_USE_RAW_REWARD,
-                  " | RiskBasisOk=", hasRiskBasis);
-
-         UpdateRLFromTrade(posId, rlReward);
-      }
-
-      // Record training data (if ML or combo-adaptive is enabled)
-      if(INPUT_ENABLE_ML || INPUT_ENABLE_COMBINATION_ADAPTIVE)
-         RecordTrainingData(posId, dealTicket, netProfit, isWin);
-
-      // Fingerprint learning update (if enabled)
-      UpdateFingerprintOnClose(posId, netProfit, isWin, closeTime);
 
       if(closeTime > maxProcessedDealTime)
       {
@@ -4962,23 +5066,15 @@ void ProcessClosedPositions()
       {
          maxProcessedDealTicketAtTime = dealTicket;
       }
-
-      Print("CLOSED DEAL: DealTicket ", dealTicket,
-            " | PositionTicket: ", posId,
-            " | P&L: ", netProfit,
-            " | Win: ", isWin, " | ConsWin: ", g_consecutiveWins,
-            " | ConsLoss: ", g_consecutiveLosses);
    }
 
-   if(maxProcessedDealTime > g_lastProcessedDealTime ||
-      (maxProcessedDealTime == g_lastProcessedDealTime && maxProcessedDealTicketAtTime > g_lastProcessedDealTicket))
+   if(maxProcessedDealTime > g_lastProcessedDealTime || (maxProcessedDealTime == g_lastProcessedDealTime && maxProcessedDealTicketAtTime > g_lastProcessedDealTicket))
    {
       g_lastProcessedDealTime = maxProcessedDealTime;
       g_lastProcessedDealTicket = maxProcessedDealTicketAtTime;
    }
    else if(g_lastProcessedDealTime == 0)
    {
-      // Bootstrap: avoid rescanning the same large range on every tick
       g_lastProcessedDealTime = now;
       g_lastProcessedDealTicket = 0;
    }
@@ -5309,43 +5405,103 @@ void PerformAdaptiveOptimization()
 //+------------------------------------------------------------------+
 //| SECTION 28: AI INTEGRATION                                       |
 //+------------------------------------------------------------------+
+string JsonEscape(const string &value)
+{
+   string out = value;
+   StringReplace(out, "\\", "\\\\");
+   StringReplace(out, "\"", "\\\"");
+   StringReplace(out, "\r", "\\r");
+   StringReplace(out, "\n", "\\n");
+   StringReplace(out, "\t", "\\t");
+   return out;
+}
+
+string TruncateForLog(const string &text, int maxChars)
+{
+   if(maxChars <= 0 || StringLen(text) <= maxChars)
+      return text;
+   return StringSubstr(text, 0, maxChars) + "...";
+}
+
+bool ExtractJsonFieldString(const string &json, const string &key, string &outValue)
+{
+   int keyPos = StringFind(json, "\"" + key + "\"");
+   if(keyPos < 0) return false;
+   int colonPos = StringFind(json, ":", keyPos);
+   if(colonPos < 0) return false;
+   int startPos = colonPos + 1;
+   while(startPos < StringLen(json) && (StringGetCharacter(json,startPos)==' ' || StringGetCharacter(json,startPos)=='\t' || StringGetCharacter(json,startPos)=='\n' || StringGetCharacter(json,startPos)=='\r')) startPos++;
+   if(startPos >= StringLen(json) || StringGetCharacter(json,startPos) != '"') return false;
+   startPos++;
+   int endPos = startPos;
+   while(endPos < StringLen(json))
+   {
+      if(StringGetCharacter(json,endPos) == '"' && (endPos == startPos || StringGetCharacter(json,endPos-1) != '\\')) break;
+      endPos++;
+   }
+   if(endPos >= StringLen(json)) return false;
+   outValue = StringSubstr(json, startPos, endPos - startPos);
+   return true;
+}
+
+bool ExtractJsonFieldDouble(const string &json, const string &key, double &outValue)
+{
+   int keyPos = StringFind(json, "\"" + key + "\"");
+   if(keyPos < 0) return false;
+   int colonPos = StringFind(json, ":", keyPos);
+   if(colonPos < 0) return false;
+   int startPos = colonPos + 1;
+   while(startPos < StringLen(json) && (StringGetCharacter(json,startPos)==' ' || StringGetCharacter(json,startPos)=='\t' || StringGetCharacter(json,startPos)=='\n' || StringGetCharacter(json,startPos)=='\r')) startPos++;
+   int endPos = startPos;
+   while(endPos < StringLen(json))
+   {
+      ushort ch = (ushort)StringGetCharacter(json, endPos);
+      bool numeric = (ch >= '0' && ch <= '9') || ch == '.' || ch == '-' || ch == '+' || ch == 'e' || ch == 'E';
+      if(!numeric) break;
+      endPos++;
+   }
+   if(endPos <= startPos) return false;
+   outValue = StringToDouble(StringSubstr(json, startPos, endPos - startPos));
+   return MathIsValidNumber(outValue);
+}
+
+bool ExtractJsonFieldBool(const string &json, const string &key, bool &outValue)
+{
+   int keyPos = StringFind(json, "\"" + key + "\"");
+   if(keyPos < 0) return false;
+   int colonPos = StringFind(json, ":", keyPos);
+   if(colonPos < 0) return false;
+   int startPos = colonPos + 1;
+   while(startPos < StringLen(json) && (StringGetCharacter(json,startPos)==' ' || StringGetCharacter(json,startPos)=='\t' || StringGetCharacter(json,startPos)=='\n' || StringGetCharacter(json,startPos)=='\r')) startPos++;
+   if(startPos + 4 <= StringLen(json) && StringSubstr(json, startPos, 4) == "true") { outValue = true; return true; }
+   if(startPos + 5 <= StringLen(json) && StringSubstr(json, startPos, 5) == "false") { outValue = false; return true; }
+   return false;
+}
+
 bool ShouldQueryAI()
 {
-   if(g_aiResponse.consecutiveErrors >= 5)
-      return false;
-
-   if(g_lastAIQuery > 0 &&
-      TimeCurrent() - g_lastAIQuery < INPUT_AI_INTERVAL_MINUTES * 60)
-      return false;
-
+   if(g_aiResponse.consecutiveErrors >= 5) return false;
+   if(g_lastAIQuery > 0 && TimeCurrent() - g_lastAIQuery < INPUT_AI_INTERVAL_MINUTES * 60) return false;
    return true;
 }
 //+------------------------------------------------------------------+
 void QueryDeepSeekAI()
 {
-   if(StringLen(INPUT_AI_API_KEY) < 3)
-      return;
-
+   if(StringLen(INPUT_AI_API_KEY) < 3) return;
    g_lastAIQuery = TimeCurrent();
 
-   // Build market context
    double rsi[], adx[];
    CopyBuffer(g_hRSI_M1, 0, 0, 1, rsi);
    CopyBuffer(g_hADX_M1, 0, 0, 1, adx);
 
-   string marketContext = StringFormat(
-      "Symbol: %s | RSI: %.1f | ADX: %.1f | Regime: %s | Threat: %.1f",
-      _Symbol,
+   string marketContext = StringFormat("Symbol: %s | RSI: %.1f | ADX: %.1f | Regime: %s | Threat: %.1f", _Symbol,
       ArraySize(rsi) > 0 ? rsi[0] : 50.0,
       ArraySize(adx) > 0 ? adx[0] : 20.0,
       EnumToString(g_currentRegime),
-      CalculateMarketThreat()
-   );
+      CalculateMarketThreat());
 
    string prompt = "Analyze: " + marketContext + ". Reply JSON: {\"bias\":\"bullish/bearish/neutral\",\"confidence\":0-100,\"risk_alert\":true/false}";
-
-   // Build request body
-   string requestBody = "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"" + prompt + "\"}],\"max_tokens\":100}";
+   string requestBody = "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"" + JsonEscape(prompt) + "\"}],\"max_tokens\":100}";
 
    char post[];
    ArrayResize(post, StringLen(requestBody));
@@ -5353,21 +5509,24 @@ void QueryDeepSeekAI()
 
    char result[];
    string resultHeaders;
-
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + INPUT_AI_API_KEY;
-
    int res = WebRequest("POST", INPUT_AI_URL, headers, 10000, post, result, resultHeaders);
 
    if(res == 200)
    {
       string response = CharArrayToString(result);
-      ParseAIResponse(response);
-      g_aiResponse.lastUpdate = TimeCurrent();
-      g_aiResponse.consecutiveErrors = 0;
-
-      if(INPUT_ENABLE_LOGGING)
-         Print("AI Response: Bias=", g_aiResponse.marketBias,
-               " Conf=", g_aiResponse.confidenceScore);
+      if(ParseAIResponse(response))
+      {
+         g_aiResponse.lastUpdate = TimeCurrent();
+         g_aiResponse.consecutiveErrors = 0;
+         g_lastValidAIResponse = g_aiResponse;
+      }
+      else
+      {
+         g_aiResponse.consecutiveErrors++;
+         g_aiResponse = g_lastValidAIResponse;
+         Print("AI WARNING: Parse failed, fallback to last valid snapshot.");
+      }
    }
    else
    {
@@ -5376,40 +5535,30 @@ void QueryDeepSeekAI()
    }
 }
 //+------------------------------------------------------------------+
-void ParseAIResponse(const string &response)
+bool ParseAIResponse(const string &response)
 {
-   // Very light JSON parsing â€“ only needed keys
-   int biasPos = StringFind(response, "\"bias\"");
-   if(biasPos >= 0)
+   string bias;
+   double confidence = 50.0;
+   bool riskAlert = false;
+
+   bool okBias = ExtractJsonFieldString(response, "bias", bias);
+   bool okConf = ExtractJsonFieldDouble(response, "confidence", confidence);
+   bool okRisk = ExtractJsonFieldBool(response, "risk_alert", riskAlert);
+
+   if(!okBias || !okConf || !okRisk || !MathIsValidNumber(confidence) || confidence < 0.0 || confidence > 100.0)
    {
-      if(StringFind(response, "bullish", biasPos) >= 0 &&
-         StringFind(response, "bullish", biasPos) < biasPos + 30)
-         g_aiResponse.marketBias = "bullish";
-      else if(StringFind(response, "bearish", biasPos) >= 0 &&
-              StringFind(response, "bearish", biasPos) < biasPos + 30)
-         g_aiResponse.marketBias = "bearish";
-      else
-         g_aiResponse.marketBias = "neutral";
+      Print("AI PARSE FAILURE: missing/invalid fields | raw=", TruncateForLog(response, 300));
+      return false;
    }
 
-   int confPos = StringFind(response, "\"confidence\"");
-   if(confPos >= 0)
-   {
-      string confStr = StringSubstr(response, confPos + 13, 5);
-      g_aiResponse.confidenceScore = StringToDouble(confStr);
-      if(g_aiResponse.confidenceScore < 0) g_aiResponse.confidenceScore = 0;
-      if(g_aiResponse.confidenceScore > 100) g_aiResponse.confidenceScore = 100;
-   }
+   string normalizedBias = StringToLower(bias);
+   if(normalizedBias != "bullish" && normalizedBias != "bearish" && normalizedBias != "neutral")
+      normalizedBias = "neutral";
 
-   int alertPos = StringFind(response, "\"risk_alert\"");
-   if(alertPos >= 0)
-   {
-      if(StringFind(response, "true", alertPos) >= 0 &&
-         StringFind(response, "true", alertPos) < alertPos + 30)
-         g_aiResponse.riskAlert = true;
-      else
-         g_aiResponse.riskAlert = false;
-   }
+   g_aiResponse.marketBias = normalizedBias;
+   g_aiResponse.confidenceScore = confidence;
+   g_aiResponse.riskAlert = riskAlert;
+   return true;
 }
 //+------------------------------------------------------------------+
 //| SECTION 29: DAILY RESET & UTILITIES                              |
@@ -5964,7 +6113,7 @@ void SaveRuntimeState()
       return;
    }
 
-   FileWriteInteger(handle, 4); // schema version
+   FileWriteInteger(handle, 5);
    FileWriteLong(handle, (long)g_lastProcessedDealTicket);
    FileWriteLong(handle, (long)g_lastProcessedDealTime);
    FileWriteLong(handle, (long)g_lastProcessedEntryDealTicket);
@@ -5973,8 +6122,11 @@ void SaveRuntimeState()
    FileWriteInteger(handle, g_rlUnmatchedCloses);
    FileWriteInteger(handle, g_closedDealsProcessedTotal);
 
+   int checksum = (int)(g_lastProcessedDealTicket % 2147483647) + (int)g_lastProcessedDealTime + (int)(g_lastProcessedEntryDealTicket % 2147483647) + (int)g_lastProcessedEntryDealTime + g_rlMatchedUpdates + g_rlUnmatchedCloses + g_closedDealsProcessedTotal;
    int pendingToWrite = MathMin(g_pendingRLCount, MathMax(0, INPUT_RL_PENDING_HARD_CAP));
    FileWriteInteger(handle, pendingToWrite);
+   checksum += pendingToWrite;
+
    for(int i = 0; i < pendingToWrite; i++)
    {
       FileWriteInteger(handle, g_pendingRL[i].state);
@@ -5986,8 +6138,10 @@ void SaveRuntimeState()
       FileWriteDouble(handle, g_pendingRL[i].slDistance);
       FileWriteDouble(handle, g_pendingRL[i].lot);
       FileWriteDouble(handle, g_pendingRL[i].tickValue);
+      checksum += g_pendingRL[i].state + (int)g_pendingRL[i].action + (int)(g_pendingRL[i].positionTicket % 2147483647);
    }
 
+   FileWriteInteger(handle, checksum);
    FileClose(handle);
 }
 
@@ -6004,7 +6158,7 @@ void LoadRuntimeState()
    }
 
    int version = FileReadInteger(handle);
-   if(version != 1 && version != 2 && version != 3 && version != 4)
+   if(version != 1 && version != 2 && version != 3 && version != 4 && version != 5)
    {
       Print("WARNING: Runtime state version mismatch: ", version);
       FileClose(handle);
@@ -6012,10 +6166,7 @@ void LoadRuntimeState()
    }
 
    g_lastProcessedDealTicket = (ulong)FileReadLong(handle);
-   if(version >= 3)
-      g_lastProcessedDealTime = (datetime)FileReadLong(handle);
-   else
-      g_lastProcessedDealTime = 0;
+   g_lastProcessedDealTime = (version >= 3) ? (datetime)FileReadLong(handle) : 0;
    if(version >= 4)
    {
       g_lastProcessedEntryDealTicket = (ulong)FileReadLong(handle);
@@ -6026,26 +6177,26 @@ void LoadRuntimeState()
       g_lastProcessedEntryDealTicket = 0;
       g_lastProcessedEntryDealTime = 0;
    }
+
    g_rlMatchedUpdates = FileReadInteger(handle);
    g_rlUnmatchedCloses = FileReadInteger(handle);
    g_closedDealsProcessedTotal = FileReadInteger(handle);
 
-   int restored = 0;
-   int stale = 0;
-   int deduped = 0;
+   int restored = 0, stale = 0, deduped = 0, droppedInvalid = 0;
+   int checksum = (int)(g_lastProcessedDealTicket % 2147483647) + (int)g_lastProcessedDealTime + (int)(g_lastProcessedEntryDealTicket % 2147483647) + (int)g_lastProcessedEntryDealTime + g_rlMatchedUpdates + g_rlUnmatchedCloses + g_closedDealsProcessedTotal;
 
    if(version >= 2)
    {
       int pendingRead = FileReadInteger(handle);
       if(pendingRead < 0) pendingRead = 0;
+      checksum += pendingRead;
 
       const int pendingCap = MathMax(1, INPUT_RL_PENDING_HARD_CAP);
       int maxAgeSec = INPUT_RL_PENDING_MAX_AGE_HOURS * 3600;
       datetime now = TimeCurrent();
 
       g_pendingRLCount = 0;
-      if(ArraySize(g_pendingRL) < pendingCap)
-         ArrayResize(g_pendingRL, pendingCap);
+      if(ArraySize(g_pendingRL) < pendingCap) ArrayResize(g_pendingRL, pendingCap);
 
       for(int i = 0; i < pendingRead; i++)
       {
@@ -6060,53 +6211,37 @@ void LoadRuntimeState()
          rec.lot = FileReadDouble(handle);
          rec.tickValue = FileReadDouble(handle);
 
-         bool isStale = (maxAgeSec > 0 && (now - rec.timestamp) > maxAgeSec);
-         if(isStale)
-         {
-            stale++;
-            continue;
-         }
+         checksum += rec.state + (int)rec.action + (int)(rec.positionTicket % 2147483647);
 
-         bool isDuplicate = false;
+         bool invalid = (rec.state < 0 || rec.state >= Q_TABLE_STATES || rec.action < 0 || rec.action >= Q_TABLE_ACTIONS || rec.positionTicket == 0 || !MathIsValidNumber(rec.entryPrice) || !MathIsValidNumber(rec.slDistance) || !MathIsValidNumber(rec.lot) || !MathIsValidNumber(rec.tickValue));
+         if(invalid) { droppedInvalid++; continue; }
+
+         if(maxAgeSec > 0 && (now - rec.timestamp) > maxAgeSec) { stale++; continue; }
+
+         bool dup = false;
          for(int j = 0; j < g_pendingRLCount; j++)
-         {
-            if((rec.positionTicket > 0 && g_pendingRL[j].positionTicket == rec.positionTicket) ||
-               (rec.positionTicket == 0 && rec.orderTicket > 0 && g_pendingRL[j].orderTicket == rec.orderTicket))
-            {
-               isDuplicate = true;
-               break;
-            }
-         }
+            if(g_pendingRL[j].positionTicket == rec.positionTicket) { dup = true; break; }
+         if(dup) { deduped++; continue; }
 
-         if(isDuplicate)
-         {
-            deduped++;
-            continue;
-         }
-
-         if(g_pendingRLCount >= pendingCap)
-            continue;
-
+         if(g_pendingRLCount >= pendingCap) continue;
          g_pendingRL[g_pendingRLCount++] = rec;
          restored++;
       }
    }
 
+   int fileChecksum = (version >= 5) ? FileReadInteger(handle) : checksum;
    FileClose(handle);
+   if(version >= 5 && fileChecksum != checksum)
+      Print("WARNING: Runtime state checksum mismatch expected=", fileChecksum, " computed=", checksum);
 
    if(INPUT_ENABLE_LOGGING)
-   {
       Print("Runtime state loaded: lastDeal=", g_lastProcessedDealTicket,
-            " | lastDealTime=", TimeToString(g_lastProcessedDealTime, TIME_DATE|TIME_SECONDS),
-            " | RL matched=", g_rlMatchedUpdates,
-            " | RL unmatched=", g_rlUnmatchedCloses,
-            " | closed processed=", g_closedDealsProcessedTotal,
             " | pending restored=", restored,
             " | stale dropped=", stale,
             " | deduped=", deduped,
+            " | invalid dropped=", droppedInvalid,
             " | pending active=", g_pendingRLCount,
             " | schema=", version);
-   }
 }
 
 //+------------------------------------------------------------------+
