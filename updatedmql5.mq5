@@ -143,12 +143,15 @@ input double   INPUT_TRAIL_ATR_MULTIPLIER    = 1.0;  // Trail distance = ATR x t
 input double   INPUT_TRAIL_STEP_POINTS       = 50.0; // Min improvement step (points)
 input double   INPUT_TRAIL_ACTIVATION_POINTS = 200.0;// Activate after this profit (points)
 input bool     INPUT_ENABLE_TRAILING_TP      = true; // Enable trailing TP logic
+input bool     INPUT_ENABLE_HIGH_SPREAD_PROTECT = true; // Enable high-spread protective behavior
 input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable running positions immediately when spread spikes
+input bool     INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD = true; // Do not adjust losing-position SL/TP during spread spikes
 input double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
-input bool     INPUT_ENABLE_WIN_STREAK_LOT_MULTIPLIER = true; // Enable lot multiplier after consecutive wins
-input int      INPUT_WIN_STREAK_TRIGGER_WINS = 2; // Number of consecutive wins required to trigger boost
-input double   INPUT_WIN_STREAK_LOT_MULTIPLIER = 1.25; // Lot multiplier applied after trigger wins
-input int      INPUT_WIN_STREAK_MAX_BOOST_ORDERS = 3; // Apply boosted lot to next N orders
+input group    "=== Money Management / Streak Multiplier ==="
+input bool     INPUT_ENABLE_STREAK_LOT_MULTIPLIER = true; // Enable temporary lot multiplier after win streak
+input int      INPUT_STREAK_TRIGGER_WINS = 2; // Consecutive wins needed to arm streak multiplier
+input double   INPUT_STREAK_LOT_MULTIPLIER = 1.5; // Lot multiplier during armed streak window
+input int      INPUT_STREAK_MULTIPLIER_ORDERS = 3; // Number of successful orders that use streak multiplier
 //--- Recovery Averaging System
 input group    "=== Recovery Averaging System ==="
 input bool     INPUT_ENABLE_RECOVERY         = false; // Enable recovery averaging (FIXED: Disabled by default)
@@ -427,6 +430,7 @@ struct DailyStats
    datetime dayStart;
    double   dayStartBalance;
    int      tradesPlaced;
+   int      pendingOrdersPlaced;
    int      closedDealsToday;
    int      winsToday;
    int      lossesToday;
@@ -449,11 +453,17 @@ struct RLStateAction
    int      state;
    ENUM_RL_ACTION action;
    datetime timestamp;
+   ulong    orderTicket;
    ulong    positionTicket;
    double   entryPrice;
    double   slDistance;
    double   lot;
    double   tickValue;
+};
+struct ClosedPositionContext
+{
+   PositionState state;
+   datetime archivedAt;
 };
 struct MarkovTransitionEvent
 {
@@ -491,6 +501,7 @@ RiskParams g_risk;
 AdaptiveParams g_adaptive;
 //--- Trading state
 ENUM_EA_STATE g_eaState = STATE_IDLE;
+ENUM_EA_STATE g_prevEaState = STATE_IDLE;
 PositionState g_positions[];
 int      g_positionCount = 0;
 datetime g_lastOrderTime = 0;
@@ -499,7 +510,8 @@ double   g_peakEquity = 0;
 double   g_startingBalance = 0;
 int      g_consecutiveLosses = 0;
 int      g_consecutiveWins = 0;
-int      g_winStreakBoostOrdersRemaining = 0;
+int      g_streakMultiplierOrdersRemaining = 0;
+ulong    g_lastStreakActivatedDeal = 0;
 double   g_averageSpread = 0;
 int      g_spreadSamples = 0;
 double   g_totalSpread = 0;
@@ -545,6 +557,12 @@ int      g_qVisits[Q_TABLE_STATES][Q_TABLE_ACTIONS];
 RLStateAction g_pendingRL[];
 int      g_pendingRLCount = 0;
 int      g_rlTradesCompleted = 0;
+ClosedPositionContext g_recentlyClosedContext[];
+int      g_recentlyClosedContextCount = 0;
+datetime g_lastExtremeResolvedLogTime = 0;
+string   g_logSuppressionKeys[];
+datetime g_logSuppressionTimes[];
+int      g_logSuppressionCount = 0;
 //--- Markov Chain (3x3 transition matrix)
 double   g_markovTransitions[MARKOV_STATES][MARKOV_STATES];
 int      g_markovCounts[MARKOV_STATES][MARKOV_STATES];
@@ -558,6 +576,8 @@ datetime g_lastAIQuery = 0;
 //--- History tracking
 ulong    g_lastProcessedDealTicket = 0;
 datetime g_lastProcessedDealTime = 0;
+ulong    g_lastProcessedEntryDealTicket = 0;
+datetime g_lastProcessedEntryDealTime = 0;
 datetime g_lastPositionAgeCheck = 0;
 datetime g_lastTrailingTPCheck = 0;
 datetime g_lastHistoryProcessTime = 0;
@@ -718,6 +738,11 @@ int OnInit()
    g_combinationStatsCount = 0;
    ArrayResize(g_pendingRL, 100);
    g_pendingRLCount = 0;
+   ArrayResize(g_recentlyClosedContext, 256);
+   g_recentlyClosedContextCount = 0;
+   ArrayResize(g_logSuppressionKeys, 0);
+   ArrayResize(g_logSuppressionTimes, 0);
+   g_logSuppressionCount = 0;
    ArrayResize(g_markovQueue, 0);
    g_markovQueueCount = 0;
    ArrayResize(g_tpModifyFailures, 0);
@@ -991,9 +1016,15 @@ void OnTick()
    //--- 1. Sync positions (single source of truth from broker)
    SyncPositionStates();
 
-   //--- 2. Process closed deals
+   //--- 2. Process history before removing inactive position context
    ProcessClosedPositions();
+   ProcessEntryDeals();
+   CleanupInactivePositions();
+   CleanupRecentClosedContext();
    CleanupStalePendingRL();
+
+   //--- High-spread protective actions before any stop-management logic
+   HandleHighSpreadOpenPositions();
 
    //--- 3. Update learning
    if(INPUT_ENABLE_ADAPTIVE)
@@ -1040,6 +1071,15 @@ void OnTick()
    CheckDailyReset();
    UpdateEAState();
 
+   if(g_prevEaState == STATE_EXTREME_RISK && g_eaState != STATE_EXTREME_RISK)
+   {
+      if(ShouldPrintOncePerWindow("extreme_risk_resolved", 60))
+      {
+         g_lastExtremeResolvedLogTime = TimeCurrent();
+         Print("Extreme risk resolved. Resuming normal operation.");
+      }
+   }
+
    if(g_eaState == STATE_EXTREME_RISK)
    {
       HandleExtremeRisk();
@@ -1085,37 +1125,41 @@ void OnTick()
 //+------------------------------------------------------------------+
 void UpdateEAState()
 {
+   ENUM_EA_STATE previousState = g_eaState;
+
    // FIXED: Get fresh count from broker, not cached value
    int mainCount = CountMainPositionsFromBroker();
    int totalCount = CountAllOurPositions();
    double threat = CalculateMarketThreat();
    double drawdownPct = CalculateDrawdownPercent();
 
-   // Determine state based on conditions
-   if(threat > 80 || drawdownPct > 10.0)
+   bool enterExtreme = (threat > 80.0 || drawdownPct > 10.0);
+   bool canExitExtreme = (threat < 70.0 && drawdownPct < 7.0 && totalCount <= 1);
+
+   if(previousState == STATE_EXTREME_RISK)
    {
+      if(enterExtreme || !canExitExtreme)
+      {
+         g_eaState = STATE_EXTREME_RISK;
+         g_prevEaState = previousState;
+         return;
+      }
+   }
+
+   if(enterExtreme)
       g_eaState = STATE_EXTREME_RISK;
-   }
    else if(drawdownPct > 7.0)
-   {
       g_eaState = STATE_DRAWDOWN_PROTECT;
-   }
    else if(CountRecoveryPositions() > 0)
-   {
       g_eaState = STATE_RECOVERY_ACTIVE;
-   }
    else if(Count50PctReducedPositions() > 0)
-   {
       g_eaState = STATE_POSITION_REDUCED;
-   }
    else if(mainCount > 0)
-   {
       g_eaState = STATE_POSITION_ACTIVE;
-   }
    else
-   {
       g_eaState = STATE_IDLE;
-   }
+
+   g_prevEaState = previousState;
 }
 //+------------------------------------------------------------------+
 void HandleExtremeRisk()
@@ -1154,13 +1198,7 @@ void HandleExtremeRisk()
          Print("EXTREME RISK: Closed oldest position ", oldestTicket);
    }
 
-   // Check if threat has reduced
-   double threat = CalculateMarketThreat();
-   if(threat < 70 && CountAllOurPositions() <= 1)
-   {
-      g_eaState = STATE_IDLE;
-      Print("Extreme risk resolved. Resuming normal operation.");
-   }
+   // State transition out of extreme mode is centralized in UpdateEAState() to avoid ping-pong logs.
 }
 //+------------------------------------------------------------------+
 //| SECTION 10: POSITION COUNTING - FIXED!                           |
@@ -1245,6 +1283,7 @@ void CleanupExpiredPendingStopOrders()
       bool sent = OrderSend(request, result);
       if(sent && result.retcode == TRADE_RETCODE_DONE)
       {
+         RemovePendingRLByOrderTicket(ticket);
          Print("PENDING STOP CANCELED: Ticket=", ticket,
                " | Type=", EnumToString(type),
                " | Reason=Expired");
@@ -2287,13 +2326,14 @@ ENUM_RL_ACTION GetRLAction(int state)
    }
 }
 //+------------------------------------------------------------------+
-void RecordStateAction(int state, ENUM_RL_ACTION action, ulong positionId)
+void RecordStateAction(int state, ENUM_RL_ACTION action, ulong orderTicket, ulong positionId,
+                       double entryPrice, double slDistance, double lot, double tickValue)
 {
    const int pendingCap = MathMax(1, INPUT_RL_PENDING_HARD_CAP);
 
-   if(positionId == 0)
+   if(orderTicket == 0 && positionId == 0)
    {
-      if(INPUT_ENABLE_LOGGING) Print("RL Pending skipped: positionId=0");
+      if(INPUT_ENABLE_LOGGING) Print("RL Pending skipped: missing order/position ticket");
       return;
    }
 
@@ -2344,23 +2384,11 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong positionId)
       return;
    }
 
-   double entryPrice = 0.0;
-   double slDistance = 0.0;
-   double lot = 0.0;
-   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-
-   if(PositionSelectByTicket(positionId))
-   {
-      entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double sl = PositionGetDouble(POSITION_SL);
-      slDistance = (sl > 0.0) ? MathAbs(entryPrice - sl) : 0.0;
-      lot = PositionGetDouble(POSITION_VOLUME);
-      tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
-   }
 
    g_pendingRL[g_pendingRLCount].state = state;
    g_pendingRL[g_pendingRLCount].action = action;
    g_pendingRL[g_pendingRLCount].timestamp = TimeCurrent();
+   g_pendingRL[g_pendingRLCount].orderTicket = orderTicket;
    g_pendingRL[g_pendingRLCount].positionTicket = positionId;
    g_pendingRL[g_pendingRLCount].entryPrice = entryPrice;
    g_pendingRL[g_pendingRLCount].slDistance = slDistance;
@@ -2370,11 +2398,45 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong positionId)
 
    if(INPUT_ENABLE_LOGGING)
       Print("RL Pending: State=", state, " Action=", EnumToString(action),
+                     " | OrderTicket=", orderTicket,
                      " | PositionId=", positionId);
 }
-//+------------------------------------------------------------------+␊
+//+------------------------------------------------------------------+
 
 
+
+void RemovePendingRLByOrderTicket(ulong orderTicket)
+{
+   if(orderTicket == 0 || g_pendingRLCount <= 0) return;
+
+   for(int i = g_pendingRLCount - 1; i >= 0; i--)
+   {
+      if(g_pendingRL[i].orderTicket != orderTicket || g_pendingRL[i].positionTicket != 0)
+         continue;
+
+      for(int j = i; j < g_pendingRLCount - 1; j++)
+         g_pendingRL[j] = g_pendingRL[j + 1];
+      g_pendingRLCount--;
+   }
+}
+//+------------------------------------------------------------------+
+void RemapPendingRLToPosition(ulong orderTicket, ulong positionId)
+{
+   if(orderTicket == 0 || positionId == 0) return;
+
+   for(int i = 0; i < g_pendingRLCount; i++)
+   {
+      if(g_pendingRL[i].orderTicket != orderTicket)
+         continue;
+
+      g_pendingRL[i].positionTicket = positionId;
+      g_pendingRL[i].timestamp = TimeCurrent();
+      if(INPUT_ENABLE_LOGGING)
+         Print("RL Pending remap: orderTicket=", orderTicket, " -> positionId=", positionId);
+      return;
+   }
+}
+//+------------------------------------------------------------------+
 bool GetPendingRLRiskBasis(ulong positionId, double &entryPrice, double &slDistance, double &lot, double &tickValue)
 {
    entryPrice = 0.0;
@@ -2515,7 +2577,13 @@ void CleanupStalePendingRL()
    for(int i = 0; i < g_pendingRLCount; i++)
    {
       bool stale = (maxAgeSec > 0 && (now - g_pendingRL[i].timestamp) > maxAgeSec);
-      if(stale)
+      bool unmatchedPendingGone = false;
+      if(!stale && g_pendingRL[i].positionTicket == 0 && g_pendingRL[i].orderTicket > 0)
+      {
+         unmatchedPendingGone = !OrderSelect(g_pendingRL[i].orderTicket);
+      }
+
+      if(stale || unmatchedPendingGone)
       {
          removed++;
          continue;
@@ -2528,7 +2596,7 @@ void CleanupStalePendingRL()
 
    g_pendingRLCount = writeIdx;
    if(removed > 0 && INPUT_ENABLE_LOGGING)
-      Print("RL CLEANUP: Removed stale pending entries=", removed, " | Remaining=", g_pendingRLCount);
+      Print("RL CLEANUP: Removed stale/unmatched pending entries=", removed, " | Remaining=", g_pendingRLCount);
 }
 
 //+------------------------------------------------------------------+
@@ -3149,11 +3217,7 @@ bool CheckAllGates(string &rejectReason)
       return false;
    }
 
-   // Spread check â€“ more tolerant now
-   double spreadPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
-   double spread = spreadPoints * g_point;
-   double avgSpread = (g_averageSpread > 0) ? g_averageSpread : spread;
-   if(avgSpread > 0 && spread > avgSpread * INPUT_HIGH_SPREAD_MULTIPLIER)
+   if(IsSpreadHigh())
    {
       rejectReason = "Spread too high";
       return false;
@@ -3326,36 +3390,52 @@ void LogWithRestartGuard(const string message)
    }
 }
 //+------------------------------------------------------------------+
-double GetWinStreakLotMultiplier()
+bool ShouldPrintOncePerWindow(string key, int secondsWindow)
 {
-   if(!INPUT_ENABLE_WIN_STREAK_LOT_MULTIPLIER)
-      return 1.0;
+   if(secondsWindow <= 0) return true;
 
-   if(g_winStreakBoostOrdersRemaining <= 0)
-      return 1.0;
+   datetime now = TimeCurrent();
+   for(int i = 0; i < g_logSuppressionCount; i++)
+   {
+      if(g_logSuppressionKeys[i] != key) continue;
+      if((now - g_logSuppressionTimes[i]) < secondsWindow)
+         return false;
+      g_logSuppressionTimes[i] = now;
+      return true;
+   }
 
-   if(INPUT_WIN_STREAK_LOT_MULTIPLIER <= 0)
-      return 1.0;
-
-   return INPUT_WIN_STREAK_LOT_MULTIPLIER;
+   int newSize = g_logSuppressionCount + 1;
+   if(ArrayResize(g_logSuppressionKeys, newSize) != newSize) return true;
+   if(ArrayResize(g_logSuppressionTimes, newSize) != newSize) return true;
+   g_logSuppressionKeys[g_logSuppressionCount] = key;
+   g_logSuppressionTimes[g_logSuppressionCount] = now;
+   g_logSuppressionCount = newSize;
+   return true;
 }
 //+------------------------------------------------------------------+
-void ConsumeWinStreakBoostOrder()
+double GetStreakLotMultiplier()
 {
-   if(!INPUT_ENABLE_WIN_STREAK_LOT_MULTIPLIER)
-      return;
+   if(!INPUT_ENABLE_STREAK_LOT_MULTIPLIER) return 1.0;
+   if(g_streakMultiplierOrdersRemaining <= 0) return 1.0;
+   if(INPUT_STREAK_LOT_MULTIPLIER <= 0) return 1.0;
+   return INPUT_STREAK_LOT_MULTIPLIER;
+}
+//+------------------------------------------------------------------+
+void ConsumeStreakMultiplierOrder()
+{
+   if(!INPUT_ENABLE_STREAK_LOT_MULTIPLIER) return;
+   if(g_streakMultiplierOrdersRemaining <= 0) return;
 
-   if(g_winStreakBoostOrdersRemaining <= 0)
-      return;
-
-   g_winStreakBoostOrdersRemaining--;
-
+   g_streakMultiplierOrdersRemaining--;
    if(INPUT_ENABLE_LOGGING)
-      LogWithRestartGuard("WIN STREAK LOT BOOST USED: remainingOrders=" + IntegerToString(g_winStreakBoostOrdersRemaining));
+      LogWithRestartGuard("STREAK LOT BOOST USED: remainingOrders=" + IntegerToString(g_streakMultiplierOrdersRemaining));
 }
 //+------------------------------------------------------------------+
-bool IsSpreadTooHighNow()
+bool IsSpreadHigh()
 {
+   if(!INPUT_ENABLE_HIGH_SPREAD_PROTECT)
+      return false;
+
    double spreadPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    if(spreadPoints < 0) spreadPoints = 0;
 
@@ -3367,34 +3447,51 @@ bool IsSpreadTooHighNow()
    return (spread > avgSpread * INPUT_HIGH_SPREAD_MULTIPLIER);
 }
 //+------------------------------------------------------------------+
-bool HandleHighSpreadPositionPolicy(ulong ticket)
+bool IsPositionProfitable(ulong ticket)
 {
-   if(!INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD)
+   if(!PositionSelectByTicket(ticket))
+      return false;
+   return (PositionGetDouble(POSITION_PROFIT) > 0.0);
+}
+//+------------------------------------------------------------------+
+void HandleHighSpreadOpenPositions()
+{
+   if(!IsSpreadHigh())
+      return;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!IsOurPosition(ticket)) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+
+      double profit = PositionGetDouble(POSITION_PROFIT);
+      if(profit > 0.0 && INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD)
+      {
+         if(g_trade.PositionClose(ticket) && ShouldPrintOncePerWindow("high_spread_close_" + IntegerToString((int)ticket), 30))
+            LogWithRestartGuard("HIGH SPREAD: closed profitable position " + IntegerToString((int)ticket));
+      }
+      else if(profit <= 0.0 && INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD)
+      {
+         if(ShouldPrintOncePerWindow("high_spread_keep_" + IntegerToString((int)ticket), 60))
+            LogWithRestartGuard("HIGH SPREAD: loss position " + IntegerToString((int)ticket) + " - keeping original stops");
+      }
+   }
+}
+//+------------------------------------------------------------------+
+bool ShouldSkipStopAdjustmentsForTicket(ulong ticket)
+{
+   if(!IsSpreadHigh())
+      return false;
+
+   if(!INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD)
       return false;
 
    if(!PositionSelectByTicket(ticket))
-      return true;
-
-   if(!IsSpreadTooHighNow())
       return false;
 
-   double profit = PositionGetDouble(POSITION_PROFIT);
-   if(profit > 0)
-   {
-      if(g_trade.PositionClose(ticket))
-      {
-         LogWithRestartGuard("HIGH SPREAD EXIT: closed profitable position | ticket=" + IntegerToString((int)ticket) +
-                            " | profit=" + DoubleToString(profit, 2));
-      }
-      else
-      {
-         LogWithRestartGuard("HIGH SPREAD EXIT FAILED: ticket=" + IntegerToString((int)ticket) +
-                            " | retcode=" + IntegerToString((int)g_trade.ResultRetcode()) +
-                            " | comment=" + g_trade.ResultComment());
-      }
-   }
-
-   return true;
+   return (PositionGetDouble(POSITION_PROFIT) <= 0.0);
 }
 //+------------------------------------------------------------------+
 int GetTPFailureTrackerIndex(ulong ticket, bool createIfMissing)
@@ -3621,7 +3718,7 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
    lotSize *= g_adaptive.lotMultiplier;
 
    // Consecutive-win lot boost (optional)
-   lotSize *= GetWinStreakLotMultiplier();
+   lotSize *= GetStreakLotMultiplier();
 
    // Round to lot step and clamp to limits
    lotSize = MathFloor(lotSize / g_lotStep) * g_lotStep;
@@ -3648,8 +3745,10 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
 //+------------------------------------------------------------------+
 //| SECTION 22: ORDER EXECUTION                                      |
 //+------------------------------------------------------------------+
-bool PlacePendingStopOrder(const DecisionResult &decision, string comment)
+bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong &placedOrderTicket)
 {
+   placedOrderTicket = 0;
+
    int pendingSameDirection = CountPendingStopsByDirection(decision.direction);
    if(pendingSameDirection > 0)
    {
@@ -3707,7 +3806,9 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment)
 
    if(!sent || (result.retcode != TRADE_RETCODE_DONE && result.retcode != TRADE_RETCODE_PLACED))
       return false;
- return true;
+
+   placedOrderTicket = result.order;
+   return true;
 }
 ulong ResolveOpenedPositionId(ulong orderTicket, string comment)
 {
@@ -3771,9 +3872,10 @@ bool ExecuteOrder(const DecisionResult &decision)
    price = NormalizeDouble(price, g_digits);
 
    string comment = COMMENT_MAIN_PREFIX + IntegerToString(TimeCurrent());
-    if(INPUT_EXECUTION_MODE == PENDING_STOP)
+   if(INPUT_EXECUTION_MODE == PENDING_STOP)
    {
-      if(!PlacePendingStopOrder(decision, comment))
+      ulong pendingOrderTicket = 0;
+      if(!PlacePendingStopOrder(decision, comment, pendingOrderTicket))
       {
          Print("PENDING STOP ORDER FAILED");
          return false;
@@ -3787,9 +3889,23 @@ bool ExecuteOrder(const DecisionResult &decision)
             " | Zone: ", EnumToString(decision.threatZone),
             " | Signals: ", decision.signalCombination);
 
-      ConsumeWinStreakBoostOrder();
+      if(INPUT_ENABLE_RL)
+      {
+         int state = DetermineRLState(decision.confidence,
+                                      decision.threatLevel,
+                                      CountMainPositionsFromBroker(),
+                                      CalculateDrawdownPercent(),
+                                      g_consecutiveWins >= 2);
+         RecordStateAction(state, decision.rlAction, pendingOrderTicket, 0,
+                           (decision.direction == 1 ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) + INPUT_PENDING_STOP_OFFSET_POINTS * g_point
+                                                    : SymbolInfoDouble(_Symbol, SYMBOL_BID) - INPUT_PENDING_STOP_OFFSET_POINTS * g_point),
+                           decision.slPoints * g_point, decision.lotSize,
+                           SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE));
+      }
+
+      ConsumeStreakMultiplierOrder();
+      g_daily.pendingOrdersPlaced++;
       g_lastOrderTime = TimeCurrent();
-      g_daily.tradesPlaced++;
       g_totalTrades++;
       return true;
    }
@@ -3830,12 +3946,13 @@ bool ExecuteOrder(const DecisionResult &decision)
                                           CountMainPositionsFromBroker(),
                                           CalculateDrawdownPercent(),
                                           g_consecutiveWins >= 2);
-                      RecordStateAction(state, decision.rlAction, positionId);
+                      RecordStateAction(state, decision.rlAction, orderTicket, positionId,
+                                        price, decision.slPoints * g_point, decision.lotSize,
+                                        SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE));
          }
 
-         ConsumeWinStreakBoostOrder();
+         ConsumeStreakMultiplierOrder();
          g_lastOrderTime = TimeCurrent();
-         g_daily.tradesPlaced++;
          g_totalTrades++;
 
          return true;
@@ -4060,7 +4177,7 @@ void ManagePartialClose()
 //+------------------------------------------------------------------+
 void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 {
-   if(HandleHighSpreadPositionPolicy(ticket)) return;
+   if(ShouldSkipStopAdjustmentsForTicket(ticket)) return;
    if(!CanModifyPosition(ticket)) return;
 
    double currentSL = PositionGetDouble(POSITION_SL);
@@ -4107,7 +4224,7 @@ void ManageTrailingStops()
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-      if(HandleHighSpreadPositionPolicy(ticket)) continue;
+      if(ShouldSkipStopAdjustmentsForTicket(ticket)) continue;
 
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
@@ -4429,6 +4546,7 @@ void SyncPositionStates()
       ulong ticket = g_positions[i].ticket;
       if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket))
       {
+         ArchiveRecentlyClosedPositionContext(g_positions[i]);
          g_positions[i].isActive = false;
          continue;
       }
@@ -4504,7 +4622,6 @@ void SyncPositionStates()
             " | Comment=", g_positions[idx].comment);
    }
 
-   CleanupInactivePositions();
 
    if(INPUT_ENABLE_LOGGING && (g_syncMissingCount > 0 || g_syncNewCount > 0 || g_syncDuplicateCount > 0))
       Print("SYNC SUMMARY: missing=", g_syncMissingCount, " new=", g_syncNewCount, " duplicates=", g_syncDuplicateCount,
@@ -4570,15 +4687,12 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
    int dayOfWeek = dt.day_of_week;
    ENUM_MARKET_REGIME regime = g_currentRegime;
 
-   // Prefer live/tracked context from g_positions
-   for(int i = 0; i < g_positionCount; i++)
+   // Prefer live/tracked context first, then recently-closed archive fallback.
+   PositionState ctx;
+   if(FindPositionContext(positionId, ctx))
    {
-      if(g_positions[i].ticket == positionId)
-      {
-         fpId = g_positions[i].fingerprintId;
-         combination = g_positions[i].signalCombination;
-         break;
-      }
+      fpId = ctx.fingerprintId;
+      combination = ctx.signalCombination;
    }
 
    // Fallback: latest training record for this position
@@ -4740,23 +4854,25 @@ void ProcessClosedPositions()
          g_daily.winsToday++;
          g_daily.profitToday += netProfit;
 
-         if(INPUT_ENABLE_WIN_STREAK_LOT_MULTIPLIER &&
-            INPUT_WIN_STREAK_TRIGGER_WINS > 0 &&
-            INPUT_WIN_STREAK_MAX_BOOST_ORDERS > 0 &&
-            g_consecutiveWins >= INPUT_WIN_STREAK_TRIGGER_WINS)
+         if(INPUT_ENABLE_STREAK_LOT_MULTIPLIER &&
+            INPUT_STREAK_TRIGGER_WINS > 0 &&
+            INPUT_STREAK_MULTIPLIER_ORDERS > 0 &&
+            g_consecutiveWins >= INPUT_STREAK_TRIGGER_WINS &&
+            dealTicket != g_lastStreakActivatedDeal)
          {
-            g_winStreakBoostOrdersRemaining = INPUT_WIN_STREAK_MAX_BOOST_ORDERS;
+            g_streakMultiplierOrdersRemaining = INPUT_STREAK_MULTIPLIER_ORDERS;
+            g_lastStreakActivatedDeal = dealTicket;
             if(INPUT_ENABLE_LOGGING)
-               LogWithRestartGuard("WIN STREAK LOT BOOST ARMED: consecutiveWins=" + IntegerToString(g_consecutiveWins) +
-                                  " | nextOrders=" + IntegerToString(g_winStreakBoostOrdersRemaining) +
-                                  " | multiplier=" + DoubleToString(INPUT_WIN_STREAK_LOT_MULTIPLIER, 2));
+               LogWithRestartGuard("STREAK LOT BOOST ARMED: consecutiveWins=" + IntegerToString(g_consecutiveWins) +
+                                  " | nextOrders=" + IntegerToString(g_streakMultiplierOrdersRemaining) +
+                                  " | multiplier=" + DoubleToString(INPUT_STREAK_LOT_MULTIPLIER, 2));
          }
       }
       else
       {
          g_consecutiveLosses++;
          g_consecutiveWins = 0;
-         g_winStreakBoostOrdersRemaining = 0;
+         g_streakMultiplierOrdersRemaining = 0;
          g_daily.lossesToday++;
          g_daily.lossToday += MathAbs(netProfit);
       }
@@ -4842,6 +4958,68 @@ void ProcessClosedPositions()
       // Bootstrap: avoid rescanning the same large range on every tick
       g_lastProcessedDealTime = now;
       g_lastProcessedDealTicket = 0;
+   }
+}
+//+------------------------------------------------------------------+
+void ProcessEntryDeals()
+{
+   datetime now = TimeCurrent();
+   int safetyMargin = MathMax(0, INPUT_HISTORY_SAFETY_MARGIN_SECONDS);
+   datetime fromTime = (g_lastProcessedEntryDealTime > 0)
+                       ? g_lastProcessedEntryDealTime - safetyMargin
+                       : now - (datetime)(MathMax(1, INPUT_HISTORY_BOOTSTRAP_DAYS) * 86400);
+   if(fromTime < 0) fromTime = 0;
+
+   if(!HistorySelect(fromTime, now))
+      return;
+
+   datetime maxTime = g_lastProcessedEntryDealTime;
+   ulong maxTicketAtTime = g_lastProcessedEntryDealTicket;
+
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
+      if((ulong)HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
+
+      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_IN && entry != DEAL_ENTRY_INOUT)
+         continue;
+
+      datetime entryTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      if(entryTime < g_lastProcessedEntryDealTime) continue;
+      if(entryTime == g_lastProcessedEntryDealTime && dealTicket <= g_lastProcessedEntryDealTicket) continue;
+
+      ulong orderTicket = (ulong)HistoryDealGetInteger(dealTicket, DEAL_ORDER);
+      ulong positionId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      if(orderTicket > 0 && positionId > 0)
+         RemapPendingRLToPosition(orderTicket, positionId);
+
+      g_daily.tradesPlaced++;
+      if(INPUT_ENABLE_LOGGING)
+         Print("ENTRY DEAL: deal=", dealTicket, " | order=", orderTicket,
+               " | position=", positionId,
+               " | tradesFilledToday=", g_daily.tradesPlaced,
+               " | pendingPlacedToday=", g_daily.pendingOrdersPlaced);
+
+      if(entryTime > maxTime || (entryTime == maxTime && dealTicket > maxTicketAtTime))
+      {
+         maxTime = entryTime;
+         maxTicketAtTime = dealTicket;
+      }
+   }
+
+   if(maxTime > g_lastProcessedEntryDealTime ||
+      (maxTime == g_lastProcessedEntryDealTime && maxTicketAtTime > g_lastProcessedEntryDealTicket))
+   {
+      g_lastProcessedEntryDealTime = maxTime;
+      g_lastProcessedEntryDealTicket = maxTicketAtTime;
+   }
+   else if(g_lastProcessedEntryDealTime == 0)
+   {
+      g_lastProcessedEntryDealTime = now;
+      g_lastProcessedEntryDealTicket = 0;
    }
 }
 //+------------------------------------------------------------------+
@@ -4958,23 +5136,20 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
    g_trainingData[idx].regime = g_currentRegime;
    g_trainingData[idx].volatilityRatio = CalculateVolatilityRatio();
 
-   // Find matching position (if still alive) for extra info
-   for(int i = 0; i < g_positionCount; i++)
+   // Find matching position context (live first, then recently-closed archive)
+   PositionState ctx;
+   if(FindPositionContext(positionId, ctx))
    {
-      if(g_positions[i].ticket == positionId)
-      {
-         g_trainingData[idx].signalCombination = g_positions[i].signalCombination;
-         g_trainingData[idx].confidenceAtEntry = g_positions[i].confidenceAtEntry;
-         g_trainingData[idx].threatAtEntry = g_positions[i].threatAtEntry;
-         g_trainingData[idx].mtfScore = g_positions[i].mtfScoreAtEntry;
-         g_trainingData[idx].fingerprintId = g_positions[i].fingerprintId;
-         g_trainingData[idx].entryPrice = g_positions[i].entryPrice;
-         g_trainingData[idx].slPrice = g_positions[i].slPrice;
-         g_trainingData[idx].tpPrice = g_positions[i].tpPrice;
-         g_trainingData[idx].entryTime = g_positions[i].entryTime;
-         g_trainingData[idx].holdingMinutes = (int)MathMax((closeTime - g_positions[i].entryTime) / 60, 0);
-         break;
-      }
+      g_trainingData[idx].signalCombination = ctx.signalCombination;
+      g_trainingData[idx].confidenceAtEntry = ctx.confidenceAtEntry;
+      g_trainingData[idx].threatAtEntry = ctx.threatAtEntry;
+      g_trainingData[idx].mtfScore = ctx.mtfScoreAtEntry;
+      g_trainingData[idx].fingerprintId = ctx.fingerprintId;
+      g_trainingData[idx].entryPrice = ctx.entryPrice;
+      g_trainingData[idx].slPrice = ctx.slPrice;
+      g_trainingData[idx].tpPrice = ctx.tpPrice;
+      g_trainingData[idx].entryTime = ctx.entryTime;
+      g_trainingData[idx].holdingMinutes = (int)MathMax((closeTime - ctx.entryTime) / 60, 0);
    }
 
    // Recompute combination/session stats from corrected records immediately.
@@ -5221,6 +5396,7 @@ void ResetDailyCounters()
    g_daily.dayStart = iTime(_Symbol, PERIOD_D1, 0);
    g_daily.dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_daily.tradesPlaced = 0;
+   g_daily.pendingOrdersPlaced = 0;
    g_daily.closedDealsToday = 0;
    g_daily.winsToday = 0;
    g_daily.lossesToday = 0;
@@ -5271,6 +5447,75 @@ void CloseAllPositions(string reason)
       if(g_trade.PositionClose(ticket))
          Print("CLOSED: Ticket ", ticket, " | Reason: ", reason);
    }
+}
+//+------------------------------------------------------------------+
+void ArchiveRecentlyClosedPositionContext(const PositionState &state)
+{
+   if(state.ticket == 0)
+      return;
+
+   int cap = ArraySize(g_recentlyClosedContext);
+   if(cap <= 0)
+   {
+      cap = 256;
+      ArrayResize(g_recentlyClosedContext, cap);
+   }
+
+   if(g_recentlyClosedContextCount < cap)
+   {
+      g_recentlyClosedContext[g_recentlyClosedContextCount].state = state;
+      g_recentlyClosedContext[g_recentlyClosedContextCount].archivedAt = TimeCurrent();
+      g_recentlyClosedContextCount++;
+      return;
+   }
+
+   for(int i = 1; i < cap; i++)
+      g_recentlyClosedContext[i - 1] = g_recentlyClosedContext[i];
+
+   g_recentlyClosedContext[cap - 1].state = state;
+   g_recentlyClosedContext[cap - 1].archivedAt = TimeCurrent();
+}
+//+------------------------------------------------------------------+
+bool FindPositionContext(ulong positionId, PositionState &ctx)
+{
+   for(int i = 0; i < g_positionCount; i++)
+   {
+      if(g_positions[i].ticket != positionId)
+         continue;
+      ctx = g_positions[i];
+      return true;
+   }
+
+   for(int i = g_recentlyClosedContextCount - 1; i >= 0; i--)
+   {
+      if(g_recentlyClosedContext[i].state.ticket != positionId)
+         continue;
+      ctx = g_recentlyClosedContext[i].state;
+      return true;
+   }
+
+   return false;
+}
+//+------------------------------------------------------------------+
+void CleanupRecentClosedContext()
+{
+   if(g_recentlyClosedContextCount <= 0)
+      return;
+
+   int maxAgeHours = MathMax(24, INPUT_RL_PENDING_MAX_AGE_HOURS);
+   int maxAgeSec = maxAgeHours * 3600;
+   datetime now = TimeCurrent();
+
+   int writeIdx = 0;
+   for(int i = 0; i < g_recentlyClosedContextCount; i++)
+   {
+      bool stale = (maxAgeSec > 0 && (now - g_recentlyClosedContext[i].archivedAt) > maxAgeSec);
+      if(stale) continue;
+      if(writeIdx != i)
+         g_recentlyClosedContext[writeIdx] = g_recentlyClosedContext[i];
+      writeIdx++;
+   }
+   g_recentlyClosedContextCount = writeIdx;
 }
 //+------------------------------------------------------------------+
 void CleanupInactivePositions()
@@ -5377,7 +5622,7 @@ void SaveMarkovData()
    int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
 
-   FileWriteInteger(handle, 3); // schema version
+   FileWriteInteger(handle, 4); // schema version
    FileWriteInteger(handle, g_markovTradesRecorded);
    FileWriteInteger(handle, (int)g_lastMarkovState);
 
@@ -5696,9 +5941,11 @@ void SaveRuntimeState()
       return;
    }
 
-   FileWriteInteger(handle, 3); // schema version
+   FileWriteInteger(handle, 4); // schema version
    FileWriteLong(handle, (long)g_lastProcessedDealTicket);
    FileWriteLong(handle, (long)g_lastProcessedDealTime);
+   FileWriteLong(handle, (long)g_lastProcessedEntryDealTicket);
+   FileWriteLong(handle, (long)g_lastProcessedEntryDealTime);
    FileWriteInteger(handle, g_rlMatchedUpdates);
    FileWriteInteger(handle, g_rlUnmatchedCloses);
    FileWriteInteger(handle, g_closedDealsProcessedTotal);
@@ -5710,6 +5957,7 @@ void SaveRuntimeState()
       FileWriteInteger(handle, g_pendingRL[i].state);
       FileWriteInteger(handle, (int)g_pendingRL[i].action);
       FileWriteLong(handle, (long)g_pendingRL[i].timestamp);
+      FileWriteLong(handle, (long)g_pendingRL[i].orderTicket);
       FileWriteLong(handle, (long)g_pendingRL[i].positionTicket);
       FileWriteDouble(handle, g_pendingRL[i].entryPrice);
       FileWriteDouble(handle, g_pendingRL[i].slDistance);
@@ -5733,7 +5981,7 @@ void LoadRuntimeState()
    }
 
    int version = FileReadInteger(handle);
-   if(version != 1 && version != 2 && version != 3)
+   if(version != 1 && version != 2 && version != 3 && version != 4)
    {
       Print("WARNING: Runtime state version mismatch: ", version);
       FileClose(handle);
@@ -5745,6 +5993,16 @@ void LoadRuntimeState()
       g_lastProcessedDealTime = (datetime)FileReadLong(handle);
    else
       g_lastProcessedDealTime = 0;
+   if(version >= 4)
+   {
+      g_lastProcessedEntryDealTicket = (ulong)FileReadLong(handle);
+      g_lastProcessedEntryDealTime = (datetime)FileReadLong(handle);
+   }
+   else
+   {
+      g_lastProcessedEntryDealTicket = 0;
+      g_lastProcessedEntryDealTime = 0;
+   }
    g_rlMatchedUpdates = FileReadInteger(handle);
    g_rlUnmatchedCloses = FileReadInteger(handle);
    g_closedDealsProcessedTotal = FileReadInteger(handle);
@@ -5772,6 +6030,7 @@ void LoadRuntimeState()
          rec.state = FileReadInteger(handle);
          rec.action = (ENUM_RL_ACTION)FileReadInteger(handle);
          rec.timestamp = (datetime)FileReadLong(handle);
+         rec.orderTicket = (version >= 4) ? (ulong)FileReadLong(handle) : 0;
          rec.positionTicket = (ulong)FileReadLong(handle);
          rec.entryPrice = FileReadDouble(handle);
          rec.slDistance = FileReadDouble(handle);
@@ -5788,7 +6047,8 @@ void LoadRuntimeState()
          bool isDuplicate = false;
          for(int j = 0; j < g_pendingRLCount; j++)
          {
-            if(g_pendingRL[j].positionTicket == rec.positionTicket)
+            if((rec.positionTicket > 0 && g_pendingRL[j].positionTicket == rec.positionTicket) ||
+               (rec.positionTicket == 0 && rec.orderTicket > 0 && g_pendingRL[j].orderTicket == rec.orderTicket))
             {
                isDuplicate = true;
                break;
@@ -5906,8 +6166,9 @@ void DrawStatsPanel()
    y += 18;
 
    // Daily stats
-   CreateLabel(prefix + "daily", "Today: " + IntegerToString(g_daily.tradesPlaced) + " trades | W:" +
-               IntegerToString(g_daily.winsToday) + " L:" + IntegerToString(g_daily.lossesToday),
+   CreateLabel(prefix + "daily", "Today: Filled " + IntegerToString(g_daily.tradesPlaced) +
+               " | Pending Placed " + IntegerToString(g_daily.pendingOrdersPlaced) +
+               " | W:" + IntegerToString(g_daily.winsToday) + " L:" + IntegerToString(g_daily.lossesToday),
                x + 10, y, txtColor, 9);
    y += 18;
 
@@ -5930,7 +6191,10 @@ void DrawStatsPanel()
 
    // Streak
    CreateLabel(prefix + "streak", "Streak: W" + IntegerToString(g_consecutiveWins) +
-               " / L" + IntegerToString(g_consecutiveLosses),
+               " / L" + IntegerToString(g_consecutiveLosses) +
+               " | Trigger=" + IntegerToString(INPUT_STREAK_TRIGGER_WINS) +
+               " | Mult=" + DoubleToString(INPUT_STREAK_LOT_MULTIPLIER, 2) +
+               " | BoostLeft=" + IntegerToString(g_streakMultiplierOrdersRemaining),
                x + 10, y, txtColor, 9);
    y += 18;
 
@@ -6082,7 +6346,7 @@ void ManageTrailingTP()
       if(!PositionSelectByTicket(ticket)) continue;
 
       // High-spread policy: close winners immediately, do not touch losing-position stops/TP.
-      if(HandleHighSpreadPositionPolicy(ticket))
+      if(ShouldSkipStopAdjustmentsForTicket(ticket))
          continue;
 
       if(!CanModifyPosition(ticket))
