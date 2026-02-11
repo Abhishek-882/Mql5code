@@ -1,4 +1,3 @@
-
 #property copyright "HumanBrain EA V7.3 - Position Management Fixed"
 #property link      ""
 #property version   "7.30"
@@ -144,6 +143,8 @@ input double   INPUT_TRAIL_ATR_MULTIPLIER    = 1.0;  // Trail distance = ATR x t
 input double   INPUT_TRAIL_STEP_POINTS       = 50.0; // Min improvement step (points)
 input double   INPUT_TRAIL_ACTIVATION_POINTS = 200.0;// Activate after this profit (points)
 input bool     INPUT_ENABLE_TRAILING_TP      = true; // Enable trailing TP logic
+input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable running positions immediately when spread spikes
+input double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
 //--- Recovery Averaging System
 input group    "=== Recovery Averaging System ==="
 input bool     INPUT_ENABLE_RECOVERY         = false; // Enable recovery averaging (FIXED: Disabled by default)
@@ -245,6 +246,7 @@ input group    "=== Debug & Display ==="
 input bool     INPUT_ENABLE_LOGGING   = true;     // Enable detailed logging
 input bool     INPUT_SHOW_PANEL       = true;     // Show on-chart panel
 input bool     INPUT_ENABLE_ALERTS    = false;    // Enable alert notifications
+input int      INPUT_REPEAT_LOG_RESTART_THRESHOLD = 50; // Restart EA when exact same log repeats this many times
 //+------------------------------------------------------------------+
 //| SECTION 3: CONSTANTS                                             |
 //+------------------------------------------------------------------+
@@ -561,6 +563,15 @@ int      g_rlUnmatchedCloses = 0;
 int      g_syncMissingCount = 0;
 int      g_syncNewCount = 0;
 int      g_syncDuplicateCount = 0;
+string   g_lastLogMessage = "";
+int      g_lastLogRepeatCount = 0;
+struct ModifyFailureTracker
+{
+   ulong    ticket;
+   int      failCount;
+   datetime nextRetryTime;
+};
+ModifyFailureTracker g_tpModifyFailures[];
 //+------------------------------------------------------------------+
 //| SECTION 6: INITIALIZATION                                        |
 //+------------------------------------------------------------------+
@@ -573,7 +584,7 @@ int OnInit()
       Alert("EA V7 HumanBrain has expired!");
       return INIT_FAILED;
    }
-   
+
    //--- Validate inputs
    if(INPUT_MIN_SIGNALS < 1 || INPUT_MIN_SIGNALS > 8)
    {
@@ -585,6 +596,8 @@ int OnInit()
       Print("ERROR: INPUT_MIN_CONFIDENCE must be 0-100");
       return INIT_PARAMETERS_INCORRECT;
    }
+   ValidateSessionHourInputs();
+
    if(INPUT_AI_MODE != AI_OFF && StringLen(INPUT_AI_API_KEY) < 3)
    {
       Print("WARNING: AI mode enabled but API key not configured. AI will be disabled.");
@@ -593,7 +606,7 @@ int OnInit()
    {
       Print("WARNING: DeepSeek API key should start with 'sk-'. Current key may be invalid.");
    }
-   
+
    //--- Initialize symbol specs
    g_point        = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    g_tickSize     = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -647,8 +660,8 @@ int OnInit()
                   g_contractSize,
                   g_point);
       return INIT_FAILED;
-   } 
-   
+   }
+
    //--- Initialize risk profile
    switch(INPUT_RISK_PROFILE)
    {
@@ -663,7 +676,7 @@ int OnInit()
    g_risk.maxLot      = INPUT_MAX_LOT_SIZE;
    g_risk.minLot      = INPUT_MIN_LOT_SIZE;
    g_risk.maxTotalRisk = INPUT_MAX_TOTAL_RISK_PERCENT;
-   
+
    //--- Initialize adaptive parameters
    g_adaptive.lotMultiplier = 1.0;
    g_adaptive.slAdjustPips = 0;
@@ -681,14 +694,14 @@ int OnInit()
    g_trade.SetDeviationInPoints(30);
    g_trade.SetTypeFilling(ORDER_FILLING_FOK);
    g_trade.SetAsyncMode(false);
-   
+
    //--- Initialize ALL indicator handles
    if(!InitializeIndicators())
    {
       Print("ERROR: Failed to create indicator handles");
       return INIT_FAILED;
    }
-   
+
    //--- Initialize arrays
    ArrayResize(g_positions, MAX_POSITIONS);
    g_positionCount = 0;
@@ -702,11 +715,12 @@ int OnInit()
    g_pendingRLCount = 0;
    ArrayResize(g_markovQueue, 0);
    g_markovQueueCount = 0;
-   
+   ArrayResize(g_tpModifyFailures, 0);
+
    //--- Initialize Q-table (all zeros - neutral start)
    ArrayInitialize(g_qTable, 0);
    ArrayInitialize(g_qVisits, 0);
-   
+
    //--- Initialize Markov transitions (uniform prior)
    for(int i = 0; i < MARKOV_STATES; i++)
    {
@@ -716,14 +730,14 @@ int OnInit()
          g_markovCounts[i][j] = 1; // Laplace smoothing
       }
    }
-   
+
    //--- Initialize AI response
    g_aiResponse.marketBias = "neutral";
    g_aiResponse.confidenceScore = 50.0;
    g_aiResponse.riskAlert = false;
    g_aiResponse.lastUpdate = 0;
    g_aiResponse.consecutiveErrors = 0;
-   
+
    //--- Load persisted learning data (only if features enabled)
    if(INPUT_ENABLE_FINGERPRINT)
       LoadFingerprintData();
@@ -758,19 +772,19 @@ int OnInit()
       Print("WARNING: Combination-adaptive enabled while ML disabled. Using training-data only mode.");
 
    LoadRuntimeState();
-   
+
    //--- Initialize daily stats
    g_startingBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_peakEquity      = AccountInfoDouble(ACCOUNT_EQUITY);
    ResetDailyCounters();
-   
+
    //--- Sync existing positions - FIXED: Reset count first
    g_positionCount = 0;
    SyncExistingPositions();
-   
+
    //--- Calculate initial average ATR
    CalculateAverageATR();
-   
+
    Print("=== EA V7.2 HumanBrain Complete - INITIALIZED (13 BUGS FIXED) ===");
    Print("Symbol: ", _Symbol, " | Magic: ", INPUT_MAGIC_NUMBER);
    Print("Risk: ", g_risk.riskPercent, "% | MaxTrades: ", g_adaptive.maxPositions);
@@ -789,8 +803,20 @@ int OnInit()
          " 50pct=", (INPUT_ENABLE_50PCT_CLOSE?"ON":"OFF"),
          " TrailSL=", (INPUT_ENABLE_TRAILING?"ON":"OFF"),
          " TrailTP=", (INPUT_ENABLE_TRAILING_TP?"ON":"OFF"));
-   
+
    return INIT_SUCCEEDED;
+}
+//+------------------------------------------------------------------+
+bool ValidateIndicatorHandle(int handle, const string name, bool required)
+{
+   if(!required)
+      return true;
+
+   if(handle != INVALID_HANDLE)
+      return true;
+
+   Print("ERROR: Required indicator handle invalid: ", name);
+   return false;
 }
 //+------------------------------------------------------------------+
 bool InitializeIndicators()
@@ -807,36 +833,57 @@ bool InitializeIndicators()
    g_hADX_M1      = iADX(_Symbol, PERIOD_M1, INPUT_ADX_PERIOD);
    g_hBB_M1       = iBands(_Symbol, PERIOD_M1, INPUT_BB_PERIOD, 0, INPUT_BB_DEVIATION, PRICE_CLOSE);
    g_hVolume_M1   = iVolumes(_Symbol, PERIOD_M1, VOLUME_TICK);
-   
+
    // M5 indicators
    g_hEmaFast_M5  = iMA(_Symbol, PERIOD_M5, INPUT_EMA_FAST, 0, MODE_EMA, PRICE_CLOSE);
    g_hEmaSlow_M5  = iMA(_Symbol, PERIOD_M5, INPUT_EMA_SLOW, 0, MODE_EMA, PRICE_CLOSE);
    g_hATR_M5      = iATR(_Symbol, PERIOD_M5, INPUT_ATR_PERIOD);
-   
+
    // H1 indicators
    g_hEmaFast_H1  = iMA(_Symbol, PERIOD_H1, INPUT_EMA_FAST, 0, MODE_EMA, PRICE_CLOSE);
    g_hEmaSlow_H1  = iMA(_Symbol, PERIOD_H1, INPUT_EMA_SLOW, 0, MODE_EMA, PRICE_CLOSE);
    g_hATR_H1      = iATR(_Symbol, PERIOD_H1, INPUT_ATR_PERIOD);
    g_hADX_H1      = iADX(_Symbol, PERIOD_H1, INPUT_ADX_PERIOD);
-   
+
    // H4 indicators
    g_hEmaFast_H4  = iMA(_Symbol, PERIOD_H4, INPUT_EMA_FAST, 0, MODE_EMA, PRICE_CLOSE);
    g_hEmaSlow_H4  = iMA(_Symbol, PERIOD_H4, INPUT_EMA_SLOW, 0, MODE_EMA, PRICE_CLOSE);
-   
+
    // D1 indicators
    g_hEmaFast_D1  = iMA(_Symbol, PERIOD_D1, INPUT_EMA_FAST, 0, MODE_EMA, PRICE_CLOSE);
    g_hEmaSlow_D1  = iMA(_Symbol, PERIOD_D1, INPUT_EMA_SLOW, 0, MODE_EMA, PRICE_CLOSE);
-   
-   // Validate handles
-   if(g_hEmaFast_M1 == INVALID_HANDLE || g_hEmaSlow_M1 == INVALID_HANDLE ||
-      g_hRSI_M1 == INVALID_HANDLE || g_hStoch_M1 == INVALID_HANDLE ||
-      g_hMACD_M1 == INVALID_HANDLE || g_hATR_M1 == INVALID_HANDLE ||
-      g_hADX_M1 == INVALID_HANDLE || g_hBB_M1 == INVALID_HANDLE)
-   {
-      return false;
-   }
-   
-   return true;
+
+   bool allValid = true;
+
+   // Core M1 indicators (always required)
+   allValid &= ValidateIndicatorHandle(g_hEmaFast_M1,  "M1 EMA Fast", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaSlow_M1,  "M1 EMA Slow", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaTrend_M1, "M1 EMA Trend", true);
+   allValid &= ValidateIndicatorHandle(g_hRSI_M1,      "M1 RSI", true);
+   allValid &= ValidateIndicatorHandle(g_hStoch_M1,    "M1 Stochastic", true);
+   allValid &= ValidateIndicatorHandle(g_hMACD_M1,     "M1 MACD", true);
+   allValid &= ValidateIndicatorHandle(g_hWPR_M1,      "M1 Williams %R", true);
+   allValid &= ValidateIndicatorHandle(g_hATR_M1,      "M1 ATR", true);
+   allValid &= ValidateIndicatorHandle(g_hADX_M1,      "M1 ADX", true);
+   allValid &= ValidateIndicatorHandle(g_hBB_M1,       "M1 Bollinger Bands", true);
+   allValid &= ValidateIndicatorHandle(g_hVolume_M1,   "M1 Volume", true);
+
+   // M5/H1/H4/D1 handles used by MTF, regime, and SL/TP logic
+   allValid &= ValidateIndicatorHandle(g_hEmaFast_M5,  "M5 EMA Fast", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaSlow_M5,  "M5 EMA Slow", true);
+   allValid &= ValidateIndicatorHandle(g_hATR_M5,      "M5 ATR", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaFast_H1,  "H1 EMA Fast", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaSlow_H1,  "H1 EMA Slow", true);
+   allValid &= ValidateIndicatorHandle(g_hATR_H1,      "H1 ATR", true);
+   allValid &= ValidateIndicatorHandle(g_hADX_H1,      "H1 ADX", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaFast_H4,  "H4 EMA Fast", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaSlow_H4,  "H4 EMA Slow", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaFast_D1,  "D1 EMA Fast", true);
+   allValid &= ValidateIndicatorHandle(g_hEmaSlow_D1,  "D1 EMA Slow", true);
+
+   // Optional feature-gated validations can be added here for ML/RL extras.
+
+   return allValid;
 }
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
@@ -854,10 +901,10 @@ void OnDeinit(const int reason)
       SaveAdaptiveParams();
 
    SaveRuntimeState();
-   
+
    //--- Release indicator handles
    ReleaseIndicators();
-   
+
    //--- Remove chart objects
    ObjectsDeleteAll(0, "V7_");
 
@@ -1038,7 +1085,7 @@ void UpdateEAState()
    int totalCount = CountAllOurPositions();
    double threat = CalculateMarketThreat();
    double drawdownPct = CalculateDrawdownPercent();
-   
+
    // Determine state based on conditions
    if(threat > 80 || drawdownPct > 10.0)
    {
@@ -1072,13 +1119,13 @@ void HandleExtremeRisk()
    static datetime lastCloseAttempt = 0;
    if(TimeCurrent() - lastCloseAttempt < 5) // One close per 5 seconds
       return;
-      
+
    lastCloseAttempt = TimeCurrent();
-   
+
    // Find oldest position
    ulong oldestTicket = 0;
    datetime oldestTime = TimeCurrent();
-   
+
    int total = PositionsTotal();
    for(int i = 0; i < total; i++)
    {
@@ -1087,7 +1134,7 @@ void HandleExtremeRisk()
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
       if(PositionGetInteger(POSITION_MAGIC) != INPUT_MAGIC_NUMBER) continue;
-      
+
       datetime posTime = (datetime)PositionGetInteger(POSITION_TIME);
       if(posTime < oldestTime)
       {
@@ -1095,13 +1142,13 @@ void HandleExtremeRisk()
          oldestTicket = ticket;
       }
    }
-   
+
    if(oldestTicket > 0)
    {
       if(g_trade.PositionClose(oldestTicket))
          Print("EXTREME RISK: Closed oldest position ", oldestTicket);
    }
-   
+
    // Check if threat has reduced
    double threat = CalculateMarketThreat();
    if(threat < 70 && CountAllOurPositions() <= 1)
@@ -1215,14 +1262,14 @@ int CountMainPositionsFromBroker()
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-      
+
       string comment = PositionGetString(POSITION_COMMENT);
       if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
       if(StringFind(comment, COMMENT_AVG_PREFIX)      >= 0) continue;
       if(StringFind(comment, COMMENT_HEDGE_PREFIX)    >= 0) continue;
       if(StringFind(comment, COMMENT_GRID_PREFIX)     >= 0) continue;
       if(StringFind(comment, COMMENT_50PCT_PREFIX)    >= 0) continue;
-      
+
       mainCount++;
    }
    return mainCount;
@@ -1265,7 +1312,7 @@ int CountRecoveryPositions()
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-      
+
       string comment = PositionGetString(POSITION_COMMENT);
       if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
          StringFind(comment, COMMENT_AVG_PREFIX)      >= 0)
@@ -1290,19 +1337,19 @@ int Count50PctReducedPositions()
 double CalculateMarketThreat()
 {
    double threat = 0;
-   
+
    //--- FACTOR 1: Position Loss Count (0-75 points, 15 per losing position)
    int losingCount = 0;
    int totalPositions = 0;
    double totalUnrealizedLoss = 0;
-   
+
    int total = PositionsTotal();
    for(int p = 0; p < total; p++)
    {
       ulong ticket = PositionGetTicket(p);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-      
+
       totalPositions++;
       double profit = PositionGetDouble(POSITION_PROFIT);
       if(profit < 0)
@@ -1313,12 +1360,12 @@ double CalculateMarketThreat()
    }
    // V7.2 FIX (BUG 7): Reduced from 15 pts/position (max 75) to 8 pts (max 40)
    threat += MathMin(losingCount * 8.0, 40.0);
-   
+
    // V7.2 FIX (BUG 8): Only apply majority check with 3+ positions (1 losing out of 1 = 100% but meaningless)
    //--- FACTOR 2: Majority Losing (+25 if >50% positions losing, only with 3+ positions)
    if(totalPositions >= 3 && (double)losingCount / totalPositions > 0.5)
       threat += 25.0;
-   
+
    //--- FACTOR 3: Account Drawdown (graduated: 0-45 points)
    double drawdownPct = CalculateDrawdownPercent();
    if(drawdownPct >= 10.0)     threat += 45.0;
@@ -1326,20 +1373,20 @@ double CalculateMarketThreat()
    else if(drawdownPct >= 4.0) threat += 15.0;
    else if(drawdownPct >= 2.0) threat += 5.0;
    else if(drawdownPct >= 1.0) threat += 3.0;
-   
+
    //--- FACTOR 4: Consecutive Loss Streak (non-linear: 0-25 points)
    if(g_consecutiveLosses >= 5)      threat += 20.0 + (g_consecutiveLosses - 5) * 2;
    else if(g_consecutiveLosses >= 4) threat += 15.0;
    else if(g_consecutiveLosses >= 3) threat += 8.0;
    else if(g_consecutiveLosses >= 2) threat += 3.0;
-   
+
    //--- FACTOR 5: Volatility Spike (ATR ratio: 0-30 points)
    double volRatio = CalculateVolatilityRatio();
    if(volRatio >= 2.0)      threat += 30.0;
    else if(volRatio >= 1.6) threat += 20.0;
    else if(volRatio >= 1.4) threat += 12.0;
    else if(volRatio >= 1.2) threat += 5.0;
-   
+
    //--- FACTOR 6: News Event Proximity (0-25 points)
    // Simplified: Use time?based heuristic for major news windows
    MqlDateTime dt;
@@ -1350,7 +1397,7 @@ double CalculateMarketThreat()
    // ECB/Fed typical announcement times
    if(dt.hour >= 12 && dt.hour <= 14 && (dt.day_of_week == 3 || dt.day_of_week == 4))
       threat += 8.0;
-   
+
    //--- FACTOR 7: Calendar Liquidity Effects (0-15 points)
    // Rationale:
    // - Removed Sunday penalty because many brokers have shortened/reopened sessions with unstable timestamps,
@@ -1362,25 +1409,25 @@ double CalculateMarketThreat()
 
    if(INPUT_ENABLE_END_OF_MONTH_PENALTY && dt.day >= INPUT_END_OF_MONTH_START_DAY)
       threat += INPUT_END_OF_MONTH_PENALTY;
-   
+
    //--- FACTOR 8: Recovery Order Presence (capped to avoid outsized impact)
    int recoveryCount = CountRecoveryPositions();
    if(recoveryCount > 0)
       threat += MathMin(recoveryCount * 4.0 + 2.0, 15.0);
-   
+
    //--- FACTOR 9: Win Streak Complacency
    if(g_consecutiveWins >= 5)
       threat += 5.0;  // Complacency warning
    else if(g_consecutiveWins >= 2)
       threat -= 2.0;  // Slight confidence boost
-   
+
    //--- Apply adaptive multiplier
    threat *= g_adaptive.threatMultiplier;
-   
+
    //--- Clamp to 0-100
    if(threat < 0) threat = 0;
    if(threat > 100) threat = 100;
-   
+
    return threat;
 }
 //+------------------------------------------------------------------+
@@ -1405,10 +1452,10 @@ double CalculateVolatilityRatio()
    double atr[];
    if(CopyBuffer(g_hATR_M1, 0, 0, 1, atr) < 1 || atr[0] <= 0)
       return 1.0;
-   
+
    if(g_averageATR <= 0)
       return 1.0;
-   
+
    return atr[0] / g_averageATR;
 }
 //+------------------------------------------------------------------+
@@ -1418,51 +1465,51 @@ void CalculateAverageATR()
    ArraySetAsSeries(atr, true);
    if(CopyBuffer(g_hATR_M5, 0, 0, 100, atr) < 50)
       return;
-   
+
    double sum = 0;
    for(int i = 0; i < 50; i++)
       sum += atr[i];
-   
+
    g_averageATR = sum / 50.0;
 }
 //+------------------------------------------------------------------+
 //| SECTION 12: 6-COMPONENT CONFIDENCE CALCULATION (Part 6)          |
 //+------------------------------------------------------------------+
-double CalculateConfidence(const SignalResult &signals, int direction, int mtfScore, 
+double CalculateConfidence(const SignalResult &signals, int direction, int mtfScore,
                             const string &fpId, const string &combination, double threat)
 {
    //--- BASE CONFIDENCE: 50% (neutral starting point)
    double conf = 50.0;
-   
+
    //--- COMPONENT 1: TREND STRENGTH (0 to +35)
    double trendComponent = CalculateTrendStrengthComponent(direction);
    conf += trendComponent;
-   
+
    //--- COMPONENT 2: MOMENTUM CONFIRMATION (0 to +21)
    double momentumComponent = CalculateMomentumComponent(direction);
    conf += momentumComponent;
-   
+
    //--- COMPONENT 3: SUPPORT/RESISTANCE LEVELS (-8 to +8)
    double srComponent = CalculateSRComponent(direction);
    conf += srComponent;
-   
+
    //--- COMPONENT 4: VOLATILITY ADJUSTMENT (-10 to 0) - FIXED: Reduced penalty
    double volComponent = CalculateVolatilityComponent();
    conf += volComponent * 0.5; // FIXED: Halved impact
-   
+
    //--- COMPONENT 5: TIME/SESSION ANALYSIS (0 to +13)
    double timeComponent = CalculateTimeComponent();
    conf += timeComponent;
-   
+
    //--- COMPONENT 6: DIVERGENCE/PATTERN DETECTION (0 to +14)
    double divergenceComponent = CalculateDivergenceComponent(direction);
    conf += divergenceComponent;
-   
+
    //--- FIXED: Add signal count bonus (+5 per signal above minimum)
    int extraSignals = signals.totalSignals - INPUT_MIN_SIGNALS;
    if(extraSignals > 0)
       conf += extraSignals * 5.0;
-   
+
    //--- Clamp raw confidence
    if(conf < 0) conf = 0;
    if(conf > 100) conf = 100;
@@ -1473,7 +1520,7 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
    bool comboApplied = false;
    bool comboNonNeutral = false;
    double appliedComboMultiplier = 1.0;
-   
+
    //--- Apply ML multiplier from signal combination stats (only if enabled)
    if(INPUT_ENABLE_ML && g_trainingDataCount >= INPUT_MIN_TRADES_FOR_ML)
    {
@@ -1484,32 +1531,32 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
       mlNonNeutral = (MathAbs(mlMultiplier - 1.0) > 0.00001);
       conf *= mlMultiplier;
    }
-   
+
    //--- Apply fingerprint boost (only if enabled)
    if(INPUT_ENABLE_FINGERPRINT)
    {
       double fpBoost = GetFingerprintBoost(fpId, combination);
       conf += fpBoost; // Add boost (not multiply)
    }
-   
+
    //--- Apply AI adjustment (only if enabled)
    if(INPUT_AI_MODE != AI_OFF && g_aiResponse.lastUpdate > 0)
    {
       double aiAdjustment = (g_aiResponse.confidenceScore - 50.0) * INPUT_AI_WEIGHT;
       conf += aiAdjustment;
-      
+
       // Risk alert penalty
       if(g_aiResponse.riskAlert)
          conf -= 10.0;
    }
-   
+
    //--- Apply Markov streak adjustment (only if enabled)
    if(INPUT_ENABLE_MARKOV)
    {
       double markovAdj = GetMarkovConfidenceAdjustment();
       conf += markovAdj;
    }
-   
+
    //--- Priority 1: High ADX risk mode (optional)
    if(INPUT_ENABLE_HIGH_ADX_RISK_MODE)
    {
@@ -1560,11 +1607,11 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
    //--- FIXED: Reduced threat?based penalty
    if(threat > 60)  // FIXED: Changed from 40
       conf -= (threat - 60) * 0.2; // FIXED: Reduced from 0.4
-   
+
    //--- Final clamp
    if(conf < 0) conf = 0;
    if(conf > 100) conf = 100;
-   
+
    return conf;
 }
 //+------------------------------------------------------------------+
@@ -1575,16 +1622,16 @@ double CalculateTrendStrengthComponent(int direction)
    double component = 0;
    double emaFast[], emaSlow[], emaTrend[];
    double adx[], plusDI[], minusDI[];
-   
+
    if(CopyBuffer(g_hEmaFast_M1, 0, 0, 10, emaFast) < 10) return 5.0; // FIXED: Default positive
    if(CopyBuffer(g_hEmaSlow_M1, 0, 0, 10, emaSlow) < 10) return 5.0;
    if(CopyBuffer(g_hEmaTrend_M1, 0, 0, 5, emaTrend) < 5) return 5.0;
    if(CopyBuffer(g_hADX_M1, 0, 0, 3, adx) < 3) return 5.0;
    if(CopyBuffer(g_hADX_M1, 1, 0, 3, plusDI) < 3) return 5.0;
    if(CopyBuffer(g_hADX_M1, 2, 0, 3, minusDI) < 3) return 5.0;
-   
+
    double currentPrice = iClose(_Symbol, PERIOD_M1, 1);
-   
+
    //--- EMA Alignment (+0 to +15)
    if(direction == 1) // BUY
    {
@@ -1604,7 +1651,7 @@ double CalculateTrendStrengthComponent(int direction)
       else if(emaFast[1] < emaSlow[1])
          component += 5.0;
    }
-   
+
    //--- EMA Slope (+0 to +8), normalized by ATR to stay symbol-agnostic.
    // Convert 4-bar EMA change into per-bar slope, then compare against ATR fractions.
    double atrSlope[];
@@ -1622,14 +1669,14 @@ double CalculateTrendStrengthComponent(int direction)
    else if(direction == -1 && normalizedSlope < -EMA_SLOPE_STRONG_THRESHOLD) component += 8.0;
    else if(direction == -1 && normalizedSlope < -EMA_SLOPE_WEAK_THRESHOLD) component += 4.0;
    else if(direction == -1 && normalizedSlope < 0) component += 2.0;
-   
+
    //--- ADX Confirmation (+0 to +12) - FIXED: Reduced penalties
    if(adx[1] >= 40) component += 12.0;
    else if(adx[1] >= 25) component += 8.0;
    else if(adx[1] >= 20) component += 4.0; // FIXED: Added points
    else if(adx[1] >= 15) component += 2.0; // FIXED: Added points
    // FIXED: Removed negative penalty for low ADX
-   
+
    return MathMin(component, 35.0); // Cap at +35
 }
 //+------------------------------------------------------------------+
@@ -1637,13 +1684,13 @@ double CalculateMomentumComponent(int direction)
 {
    double component = 0;
    double rsi[], macdMain[], macdSignal[], stochK[], stochD[];
-   
+
    if(CopyBuffer(g_hRSI_M1, 0, 0, 5, rsi) < 5) return 5.0; // FIXED: Default positive
    if(CopyBuffer(g_hMACD_M1, 0, 0, 5, macdMain) < 5) return 5.0;
    if(CopyBuffer(g_hMACD_M1, 1, 0, 5, macdSignal) < 5) return 5.0;
    if(CopyBuffer(g_hStoch_M1, 0, 0, 3, stochK) < 3) return 5.0;
    if(CopyBuffer(g_hStoch_M1, 1, 0, 3, stochD) < 3) return 5.0;
-   
+
    //--- RSI Analysis (-4 to +6) FIXED: Reduced penalties
    if(direction == 1) // BUY
    {
@@ -1661,7 +1708,7 @@ double CalculateMomentumComponent(int direction)
       else if(rsi[1] < 30) component -= 4.0;  // FIXED: Reduced
       else if(rsi[1] < 40) component -= 1.0;  // FIXED: Reduced
    }
-   
+
    //--- MACD Analysis (-5 to +10) FIXED: Reduced penalties
    if(direction == 1)
    {
@@ -1675,7 +1722,7 @@ double CalculateMomentumComponent(int direction)
       else if(macdMain[1] < macdSignal[1]) component += 5.0;
       else if(macdMain[1] > macdSignal[1] && macdMain[1] > 0) component -= 5.0;
    }
-   
+
    //--- Histogram acceleration (+0 to +5) - FIXED: Removed penalty
    double histNow = macdMain[1] - macdSignal[1];
    double histPrev = macdMain[2] - macdSignal[2];
@@ -1683,20 +1730,20 @@ double CalculateMomentumComponent(int direction)
       (direction == -1 && histNow < histPrev))
       component += 5.0;
    // FIXED: Removed else penalty
-   
+
    //--- Stochastic (-3 to +6) FIXED: Reduced penalties
    if(direction == 1 && stochK[1] < 20) component += 6.0;
    else if(direction == 1 && stochK[1] > 80) component -= 3.0; // FIXED: Reduced from -6
    else if(direction == -1 && stochK[1] > 80) component += 6.0;
    else if(direction == -1 && stochK[1] < 20) component -= 3.0;
-   
+
    return MathMax(MathMin(component, 21.0), -5.0); // FIXED: Limit downside
 }
 //+------------------------------------------------------------------+
 double CalculateSRComponent(int direction)
 {
    double component = 0;
-   
+
    // Calculate recent high/low
    double highestHigh = iHigh(_Symbol, PERIOD_M1, 2);
    double lowestLow = iLow(_Symbol, PERIOD_M1, 2);
@@ -1707,15 +1754,15 @@ double CalculateSRComponent(int direction)
       if(h > highestHigh) highestHigh = h;
       if(l < lowestLow) lowestLow = l;
    }
-   
+
    double currentPrice = iClose(_Symbol, PERIOD_M1, 1);
    double range = highestHigh - lowestLow;
    if(range <= 0) return 0;
-   
+
    double distToResistance = highestHigh - currentPrice;
    double distToSupport = currentPrice - lowestLow;
    double nearThreshold = range * 0.1; // Within 10% of level
-   
+
    if(direction == 1) // BUY
    {
       if(distToSupport < nearThreshold)
@@ -1730,7 +1777,7 @@ double CalculateSRComponent(int direction)
       else if(distToSupport < nearThreshold)
          component -= 4.0; // FIXED: Reduced from -8
    }
-   
+
    return component;
 }
 //+------------------------------------------------------------------+
@@ -1738,15 +1785,15 @@ double CalculateVolatilityComponent()
 {
    double component = 0;
    double volRatio = CalculateVolatilityRatio();
-   
+
    // FIXED: Reduced all penalties
    if(volRatio < 0.7) component -= 4.0; // FIXED: Reduced from -8
    else if(volRatio >= 0.7 && volRatio < 1.2) component += 2.0; // FIXED: Added bonus
    else if(volRatio >= 1.2 && volRatio < 1.5) component -= 1.0; // FIXED: Reduced from -3
    else if(volRatio >= 1.5) component -= 5.0; // FIXED: Reduced from -10
-   
+
    // (BB width check removed â€“ was causing too many rejections)
-   
+
    return MathMax(component, -5.0); // FIXED: Limit downside
 }
 //+------------------------------------------------------------------+
@@ -1754,39 +1801,39 @@ double CalculateTimeComponent()
 {
    double component = 0;
    int session = GetCurrentSession();
-   
+
    // Session bonus
    if(session == 1) component += 8.0;      // London
    else if(session == 2) component += 5.0; // NY
    else if(session == 0) component += 3.0; // Asian - FIXED: Increased from 2
    else component += 1.0; // FIXED: Added default instead of 0
-   
+
    // Day of week - FIXED: Reduced penalties
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
-   
+
    if(dt.day_of_week == 5)      component -= 1.0; // FIXED: Reduced from -3
    else if(dt.day_of_week >= 1 && dt.day_of_week <= 4)
       component += 2.0; // Mon-Thu
-   
+
    // (micro?timing penalties removed)
-   
+
    return MathMin(component, 13.0);
 }
 //+------------------------------------------------------------------+
 double CalculateDivergenceComponent(int direction)
 {
    double component = 0;
-   
+
    //--- RSI Divergence detection (simplified)
    double rsi[];
    if(CopyBuffer(g_hRSI_M1, 0, 0, 20, rsi) < 20) return 0;
-   
+
    double high1 = iHigh(_Symbol, PERIOD_M1, 1);
    double high10 = iHigh(_Symbol, PERIOD_M1, 10);
    double low1 = iLow(_Symbol, PERIOD_M1, 1);
    double low10 = iLow(_Symbol, PERIOD_M1, 10);
-   
+
    // Bearish divergence: price higher high, RSI lower high
    if(high1 > high10 && rsi[1] < rsi[10])
    {
@@ -1799,18 +1846,18 @@ double CalculateDivergenceComponent(int direction)
       if(direction == 1) component += 8.0; // Good for buys
       // FIXED: Removed penalty for sells
    }
-   
+
    //--- Pin bar pattern detection
    double open1 = iOpen(_Symbol, PERIOD_M1, 1);
    double close1 = iClose(_Symbol, PERIOD_M1, 1);
    double range1 = high1 - low1;
    double body1 = MathAbs(close1 - open1);
-   
+
    if(range1 > 0 && body1 < range1 * 0.3) // Pin bar (small body, long wicks)
    {
       double upperWick = high1 - MathMax(open1, close1);
       double lowerWick = MathMin(open1, close1) - low1;
-      
+
       // Bullish pin bar (long lower wick)
       if(lowerWick > upperWick * 2 && direction == 1)
          component += 6.0;
@@ -1818,7 +1865,7 @@ double CalculateDivergenceComponent(int direction)
       else if(upperWick > lowerWick * 2 && direction == -1)
          component += 6.0;
    }
-   
+
    return MathMin(component, 14.0);
 }
 //+------------------------------------------------------------------+
@@ -1827,7 +1874,7 @@ double CalculateDivergenceComponent(int direction)
 bool DetectSignals(SignalResult &signals)
 {
    ZeroMemory(signals);
-   
+
    //--- Get indicator values
    double emaFast[], emaSlow[];
    double rsi[];
@@ -1837,7 +1884,7 @@ bool DetectSignals(SignalResult &signals)
    double atr[];
    double bbUpper[], bbLower[], bbMiddle[];
    double volume[];
-   
+
    if(CopyBuffer(g_hEmaFast_M1, 0, 0, 5, emaFast) < 5) return false;
    if(CopyBuffer(g_hEmaSlow_M1, 0, 0, 5, emaSlow) < 5) return false;
    if(CopyBuffer(g_hRSI_M1, 0, 0, 5, rsi) < 5) return false;
@@ -1851,11 +1898,11 @@ bool DetectSignals(SignalResult &signals)
    if(CopyBuffer(g_hBB_M1, 2, 0, 3, bbLower) < 3) return false;
    if(CopyBuffer(g_hBB_M1, 0, 0, 3, bbMiddle) < 3) return false;
    if(CopyBuffer(g_hVolume_M1, 0, 0, 5, volume) < 5) return false;
-   
+
    int b = 1;   // completed bar index
    int b2 = 2;  // previous bar
    int b3 = 3;  // 2?bars?ago (used for look?back crossovers)
-   
+
    //--- Get OHLC of required bars
    double open1 = iOpen(_Symbol, PERIOD_M1, 1);
    double close1 = iClose(_Symbol, PERIOD_M1, 1);
@@ -1865,7 +1912,7 @@ bool DetectSignals(SignalResult &signals)
    double close2 = iClose(_Symbol, PERIOD_M1, 2);
    double high2 = iHigh(_Symbol, PERIOD_M1, 2);
    double low2 = iLow(_Symbol, PERIOD_M1, 2);
-   
+
    //--- Signal 1: EMA Crossover (current or last 2 bars)
    if(emaFast[b] > emaSlow[b] && emaFast[b2] <= emaSlow[b2])
    {
@@ -1893,7 +1940,7 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): REMOVED fallback EMA alignment â€“ it used to fire every bar.
-   
+
    //--- Signal 2: RSI Oversold/Overbought (tightened zones)
    if(rsi[b] < 35) // FIXED: Changed from 30
    {
@@ -1908,7 +1955,7 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): Removed mid?range RSI signals.
-   
+
    //--- Signal 3: Stochastic Crossover in OS/OB zones (tightened)
    if(stochK[b] < 25 && stochK[b] > stochD[b]) // FIXED: Changed from 20
    {
@@ -1923,11 +1970,11 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): Removed mid?range stochastic signals.
-   
+
    //--- Signal 4: Engulfing Pattern (plus strong candle)
    bool bullEngulfing = (close2 < open2) && (close1 > open1) && (close1 > open2) && (open1 < close2);
    bool bearEngulfing = (close2 > open2) && (close1 < open1) && (close1 < open2) && (open1 > close2);
-   
+
    if(bullEngulfing)
    {
       signals.engulfingSignal = true;
@@ -1953,7 +2000,7 @@ bool DetectSignals(SignalResult &signals)
       signals.bearVotes++;
       signals.totalSignals++;
    }
-   
+
    //--- Signal 5: Breakout (excluding the signal bar itself)
    double highestHigh = iHigh(_Symbol, PERIOD_M1, 2);
    double lowestLow   = iLow(_Symbol, PERIOD_M1, 2);
@@ -1964,7 +2011,7 @@ bool DetectSignals(SignalResult &signals)
       if(h > highestHigh) highestHigh = h;
       if(l < lowestLow)   lowestLow = l;
    }
-   
+
    if(close1 > highestHigh)
    {
       signals.breakoutSignal = true;
@@ -1990,7 +2037,7 @@ bool DetectSignals(SignalResult &signals)
       signals.bearVotes++;
       signals.totalSignals++;
    }
-   
+
    //--- Signal 6: Volume Spike (threshold lowered)
    double avgVolume = 0;
    double volArr[];
@@ -1999,7 +2046,7 @@ bool DetectSignals(SignalResult &signals)
       for(int v = 0; v < INPUT_VOLUME_AVG_PERIOD; v++)
          avgVolume += volArr[v];
       avgVolume /= INPUT_VOLUME_AVG_PERIOD;
-      
+
       if(volume[b] > avgVolume * 2.0) // FIXED: Changed from 2.0
       {
          signals.volumeSignal = true;
@@ -2016,7 +2063,7 @@ bool DetectSignals(SignalResult &signals)
          // V7.2 FIX (BUG 11): REMOVED neutral volume signal (no direction ? no vote)
       }
    }
-   
+
    //--- Signal 7: MACD Crossover (no fallback)
    if(macdMain[b] > macdSignal[b] && macdMain[b2] <= macdSignal[b2])
    {
@@ -2031,7 +2078,7 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): Removed fallback alignment.
-   
+
    //--- Signal 8: Williams %R (tightened zones)
    if(wpr[b] < -75) // FIXED: Changed from -80
    {
@@ -2046,17 +2093,17 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): Removed mid?range WPR signals.
-   
+
    //--- Generate combination string
    signals.combinationString = GenerateSignalCombinationString(signals);
-   
+
    return true;
 }
 //+------------------------------------------------------------------+
 string GenerateSignalCombinationString(const SignalResult &signals)
 {
    string combo = "";
-   
+
    if(signals.emaSignal)      combo += "EMA_";
    if(signals.rsiSignal)      combo += "RSI_";
    if(signals.stochSignal)    combo += "STOCH_";
@@ -2065,10 +2112,10 @@ string GenerateSignalCombinationString(const SignalResult &signals)
    if(signals.volumeSignal)   combo += "VOL_";
    if(signals.macdSignal)    combo += "MACD_";
    if(signals.wprSignal)     combo += "WPR_";
-   
+
    if(StringLen(combo) > 0)
       combo = StringSubstr(combo, 0, StringLen(combo) - 1); // Remove trailing underscore
-   
+
    return combo;
 }
 //+------------------------------------------------------------------+
@@ -2077,7 +2124,7 @@ string GenerateSignalCombinationString(const SignalResult &signals)
 int CalculateMTFAlignment(int direction)
 {
    int score = 0;
-   
+
    //--- M5 (weight: 1)
    double m5Fast[], m5Slow[];
    if(CopyBuffer(g_hEmaFast_M5, 0, 0, 1, m5Fast) == 1 &&
@@ -2087,7 +2134,7 @@ int CalculateMTFAlignment(int direction)
          (direction == -1 && m5Fast[0] < m5Slow[0]))
          score += 1;
    }
-   
+
    //--- H1 (weight: 2)
    double h1Fast[], h1Slow[];
    if(CopyBuffer(g_hEmaFast_H1, 0, 0, 1, h1Fast) == 1 &&
@@ -2097,7 +2144,7 @@ int CalculateMTFAlignment(int direction)
          (direction == -1 && h1Fast[0] < h1Slow[0]))
          score += 2;
    }
-   
+
    //--- H4 (weight: 3)
    double h4Fast[], h4Slow[];
    if(CopyBuffer(g_hEmaFast_H4, 0, 0, 1, h4Fast) == 1 &&
@@ -2107,7 +2154,7 @@ int CalculateMTFAlignment(int direction)
          (direction == -1 && h4Fast[0] < h4Slow[0]))
          score += 3;
    }
-   
+
    //--- D1 (weight: 4)
    double d1Fast[], d1Slow[];
    if(CopyBuffer(g_hEmaFast_D1, 0, 0, 1, d1Fast) == 1 &&
@@ -2117,7 +2164,7 @@ int CalculateMTFAlignment(int direction)
          (direction == -1 && d1Fast[0] < d1Slow[0]))
          score += 4;
    }
-   
+
    return score;
 }
 //+------------------------------------------------------------------+
@@ -2170,7 +2217,7 @@ int GetTimeframeDirectionConsensus(int &agreeingFrames)
 //+------------------------------------------------------------------+
 //| SECTION 15: Q-LEARNING SYSTEM (Part 4 of Strategy)               |
 //+------------------------------------------------------------------+
-int DetermineRLState(double confidence, double threat, int positions, 
+int DetermineRLState(double confidence, double threat, int positions,
                      double drawdown, bool winStreak)
 {
    // State encoding: 3x3x3x2x2 = 108 states
@@ -2179,25 +2226,25 @@ int DetermineRLState(double confidence, double threat, int positions,
    // Positions: FEW(0), SEVERAL(1), MANY(2)
    // Drawdown: HEALTHY(0), STRESSED(1)
    // Performance: LOSING(0), WINNING(1)
-   
+
    int confBucket = 0;
    if(confidence >= 75) confBucket = 2;      // HIGH
    else if(confidence >= 55) confBucket = 1; // MEDIUM
    // else LOW = 0
-   
+
    int threatBucket = 0;
    if(threat > 70) threatBucket = 2;      // DANGEROUS
    else if(threat > 40) threatBucket = 1; // MODERATE
    // else SAFE = 0
-   
+
    int posBucket = 0;
    if(positions >= 4) posBucket = 2;      // MANY
    else if(positions >= 2) posBucket = 1; // SEVERAL
    // else FEW = 0
-   
+
    int ddBucket = (drawdown >= 2.0) ? 1 : 0;
    int perfBucket = winStreak ? 1 : 0;
-   
+
    // Calculate state index
    int state = confBucket * 36 + threatBucket * 12 + posBucket * 4 + ddBucket * 2 + perfBucket;
    return MathMin(state, Q_TABLE_STATES - 1);
@@ -2207,10 +2254,10 @@ ENUM_RL_ACTION GetRLAction(int state)
 {
    if(!INPUT_ENABLE_RL || g_rlTradesCompleted < INPUT_RL_MIN_TRADES)
       return RL_FULL_SIZE; // Default before learning
-   
+
    // Epsilon?greedy: explore with probability epsilon
    double rand = (double)MathRand() / 32767.0;
-   
+
    if(rand < INPUT_RL_EPSILON)
    {
       // Explore: random action
@@ -2222,7 +2269,7 @@ ENUM_RL_ACTION GetRLAction(int state)
       // Exploit: best known action
       double maxQ = g_qTable[state][0];
       int bestAction = 0;
-      
+
       for(int a = 1; a < Q_TABLE_ACTIONS; a++)
       {
          if(g_qTable[state][a] > maxQ)
@@ -2305,7 +2352,7 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong positionId)
       lot = PositionGetDouble(POSITION_VOLUME);
       tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    }
-   
+
    g_pendingRL[g_pendingRLCount].state = state;
    g_pendingRL[g_pendingRLCount].action = action;
    g_pendingRL[g_pendingRLCount].timestamp = TimeCurrent();
@@ -2315,7 +2362,7 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong positionId)
    g_pendingRL[g_pendingRLCount].lot = lot;
    g_pendingRL[g_pendingRLCount].tickValue = tickValue;
    g_pendingRLCount++;
-      
+
    if(INPUT_ENABLE_LOGGING)
       Print("RL Pending: State=", state, " Action=", EnumToString(action),
                      " | PositionId=", positionId);
@@ -2440,12 +2487,12 @@ void UpdateRLFromTrade(ulong positionId, double reward)
    }
 }
 //+------------------------------------------------------------------+
-ENUM_RL_ACTION ApplyRLToDecision(double confidence, double threat, 
+ENUM_RL_ACTION ApplyRLToDecision(double confidence, double threat,
                                   int positions, double drawdown)
 {
    if(!INPUT_ENABLE_RL || g_rlTradesCompleted < INPUT_RL_MIN_TRADES)
       return RL_FULL_SIZE;
-   
+
    int state = DetermineRLState(confidence, threat, positions, drawdown,
                               g_consecutiveWins >= 2);
    return GetRLAction(state);
@@ -2626,7 +2673,7 @@ double GetFingerprintBoost(const string &fpId, const string &combination)
 //+------------------------------------------------------------------+
 string GenerateFingerprint(const SignalResult &signals, int session, int dayOfWeek)
 {
-   return signals.combinationString + "_S" + IntegerToString(session) + 
+   return signals.combinationString + "_S" + IntegerToString(session) +
           "_D" + IntegerToString(dayOfWeek) + "_R" + IntegerToString((int)g_currentRegime);
 }
 //+------------------------------------------------------------------+
@@ -2634,7 +2681,7 @@ void RecalculateCombinationStats()
 {
    // Reset stats
    g_combinationStatsCount = 0;
-   
+
    // Group trades by combination
    for(int i = 0; i < g_trainingDataCount; i++)
    {
@@ -2642,7 +2689,7 @@ void RecalculateCombinationStats()
       int idx = -1;
       for(int j = 0; j < g_combinationStatsCount; j++)
          if(g_combinationStats[j].combination == combo) { idx = j; break; }
-      
+
       if(idx < 0 && g_combinationStatsCount < MAX_COMBINATION_STATS)
       {
          idx = g_combinationStatsCount;
@@ -2650,7 +2697,7 @@ void RecalculateCombinationStats()
          ZeroMemory(g_combinationStats[idx]);
          g_combinationStats[idx].combination = combo;
       }
-      
+
       if(idx >= 0)
       {
          g_combinationStats[idx].totalTrades++;
@@ -2664,7 +2711,7 @@ void RecalculateCombinationStats()
             g_combinationStats[idx].losses++;
             g_combinationStats[idx].totalLoss += MathAbs(g_trainingData[i].profitLoss);
          }
-         
+
          // Session breakdown
          if(g_trainingData[i].session == 0)
          {
@@ -2681,7 +2728,7 @@ void RecalculateCombinationStats()
             g_combinationStats[idx].nyTotal++;
             if(g_trainingData[i].isWin) g_combinationStats[idx].nyWins++;
          }
-         
+
          // Regime breakdown
          if(g_trainingData[i].regime == REGIME_TRENDING)
          {
@@ -2695,7 +2742,7 @@ void RecalculateCombinationStats()
          }
       }
    }
-   
+
    // Derive metrics
    for(int i = 0; i < g_combinationStatsCount; i++)
    {
@@ -2703,37 +2750,37 @@ void RecalculateCombinationStats()
       {
          g_combinationStats[i].winRate = (double)g_combinationStats[i].wins /
                                          g_combinationStats[i].totalTrades;
-         
+
          if(g_combinationStats[i].totalLoss > 0)
             g_combinationStats[i].profitFactor = g_combinationStats[i].totalProfit /
                                                 g_combinationStats[i].totalLoss;
          else
             g_combinationStats[i].profitFactor = g_combinationStats[i].totalProfit > 0 ? 10.0 : 0;
-         
+
          if(g_combinationStats[i].wins > 0)
             g_combinationStats[i].avgProfit = g_combinationStats[i].totalProfit /
                                               g_combinationStats[i].wins;
-         
+
          if(g_combinationStats[i].losses > 0)
             g_combinationStats[i].avgLoss = g_combinationStats[i].totalLoss /
                                             g_combinationStats[i].losses;
-         
+
          // Strength score (0?100)
          double score = 50.0;
-         
+
          // Win?rate component (+/-30)
          double wrComponent = (g_combinationStats[i].winRate - 0.5) * 100.0;
          wrComponent = MathMax(MathMin(wrComponent, 30.0), -30.0);
          score += wrComponent;
-         
+
          // Profit?factor component (+/-25)
          double pfComponent = (g_combinationStats[i].profitFactor - 1.0) * 20.0;
          pfComponent = MathMax(MathMin(pfComponent, 25.0), -25.0);
          score += pfComponent;
-         
+
          score = MathMax(MathMin(score, 100.0), 0.0);
          g_combinationStats[i].strengthScore = score;
-         
+
          // Confidence multiplier (0.5?1.5)
          g_combinationStats[i].confidenceMultiplier = 1.0 + (score - 50.0) / 200.0;
          g_combinationStats[i].confidenceMultiplier = MathMax(
@@ -2784,9 +2831,9 @@ void DetectMarketRegime()
       g_currentRegime = REGIME_UNKNOWN;
       return;
    }
-   
+
    double volRatio = CalculateVolatilityRatio();
-   
+
    // Volatility first
    if(volRatio >= 1.5)
    {
@@ -2798,7 +2845,7 @@ void DetectMarketRegime()
       g_currentRegime = REGIME_QUIET;
       return;
    }
-   
+
       if(adx[0] >= 25)
       g_currentRegime = REGIME_TRENDING;
    else if(adx[0] < 20)
@@ -2816,10 +2863,10 @@ bool RunDecisionPipeline(DecisionResult &decision)
    if(!CheckAllGates(rejectReason))
    {
       if(INPUT_ENABLE_LOGGING)
-         Print("Gate rejected: ", rejectReason);
+         LogWithRestartGuard("Gate rejected: " + rejectReason);
       return false;
    }
-   
+
    //--- STEP 2: Signal detection
    SignalResult signals;
    if(!DetectSignals(signals))
@@ -2829,7 +2876,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
          Print("Signal detection failed");
       return false;
    }
-   
+
    if(signals.totalSignals < INPUT_MIN_SIGNALS)
    {
       g_gateDiagnostics.signalsRejects++;
@@ -2837,7 +2884,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
          Print("Not enough signals: ", signals.totalSignals, " < ", INPUT_MIN_SIGNALS);
       return false;
    }
-   
+
    //--- STEP 3: Determine direction (base votes + MTF consensus weighting)
    int weightedBullVotes = signals.bullVotes;
    int weightedBearVotes = signals.bearVotes;
@@ -2878,7 +2925,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
             " weightedBear=", weightedBearVotes,
             " consensusDir=", mtfConsensusDirection,
             " consensusFrames=", mtfConsensusStrength);
-   
+
    //--- STEP 4: ADX filter (optional)
    if(INPUT_USE_ADX_FILTER)
    {
@@ -2893,7 +2940,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
          }
       }
     }
-    
+
     //--- STEP 4b: Same-direction limit check
     string dirReject = "";
     if(!CheckSameDirectionLimit(direction, dirReject))
@@ -2902,7 +2949,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
           Print("Same-direction limit: ", dirReject);
        return false;
     }
-    
+
     //--- STEP 4c: Proximity check
     string proxReject = "";
     if(!CheckProximity(direction, proxReject))
@@ -2911,7 +2958,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
           Print("Proximity reject: ", proxReject);
        return false;
     }
-    
+
     //--- STEP 5: MTF alignment (optional)
     int mtfScore = CalculateMTFAlignment(direction);
     if(INPUT_MIN_MTF_SCORE > 0 && mtfScore < INPUT_MIN_MTF_SCORE)
@@ -2921,17 +2968,17 @@ bool RunDecisionPipeline(DecisionResult &decision)
           Print("MTF alignment failed: ", mtfScore, " < ", INPUT_MIN_MTF_SCORE);
        return false;
     }
-    
+
    //--- STEP 6: Fingerprint generation
    int sessionNow = GetCurrentSession();
    MqlDateTime dtNow;
    TimeToStruct(TimeCurrent(), dtNow);
    string fpId = GenerateFingerprint(signals, sessionNow, dtNow.day_of_week);
-   
+
    //--- STEP 7: Threat calculation
    double threat = CalculateMarketThreat();
    ENUM_THREAT_ZONE threatZone = GetThreatZone(threat);
-   
+
    if(threat > INPUT_MAX_THREAT_ENTRY)
    {
       g_gateDiagnostics.threatRejects++;
@@ -2939,11 +2986,11 @@ bool RunDecisionPipeline(DecisionResult &decision)
          Print("Threat too high: ", threat, " > ", INPUT_MAX_THREAT_ENTRY);
       return false;
    }
-   
+
    //--- STEP 8: Confidence calculation
    double confidence = CalculateConfidence(signals, direction, mtfScore,
                                             fpId, signals.combinationString, threat);
-   
+
    // Apply adaptive minimum confidence
    double minConf = g_adaptive.minConfThreshold;
    if(confidence < minConf)
@@ -2953,13 +3000,13 @@ bool RunDecisionPipeline(DecisionResult &decision)
          Print("Confidence too low: ", confidence, " < ", minConf);
       return false;
    }
-   
+
    //--- STEP 9: Q?Learning action selection (optional)
    int positions = CountMainPositionsFromBroker();
    double drawdown = CalculateDrawdownPercent();
    ENUM_RL_ACTION rlAction = ApplyRLToDecision(confidence, threat,
                                                positions, drawdown);
-   
+
    // Honor RL skip decision
    if(INPUT_ENABLE_RL && rlAction == RL_SKIP_TRADE && g_rlTradesCompleted >= INPUT_RL_MIN_TRADES)
    {
@@ -2971,7 +3018,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
          return false;
       }
    }
-   
+
    //--- STEP 10: Decision matrix â€“ we now only block on extreme threat
    if(threatZone == THREAT_EXTREME)
    {
@@ -2980,7 +3027,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
          Print("Extreme threat zone â€“ blocking trade");
       return false;
    }
-   
+
    //--- STEP 11: SL/TP calculation (threat?adjusted)
    double slPoints, tpPoints;
    if(!CalculateSLTP(direction, threat, slPoints, tpPoints))
@@ -2989,7 +3036,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
          Print("SL/TP calculation failed");
       return false;
    }
-   
+
    //--- STEP 12: Position sizing (threat + confidence + RL)
    double lotSize = CalculateLotSize(slPoints, confidence, threat, rlAction);
    if(INPUT_ENABLE_HIGH_ADX_RISK_MODE)
@@ -3005,7 +3052,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
          Print("Lot size calculation returned 0");
       return false;
    }
-   
+
 
    //--- Fill decision structure
    decision.shouldTrade = true;
@@ -3021,12 +3068,12 @@ bool RunDecisionPipeline(DecisionResult &decision)
    decision.lotSize = lotSize;
    decision.fingerprintId = fpId;
    decision.rlAction = rlAction;
-   
+
    if(INPUT_ENABLE_LOGGING)
       Print("DECISION: ", (direction == 1 ? "BUY" : "SELL"),
             " | Conf: ", confidence, " | Threat: ", threat,
             " | Signals: ", signals.totalSignals, " (", signals.combinationString, ")");
-   
+
    return true;
 }
 //+------------------------------------------------------------------+
@@ -3038,7 +3085,7 @@ bool CheckAllGates(string &rejectReason)
       g_adaptive.maxPositions = INPUT_MAX_CONCURRENT_TRADES;
       Print("WARNING: maxPositions was 0 or negative! Reset to ", INPUT_MAX_CONCURRENT_TRADES);
    }
-   
+
       bool isTesterMode = (MQLInfoInteger(MQL_TESTER) != 0);
    if(isTesterMode)
    {
@@ -3056,33 +3103,33 @@ bool CheckAllGates(string &rejectReason)
          return false;
       }
    }
-   
+
    if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
    {
       rejectReason = "AutoTrading disabled";
       return false;
    }
-   
+
       if(!IsAllowedSession())
    {
       g_gateDiagnostics.sessionRejects++;
       rejectReason = "Outside trading session";
       return false;
    }
-   
+
    if(TimeCurrent() - g_lastOrderTime < INPUT_ORDER_COOLDOWN_SECONDS)
    {
       g_gateDiagnostics.cooldownRejects++;
       rejectReason = "Order cooldown active";
       return false;
    }
-   
+
    if(g_daily.tradesPlaced >= INPUT_MAX_DAILY_TRADES)
    {
       rejectReason = "Daily trade limit reached";
       return false;
    }
-   
+
    double dayLoss = g_daily.lossToday;
    double maxDayLoss = g_daily.dayStartBalance * (INPUT_DAILY_LOSS_LIMIT_PERCENT / 100.0);
    if(dayLoss >= maxDayLoss)
@@ -3090,23 +3137,23 @@ bool CheckAllGates(string &rejectReason)
       rejectReason = "Daily loss limit reached";
       return false;
    }
-   
+
    if(g_consecutiveLosses >= INPUT_MAX_CONSECUTIVE_LOSSES)
    {
       rejectReason = "Consecutive loss limit reached";
       return false;
    }
-   
+
    // Spread check â€“ more tolerant now
    double spreadPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    double spread = spreadPoints * g_point;
    double avgSpread = (g_averageSpread > 0) ? g_averageSpread : spread;
-   if(avgSpread > 0 && spread > avgSpread * 5.0) // FIXED: changed from 3.0 to 5.0
+   if(avgSpread > 0 && spread > avgSpread * INPUT_HIGH_SPREAD_MULTIPLIER)
    {
       rejectReason = "Spread too high";
       return false;
    }
-   
+
    // Position limit check (main positions only)
    int currentMainPositions = CountMainPositionsFromBroker();
    int currentTotalPositions = CountAllOurPositions();
@@ -3118,14 +3165,14 @@ bool CheckAllGates(string &rejectReason)
                      " max=" + IntegerToString(g_adaptive.maxPositions) + ")";
       return false;
    }
-   
+
     // EA state check
     if(g_eaState == STATE_EXTREME_RISK || g_eaState == STATE_DRAWDOWN_PROTECT)
     {
        rejectReason = "EA in protection mode";
        return false;
     }
-    
+
     return true;
  }
  //+------------------------------------------------------------------+
@@ -3139,12 +3186,12 @@ bool CheckAllGates(string &rejectReason)
        ulong ticket = PositionGetTicket(i);
        if(ticket == 0) continue;
        if(!IsOurPosition(ticket)) continue;
-       
+
        string comment = PositionGetString(POSITION_COMMENT);
        if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
        if(StringFind(comment, COMMENT_AVG_PREFIX)      >= 0) continue;
        if(StringFind(comment, COMMENT_HEDGE_PREFIX)    >= 0) continue;
-       
+
        int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
        if(posDir == direction)
           sameCount++;
@@ -3152,7 +3199,7 @@ bool CheckAllGates(string &rejectReason)
         if(INPUT_EXECUTION_MODE == PENDING_STOP)
        sameCount += CountPendingStopsByDirection(direction);
 
-    
+
     if(sameCount >= INPUT_MAX_SAME_DIRECTION)
     {
                rejectReason = "Same-direction limit reached (" + IntegerToString(sameCount) +
@@ -3174,25 +3221,25 @@ bool CheckAllGates(string &rejectReason)
  bool CheckProximity(int direction, string &rejectReason)
  {
     if(INPUT_PROXIMITY_POINTS <= 0) return true;
-    
-    double currentPrice = (direction == 1) ? 
+
+    double currentPrice = (direction == 1) ?
                           SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
                           SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double minDist = INPUT_PROXIMITY_POINTS * g_point;
-    
+
     int total = PositionsTotal();
     for(int i = 0; i < total; i++)
     {
        ulong ticket = PositionGetTicket(i);
        if(ticket == 0) continue;
        if(!IsOurPosition(ticket)) continue;
-       
+
        double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
        double dist = MathAbs(currentPrice - entryPrice);
-       
+
        if(dist < minDist)
        {
-          rejectReason = "Too close to existing position (dist=" + 
+          rejectReason = "Too close to existing position (dist=" +
                          DoubleToString(dist / g_point, 0) + " pts < " +
                          DoubleToString(INPUT_PROXIMITY_POINTS, 0) + " pts)";
           return false;
@@ -3202,24 +3249,194 @@ bool CheckAllGates(string &rejectReason)
  }
  //+------------------------------------------------------------------+
  // Position age timeout: close stale positions
- 
-    
- 
+
+
+
  //+------------------------------------------------------------------+
+bool IsValidHourValue(int hour)
+{
+   return (hour >= 0 && hour <= 23);
+}
+//+------------------------------------------------------------------+
+void WarnInvalidSessionHour(const string label, int value)
+{
+   Print("WARNING: Invalid session hour for ", label, " = ", value, " (expected 0..23)");
+}
+//+------------------------------------------------------------------+
+bool IsHourInWindow(int hour, int start, int end)
+{
+   if(!IsValidHourValue(hour) || !IsValidHourValue(start) || !IsValidHourValue(end))
+      return false;
+
+   if(start < end)
+      return (hour >= start && hour < end);
+
+   if(start > end)
+      return (hour >= start || hour < end);
+
+   // Explicit behavior for start==end: full-day enabled session window.
+   return true;
+}
+//+------------------------------------------------------------------+
+void ValidateSessionHourInputs()
+{
+   if(!IsValidHourValue(INPUT_ASIAN_START)) WarnInvalidSessionHour("INPUT_ASIAN_START", INPUT_ASIAN_START);
+   if(!IsValidHourValue(INPUT_ASIAN_END)) WarnInvalidSessionHour("INPUT_ASIAN_END", INPUT_ASIAN_END);
+   if(!IsValidHourValue(INPUT_LONDON_START)) WarnInvalidSessionHour("INPUT_LONDON_START", INPUT_LONDON_START);
+   if(!IsValidHourValue(INPUT_LONDON_END)) WarnInvalidSessionHour("INPUT_LONDON_END", INPUT_LONDON_END);
+   if(!IsValidHourValue(INPUT_NY_START)) WarnInvalidSessionHour("INPUT_NY_START", INPUT_NY_START);
+   if(!IsValidHourValue(INPUT_NY_END)) WarnInvalidSessionHour("INPUT_NY_END", INPUT_NY_END);
+}
+//+------------------------------------------------------------------+
+void LogWithRestartGuard(const string message)
+{
+   Print(message);
+
+   if(INPUT_REPEAT_LOG_RESTART_THRESHOLD <= 0)
+      return;
+
+   if(message == g_lastLogMessage)
+      g_lastLogRepeatCount++;
+   else
+   {
+      g_lastLogMessage = message;
+      g_lastLogRepeatCount = 1;
+   }
+
+   if(g_lastLogRepeatCount >= INPUT_REPEAT_LOG_RESTART_THRESHOLD)
+   {
+      Print("RESTART GUARD: repeated log detected | message=", message,
+            " | repeats=", g_lastLogRepeatCount,
+            " | threshold=", INPUT_REPEAT_LOG_RESTART_THRESHOLD);
+
+      g_lastLogRepeatCount = 0;
+      g_lastLogMessage = "";
+
+      long currentTf = Period();
+      if(!ChartSetSymbolPeriod(0, _Symbol, (ENUM_TIMEFRAMES)currentTf))
+      {
+         Print("RESTART GUARD: Chart refresh failed, removing EA as fallback.");
+         ExpertRemove();
+      }
+   }
+}
+//+------------------------------------------------------------------+
+bool IsSpreadTooHighNow()
+{
+   double spreadPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+   if(spreadPoints < 0) spreadPoints = 0;
+
+   double spread = spreadPoints * g_point;
+   double avgSpread = (g_averageSpread > 0) ? g_averageSpread : spread;
+   if(avgSpread <= 0)
+      return false;
+
+   return (spread > avgSpread * INPUT_HIGH_SPREAD_MULTIPLIER);
+}
+//+------------------------------------------------------------------+
+bool HandleHighSpreadPositionPolicy(ulong ticket)
+{
+   if(!INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD)
+      return false;
+
+   if(!PositionSelectByTicket(ticket))
+      return true;
+
+   if(!IsSpreadTooHighNow())
+      return false;
+
+   double profit = PositionGetDouble(POSITION_PROFIT);
+   if(profit > 0)
+   {
+      if(g_trade.PositionClose(ticket))
+      {
+         LogWithRestartGuard("HIGH SPREAD EXIT: closed profitable position | ticket=" + IntegerToString((int)ticket) +
+                            " | profit=" + DoubleToString(profit, 2));
+      }
+      else
+      {
+         LogWithRestartGuard("HIGH SPREAD EXIT FAILED: ticket=" + IntegerToString((int)ticket) +
+                            " | retcode=" + IntegerToString((int)g_trade.ResultRetcode()) +
+                            " | comment=" + g_trade.ResultComment());
+      }
+   }
+
+   return true;
+}
+//+------------------------------------------------------------------+
+int GetTPFailureTrackerIndex(ulong ticket, bool createIfMissing)
+{
+   for(int i = 0; i < ArraySize(g_tpModifyFailures); i++)
+   {
+      if(g_tpModifyFailures[i].ticket == ticket)
+         return i;
+   }
+
+   if(!createIfMissing)
+      return -1;
+
+   int newSize = ArraySize(g_tpModifyFailures) + 1;
+   if(ArrayResize(g_tpModifyFailures, newSize) != newSize)
+      return -1;
+
+   int idx = newSize - 1;
+   g_tpModifyFailures[idx].ticket = ticket;
+   g_tpModifyFailures[idx].failCount = 0;
+   g_tpModifyFailures[idx].nextRetryTime = 0;
+   return idx;
+}
+//+------------------------------------------------------------------+
+void ResetTPFailureTracker(ulong ticket)
+{
+   int idx = GetTPFailureTrackerIndex(ticket, false);
+   if(idx < 0)
+      return;
+
+   g_tpModifyFailures[idx].failCount = 0;
+   g_tpModifyFailures[idx].nextRetryTime = 0;
+}
+//+------------------------------------------------------------------+
+void RegisterTPModifyFailure(ulong ticket)
+{
+   int idx = GetTPFailureTrackerIndex(ticket, true);
+   if(idx < 0)
+      return;
+
+   g_tpModifyFailures[idx].failCount++;
+   int backoffSeconds = (int)MathMin(300.0, MathPow(2.0, (double)MathMin(g_tpModifyFailures[idx].failCount, 8)));
+   g_tpModifyFailures[idx].nextRetryTime = TimeCurrent() + backoffSeconds;
+}
+//+------------------------------------------------------------------+
+bool CanAttemptTPModify(ulong ticket)
+{
+   int idx = GetTPFailureTrackerIndex(ticket, false);
+   if(idx < 0)
+      return true;
+
+   return (TimeCurrent() >= g_tpModifyFailures[idx].nextRetryTime);
+}
+//+------------------------------------------------------------------+
 bool IsAllowedSession()
 {
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
    int hour = dt.hour;
-   
-   bool inAsian  = (hour >= INPUT_ASIAN_START && hour < INPUT_ASIAN_END);
-   bool inLondon = (hour >= INPUT_LONDON_START && hour < INPUT_LONDON_END);
-   bool inNY     = (hour >= INPUT_NY_START && hour < INPUT_NY_END);
-   
-   if(INPUT_TRADE_ASIAN && inAsian) return true;
-   if(INPUT_TRADE_LONDON && inLondon) return true;
+
+   ValidateSessionHourInputs();
+   if(!IsValidHourValue(hour))
+   {
+      WarnInvalidSessionHour("current_server_hour", hour);
+      return false;
+   }
+
+   bool inAsian  = IsHourInWindow(hour, INPUT_ASIAN_START, INPUT_ASIAN_END);
+   bool inLondon = IsHourInWindow(hour, INPUT_LONDON_START, INPUT_LONDON_END);
+   bool inNY     = IsHourInWindow(hour, INPUT_NY_START, INPUT_NY_END);
+
    if(INPUT_TRADE_NEWYORK && inNY) return true;
-   
+   if(INPUT_TRADE_LONDON && inLondon) return true;
+   if(INPUT_TRADE_ASIAN && inAsian) return true;
+
    return false;
 }
 //+------------------------------------------------------------------+
@@ -3228,13 +3445,20 @@ int GetCurrentSession()
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
    int hour = dt.hour;
-   
+
+   ValidateSessionHourInputs();
+   if(!IsValidHourValue(hour))
+   {
+      WarnInvalidSessionHour("current_server_hour", hour);
+      return -1;
+   }
+
    // Priority: NY > London > Asian (for overlaps)
-   if(hour >= INPUT_NY_START && hour < INPUT_NY_END) return 2;
-   if(hour >= INPUT_LONDON_START && hour < INPUT_LONDON_END) return 1;
-   if(hour >= INPUT_ASIAN_START && hour < INPUT_ASIAN_END) return 0;
-   
-   return -1; // Off?hours
+   if(IsHourInWindow(hour, INPUT_NY_START, INPUT_NY_END)) return 2;
+   if(IsHourInWindow(hour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
+   if(IsHourInWindow(hour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
+
+   return -1; // Off-hours
 }
 //+------------------------------------------------------------------+
 //| SECTION 20: SL/TP CALCULATION (Threat?adjusted)                  |
@@ -3316,14 +3540,14 @@ int GetCurrentSession()
 double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_RL_ACTION rlAction)
 {
    if(slPoints <= 0) return 0;
-   
+
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double riskMoney = balance * (g_risk.riskPercent / 100.0);
-   
+
    // Base lot size from risk (using OrderCalcProfit)
    double slValue = slPoints * g_point;
    double lotSize = 0;
-   
+
    double testProfit = 0;
    double price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    if(OrderCalcProfit(ORDER_TYPE_BUY, _Symbol, 1.0, price, price + slValue, testProfit))
@@ -3331,23 +3555,23 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
       if(MathAbs(testProfit) > 0)
          lotSize = riskMoney / MathAbs(testProfit);
    }
-   
+
    // Fallback using tick value/size
    if(!MathIsValidNumber(lotSize) || lotSize <= 0)
       lotSize = riskMoney / (slPoints * (g_tickValue / g_tickSize) * g_point);
-   
+
    if(!MathIsValidNumber(lotSize) || lotSize <= 0)
       return 0;
-   
+
    // Threat factor (never below 25?%)
    double threatFactor = 1.0 - (threat / 200.0);
    threatFactor = MathMax(threatFactor, 0.25);
    lotSize *= threatFactor;
-   
+
    // Confidence factor â€“ less aggressive now (0.5?1.0 instead of 0?1)
    double confFactor = 0.5 + (confidence / 200.0);
    lotSize *= confFactor;
-   
+
    // RL scaling
    if(INPUT_ENABLE_RL)
    {
@@ -3359,22 +3583,22 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
          default: break;
       }
    }
-   
+
    // Adaptive multiplier
    lotSize *= g_adaptive.lotMultiplier;
-   
+
    // Round to lot step and clamp to limits
    lotSize = MathFloor(lotSize / g_lotStep) * g_lotStep;
    lotSize = MathMax(lotSize, g_risk.minLot);
    lotSize = MathMin(lotSize, g_risk.maxLot);
    lotSize = MathMax(lotSize, g_minLot);
    lotSize = MathMin(lotSize, g_maxLot);
-   
+
    // Check margin
    double marginRequired = 0;
    if(!OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lotSize, price, marginRequired))
       return 0;
-   
+
    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    if(marginRequired > freeMargin * 0.8)
    {
@@ -3382,7 +3606,7 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
       lotSize = MathFloor(lotSize / g_lotStep) * g_lotStep;
       if(lotSize < g_minLot) return 0;
    }
-   
+
    return lotSize;
 }
 //+------------------------------------------------------------------+
@@ -3490,7 +3714,7 @@ bool ExecuteOrder(const DecisionResult &decision)
 {
    double price, sl, tp;
    ENUM_ORDER_TYPE orderType;
-   
+
    if(decision.direction == 1)
    {
       orderType = ORDER_TYPE_BUY;
@@ -3505,11 +3729,11 @@ bool ExecuteOrder(const DecisionResult &decision)
       sl = price + decision.slPoints * g_point;
       tp = price - decision.tpPoints * g_point;
    }
-   
+
    sl = NormalizeDouble(sl, g_digits);
    tp = NormalizeDouble(tp, g_digits);
    price = NormalizeDouble(price, g_digits);
-   
+
    string comment = COMMENT_MAIN_PREFIX + IntegerToString(TimeCurrent());
     if(INPUT_EXECUTION_MODE == PENDING_STOP)
    {
@@ -3537,7 +3761,7 @@ bool ExecuteOrder(const DecisionResult &decision)
    for(int attempt = 0; attempt < 3; attempt++)
    {
       g_trade.SetTypeFilling(GetFillingMode());
-      
+
       if(g_trade.PositionOpen(_Symbol, orderType, decision.lotSize, price, sl, tp, comment))
       {
          ulong orderTicket = g_trade.ResultOrder();
@@ -3558,7 +3782,7 @@ bool ExecuteOrder(const DecisionResult &decision)
                              " | Signals: ", decision.signalCombination,
                " | OrderTicket: ", orderTicket,
                " | PositionId: ", positionId);
-         
+
          // Track position in internal array
    TrackNewPosition(positionId, decision, comment);
          // Record RL state?action (if RL active)
@@ -3571,26 +3795,26 @@ bool ExecuteOrder(const DecisionResult &decision)
                                           g_consecutiveWins >= 2);
                       RecordStateAction(state, decision.rlAction, positionId);
          }
-         
+
          g_lastOrderTime = TimeCurrent();
          g_daily.tradesPlaced++;
          g_totalTrades++;
-         
+
          return true;
       }
-      
+
       Print("Order attempt ", attempt + 1, " failed: ", g_trade.ResultRetcode(),
             " - ", g_trade.ResultComment());
-      
+
       // Refresh price before next attempt
       if(decision.direction == 1)
          price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       else
          price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-      
+
       Sleep(100 + attempt * 100);
    }
-   
+
    Print("ORDER FAILED after 3 attempts");
    return false;
 }
@@ -3601,20 +3825,20 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
 {
    // Clean up inactive entries first
    CleanupInactivePositions();
-   
+
    if(g_positionCount >= MAX_POSITIONS)
    {
       Print("WARNING: Position tracking array full, cannot track new position");
       return;
    }
-   
+
    int idx = g_positionCount;
    g_positionCount++;
-   
+
    double price = (decision.direction == 1) ?
                   SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
                   SymbolInfoDouble(_Symbol, SYMBOL_BID);
-   
+
      g_positions[idx].ticket = positionTicket;
    g_positions[idx].direction = decision.direction;
    g_positions[idx].entryPrice = price;
@@ -3654,13 +3878,13 @@ void Handle50PercentLotClose()
    {
       if(!g_positions[i].isActive) continue;
       if(g_positions[i].lotReduced) continue;
-      
+
       // Skip aux positions
       if(StringFind(g_positions[i].comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
       if(StringFind(g_positions[i].comment, COMMENT_AVG_PREFIX) >= 0) continue;
-      
+
       ulong ticket = g_positions[i].ticket;
-      
+
       if(!PositionSelectByTicket(ticket))
       {
          g_positions[i].isActive = false;
@@ -3668,28 +3892,28 @@ void Handle50PercentLotClose()
          if(INPUT_ENABLE_LOGGING) Print("SYNC MISSING: tracked ticket not found on broker: ", ticket);
          continue;
       }
-      
+
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double slPrice = PositionGetDouble(POSITION_SL);
       double currentLots = PositionGetDouble(POSITION_VOLUME);
       int posType = (int)PositionGetInteger(POSITION_TYPE);
-      
+
       if(slPrice == 0) continue;
-      
+
       double slDistance = MathAbs(entryPrice - slPrice);
       if(slDistance <= 0) continue;
-      
+
       double currentLoss = 0;
       if(posType == POSITION_TYPE_BUY)
          currentLoss = entryPrice - currentPrice;
       else
          currentLoss = currentPrice - entryPrice;
-      
+
       if(currentLoss <= 0) continue; // only when in loss
-      
+
       double lossPct = (currentLoss / slDistance) * 100.0;
-      
+
       if(lossPct >= INPUT_50PCT_TRIGGER_LOW && lossPct <= INPUT_50PCT_TRIGGER_HIGH)
       {
          double closeRatio = 0.5; // default
@@ -3700,18 +3924,18 @@ void Handle50PercentLotClose()
             else if(conf >= 60) closeRatio = 0.5;
             else                closeRatio = 0.75;
          }
-         
+
          double lotsToClose = currentLots * closeRatio;
          lotsToClose = MathFloor(lotsToClose / g_lotStep) * g_lotStep;
          lotsToClose = MathMax(lotsToClose, g_minLot);
-         
+
          if(lotsToClose < g_minLot || lotsToClose >= currentLots)
          {
             g_positions[i].lotReduced = true;
             g_positions[i].halfSLHit = true;
             continue;
          }
-         
+
          if(g_trade.PositionClosePartial(ticket, lotsToClose))
          {
             g_positions[i].lotReduced = true;
@@ -3731,60 +3955,60 @@ void Handle50PercentLotClose()
 void ManagePartialClose()
 {
    if(!INPUT_ENABLE_PARTIAL_CLOSE) return;
-   
+
    for(int i = 0; i < g_positionCount; i++)
    {
       if(!g_positions[i].isActive) continue;
       if(g_positions[i].partialClosed) continue;
-      
+
       ulong ticket = g_positions[i].ticket;
-      
+
       if(!PositionSelectByTicket(ticket))
       {
          g_positions[i].isActive = false;
          continue;
       }
-      
+
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double tpPrice = PositionGetDouble(POSITION_TP);
       double currentLots = PositionGetDouble(POSITION_VOLUME);
       int posType = (int)PositionGetInteger(POSITION_TYPE);
-      
+
       if(tpPrice == 0) continue;
-      
+
       double tpDistance = MathAbs(tpPrice - entryPrice);
       if(tpDistance <= 0) continue;
-      
+
       double currentProfit = 0;
       if(posType == POSITION_TYPE_BUY)
          currentProfit = currentPrice - entryPrice;
       else
          currentProfit = entryPrice - currentPrice;
-      
+
       if(currentProfit <= 0) continue;
-      
+
       double profitPct = (currentProfit / tpDistance) * 100.0;
-      
+
       if(profitPct >= INPUT_PARTIAL_TP_PERCENT)
       {
          double lotsToClose = currentLots * INPUT_PARTIAL_CLOSE_RATIO;
          lotsToClose = MathFloor(lotsToClose / g_lotStep) * g_lotStep;
          lotsToClose = MathMax(lotsToClose, g_minLot);
-         
+
          if(lotsToClose < g_minLot || lotsToClose >= currentLots)
          {
             g_positions[i].partialClosed = true;
             continue;
          }
-         
+
          if(g_trade.PositionClosePartial(ticket, lotsToClose))
          {
             g_positions[i].partialClosed = true;
             g_positions[i].currentLots = currentLots - lotsToClose;
             Print("PARTIAL CLOSE: Ticket ", ticket, " | Closed ", lotsToClose,
                   " lots at ", profitPct, "% TP");
-            
+
             // Move SL to breakeven if enabled
             if(INPUT_MOVE_BE_AFTER_PARTIAL && !g_positions[i].movedToBreakeven)
             {
@@ -3798,16 +4022,17 @@ void ManagePartialClose()
 //+------------------------------------------------------------------+
 void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 {
+   if(HandleHighSpreadPositionPolicy(ticket)) return;
    if(!CanModifyPosition(ticket)) return;
-   
+
    double currentSL = PositionGetDouble(POSITION_SL);
    double currentTP = PositionGetDouble(POSITION_TP);
-   
+
    double newSL = NormalizeDouble(entryPrice, g_digits);
-   
+
    double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
    double minDist = g_stopLevel * g_point;
-   
+
    if(posType == POSITION_TYPE_BUY)
    {
       if(currentPrice - newSL < minDist)
@@ -3818,7 +4043,7 @@ void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
       if(newSL - currentPrice < minDist)
          newSL = currentPrice + minDist;
    }
-   
+
    if(g_trade.PositionModify(ticket, newSL, currentTP))
       Print("BREAKEVEN: Ticket ", ticket, " SL moved to ", newSL);
 }
@@ -3826,58 +4051,59 @@ void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 void ManageTrailingStops()
 {
    if(!INPUT_ENABLE_TRAILING) return;
-   
+
    static datetime lastTrailCheck = 0;
    if(TimeCurrent() - lastTrailCheck < 5) return; // throttle to every 5?sec
    lastTrailCheck = TimeCurrent();
-   
+
    double atr[];
    if(CopyBuffer(g_hATR_M1, 0, 0, 1, atr) < 1 || atr[0] <= 0)
       return;
-   
+
    double trailDistance = atr[0] * INPUT_TRAIL_ATR_MULTIPLIER +
                           g_adaptive.trailAdjustPips * g_point;
-   
+
    int total = PositionsTotal();
    for(int i = 0; i < total; i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-      
+      if(HandleHighSpreadPositionPolicy(ticket)) continue;
+
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double currentSL = PositionGetDouble(POSITION_SL);
       double currentTP = PositionGetDouble(POSITION_TP);
       int posType = (int)PositionGetInteger(POSITION_TYPE);
-      
+
       double profit = (posType == POSITION_TYPE_BUY) ?
                       currentPrice - entryPrice :
                       entryPrice - currentPrice;
-      
+
       if(profit < INPUT_TRAIL_ACTIVATION_POINTS * g_point)
          continue;
-      
+
       double newSL;
       if(posType == POSITION_TYPE_BUY)
          newSL = currentPrice - trailDistance;
       else
          newSL = currentPrice + trailDistance;
-      
+
       newSL = NormalizeDouble(newSL, g_digits);
-      
+
       double minDist = g_stopLevel * g_point;
       if(posType == POSITION_TYPE_BUY && currentPrice - newSL < minDist)
          continue;
       if(posType == POSITION_TYPE_SELL && newSL - currentPrice < minDist)
          continue;
-      
+
       bool shouldMove = false;
       if(posType == POSITION_TYPE_BUY && newSL > currentSL + INPUT_TRAIL_STEP_POINTS * g_point)
          shouldMove = true;
       else if(posType == POSITION_TYPE_SELL && newSL < currentSL - INPUT_TRAIL_STEP_POINTS * g_point)
          shouldMove = true;
-      
+
       if(shouldMove && g_trade.PositionModify(ticket, newSL, currentTP))
          Print("TRAILING: Ticket ", ticket, " SL moved from ", currentSL, " to ", newSL);
    }
@@ -3886,11 +4112,11 @@ void ManageTrailingStops()
 bool CanModifyPosition(ulong ticket)
 {
    if(!PositionSelectByTicket(ticket)) return false;
-   
+
    double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
    double currentSL = PositionGetDouble(POSITION_SL);
    int posType = (int)PositionGetInteger(POSITION_TYPE);
-   
+
    double freezeDist = g_freezeLevel * g_point;
    if(freezeDist > 0)
    {
@@ -4078,7 +4304,7 @@ bool BuildValidRecoveryTP(int parentType, double price, double sl,
    return true;
 }
 //+------------------------------------------------------------------+
-void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots, 
+void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
                         double parentSL, double parentEntry)
 {
    ENUM_ORDER_TYPE orderType = (parentType == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
@@ -4131,15 +4357,15 @@ void CheckRecoveryTimeouts()
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-      
+
       string comment = PositionGetString(POSITION_COMMENT);
       if(StringFind(comment, COMMENT_RECOVERY_PREFIX) < 0 &&
          StringFind(comment, COMMENT_AVG_PREFIX)      < 0)
          continue;
-      
+
       datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
       int ageMinutes = (int)((TimeCurrent() - openTime) / 60);
-      
+
       if(ageMinutes >= INPUT_RECOVERY_TIMEOUT_MINUTES)
       {
          if(g_trade.PositionClose(ticket))
@@ -4251,17 +4477,17 @@ void SyncExistingPositions()
 {
    // FIXED: Reset count first (already done in OnInit)
    g_positionCount = 0;
-   
+
    int total = PositionsTotal();
    for(int i = 0; i < total && g_positionCount < MAX_POSITIONS; i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-      
+
       int idx = g_positionCount;
       g_positionCount++;
-      
+
       g_positions[idx].ticket = ticket;
       g_positions[idx].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       g_positions[idx].slPrice = PositionGetDouble(POSITION_SL);
@@ -4287,10 +4513,10 @@ void SyncExistingPositions()
       g_positions[idx].isActive = true;
       g_positions[idx].maxProfit = 0;
       g_positions[idx].maxLoss = 0;
-      
+
       Print("SYNCED EXISTING: Ticket ", ticket);
    }
-   
+
    Print("Synced ", g_positionCount, " existing positions");
 }
 //+------------------------------------------------------------------+
@@ -4574,10 +4800,17 @@ int GetSessionFromTime(datetime ts)
    TimeToStruct(ts, dt);
    int hour = dt.hour;
 
+   ValidateSessionHourInputs();
+   if(!IsValidHourValue(hour))
+   {
+      WarnInvalidSessionHour("timestamp_hour", hour);
+      return -1;
+   }
+
    // Priority: NY > London > Asian (for overlaps)
-   if(hour >= INPUT_NY_START && hour < INPUT_NY_END) return 2;
-   if(hour >= INPUT_LONDON_START && hour < INPUT_LONDON_END) return 1;
-   if(hour >= INPUT_ASIAN_START && hour < INPUT_ASIAN_END) return 0;
+   if(IsHourInWindow(hour, INPUT_NY_START, INPUT_NY_END)) return 2;
+   if(IsHourInWindow(hour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
+   if(IsHourInWindow(hour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
 
    return -1;
 }
@@ -4709,28 +4942,28 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
 void CheckAdaptiveOptimization()
 {
    if(!INPUT_ENABLE_ADAPTIVE) return;
-   
+
    int tradesSinceOpt = g_trainingDataCount - g_adaptive.tradesAtLastOpt;
    if(tradesSinceOpt < INPUT_ADAPT_INTERVAL) return;
-   
+
    // Also limit to once per day
    if(g_adaptive.lastOptimization > 0 &&
       TimeCurrent() - g_adaptive.lastOptimization < 86400)
       return;
-   
+
    PerformAdaptiveOptimization();
 }
 //+------------------------------------------------------------------+
 void PerformAdaptiveOptimization()
 {
    if(g_trainingDataCount < 20) return; // need enough data
-   
+
    int lookback = MathMin(20, g_trainingDataCount);
    int startIdx = g_trainingDataCount - lookback;
-   
+
    int wins = 0;
    double totalProfit = 0, totalLoss = 0;
-   
+
    for(int i = startIdx; i < g_trainingDataCount; i++)
    {
       if(g_trainingData[i].isWin)
@@ -4743,13 +4976,13 @@ void PerformAdaptiveOptimization()
          totalLoss += MathAbs(g_trainingData[i].profitLoss);
       }
    }
-   
+
    double winRate = (double)wins / lookback;
    double profitFactor = (totalLoss > 0) ? totalProfit / totalLoss :
                          (totalProfit > 0 ? 10.0 : 0);
-   
+
    Print("ADAPTIVE OPTIMIZATION: WR=", winRate, " PF=", profitFactor);
-   
+
    const double baselineLotMultiplier = 1.0;
    const double baselineThreatMultiplier = 1.0;
    const double baselineMinConf = INPUT_MIN_CONFIDENCE;
@@ -4796,7 +5029,7 @@ void PerformAdaptiveOptimization()
       g_adaptive.maxPositions += 1;
       g_adaptive.slAdjustPips += (baselineSLAdjust - g_adaptive.slAdjustPips) * 0.35;
       g_adaptive.minConfThreshold += (baselineMinConf - g_adaptive.minConfThreshold) * 0.15;
-      
+
       Print("ADAPTIVE: Outperforming - controlled expansion enabled");
    }
 
@@ -4820,7 +5053,7 @@ void PerformAdaptiveOptimization()
             " | threatMul=", DoubleToString(g_adaptive.threatMultiplier, 3),
             " | minConf=", DoubleToString(g_adaptive.minConfThreshold, 2),
             " | maxPos=", g_adaptive.maxPositions);
-   
+
    g_adaptive.lastOptimization = TimeCurrent();
    g_adaptive.tradesAtLastOpt = g_trainingDataCount;
 }
@@ -4831,11 +5064,11 @@ bool ShouldQueryAI()
 {
    if(g_aiResponse.consecutiveErrors >= 5)
       return false;
-   
+
    if(g_lastAIQuery > 0 &&
       TimeCurrent() - g_lastAIQuery < INPUT_AI_INTERVAL_MINUTES * 60)
       return false;
-   
+
    return true;
 }
 //+------------------------------------------------------------------+
@@ -4843,14 +5076,14 @@ void QueryDeepSeekAI()
 {
    if(StringLen(INPUT_AI_API_KEY) < 3)
       return;
-   
+
    g_lastAIQuery = TimeCurrent();
-   
+
    // Build market context
    double rsi[], adx[];
    CopyBuffer(g_hRSI_M1, 0, 0, 1, rsi);
    CopyBuffer(g_hADX_M1, 0, 0, 1, adx);
-   
+
    string marketContext = StringFormat(
       "Symbol: %s | RSI: %.1f | ADX: %.1f | Regime: %s | Threat: %.1f",
       _Symbol,
@@ -4859,30 +5092,30 @@ void QueryDeepSeekAI()
       EnumToString(g_currentRegime),
       CalculateMarketThreat()
    );
-   
+
    string prompt = "Analyze: " + marketContext + ". Reply JSON: {\"bias\":\"bullish/bearish/neutral\",\"confidence\":0-100,\"risk_alert\":true/false}";
-   
+
    // Build request body
    string requestBody = "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"" + prompt + "\"}],\"max_tokens\":100}";
-   
+
    char post[];
    ArrayResize(post, StringLen(requestBody));
    StringToCharArray(requestBody, post);
-   
+
    char result[];
    string resultHeaders;
-   
+
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + INPUT_AI_API_KEY;
-   
+
    int res = WebRequest("POST", INPUT_AI_URL, headers, 10000, post, result, resultHeaders);
-   
+
    if(res == 200)
    {
       string response = CharArrayToString(result);
       ParseAIResponse(response);
       g_aiResponse.lastUpdate = TimeCurrent();
       g_aiResponse.consecutiveErrors = 0;
-      
+
       if(INPUT_ENABLE_LOGGING)
          Print("AI Response: Bias=", g_aiResponse.marketBias,
                " Conf=", g_aiResponse.confidenceScore);
@@ -4909,7 +5142,7 @@ void ParseAIResponse(const string &response)
       else
          g_aiResponse.marketBias = "neutral";
    }
-   
+
    int confPos = StringFind(response, "\"confidence\"");
    if(confPos >= 0)
    {
@@ -4918,7 +5151,7 @@ void ParseAIResponse(const string &response)
       if(g_aiResponse.confidenceScore < 0) g_aiResponse.confidenceScore = 0;
       if(g_aiResponse.confidenceScore > 100) g_aiResponse.confidenceScore = 100;
    }
-   
+
    int alertPos = StringFind(response, "\"risk_alert\"");
    if(alertPos >= 0)
    {
@@ -4951,12 +5184,12 @@ void CheckDailyReset()
    {
       if(INPUT_RESET_CONSEC_DAILY)
          g_consecutiveLosses = 0;
-      
+
       ResetDailyCounters();
       g_peakEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-      
+
       CleanupInactivePositions();
-      
+
       Print("=== NEW DAY RESET === | Daily loss baseline balance=", DoubleToString(g_daily.dayStartBalance, 2));
    }
 }
@@ -4967,7 +5200,7 @@ void UpdateAverageSpread()
    g_totalSpread += currentSpread;
    g_spreadSamples++;
    g_averageSpread = g_totalSpread / g_spreadSamples;
-   
+
    if(g_spreadSamples > 10000)
    {
       g_totalSpread = g_averageSpread * 5000;
@@ -4983,7 +5216,7 @@ void CloseAllPositions(string reason)
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-      
+
       if(g_trade.PositionClose(ticket))
          Print("CLOSED: Ticket ", ticket, " | Reason: ", reason);
    }
@@ -5010,7 +5243,7 @@ void SaveQTable()
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_qtable.bin";
    int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-   
+
    FileWriteInteger(handle, 2); // schema version
 
    // Write checksum header
@@ -5018,20 +5251,20 @@ void SaveQTable()
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
          checksum += (int)(g_qTable[s][a] * 100);
-   
+
    FileWriteInteger(handle, checksum);
    FileWriteInteger(handle, g_rlTradesCompleted);
-   
+
    // Write Q?table
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
          FileWriteDouble(handle, g_qTable[s][a]);
-   
+
    // Write visit counts
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
          FileWriteInteger(handle, g_qVisits[s][a]);
-   
+
    FileClose(handle);
    Print("Q?Table saved: ", g_rlTradesCompleted, " trades recorded");
 }
@@ -5040,10 +5273,10 @@ void LoadQTable()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_qtable.bin";
    if(!FileIsExist(filename)) return;
-   
+
    int handle = FileOpen(filename, FILE_READ | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-   
+
    int version = FileReadInteger(handle);
    if(version != 2)
    {
@@ -5057,21 +5290,21 @@ void LoadQTable()
 
    int checksum = FileReadInteger(handle);
    g_rlTradesCompleted = FileReadInteger(handle);
-   
+
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
          g_qTable[s][a] = FileReadDouble(handle);
-   
+
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
          g_qVisits[s][a] = FileReadInteger(handle);
-   
+
    // Verify checksum
    int verifySum = 0;
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
          verifySum += (int)(g_qTable[s][a] * 100);
-   
+
    if(verifySum != checksum)
    {
       Print("WARNING: Q?Table checksum mismatch. Resetting.");
@@ -5083,7 +5316,7 @@ void LoadQTable()
    {
       Print("Q?Table loaded: ", g_rlTradesCompleted, " trades");
    }
-   
+
    FileClose(handle);
 }
 //+------------------------------------------------------------------+
@@ -5174,10 +5407,10 @@ void SaveFingerprintData()
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_fp.csv";
    int handle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-   
+
    FileWrite(handle, "ID", "Combo", "Session", "Day", "Regime", "Total", "Wins", "Losses",
              "WinRate", "PF", "AvgProfit", "AvgLoss", "Strength", "Multiplier", "Decay");
-   
+
    for(int i = 0; i < g_fingerprintCount; i++)
    {
       FileWrite(handle,
@@ -5197,7 +5430,7 @@ void SaveFingerprintData()
          g_fingerprints[i].confidenceMultiplier,
          g_fingerprints[i].decayWeight);
    }
-   
+
    FileClose(handle);
 }
 //+------------------------------------------------------------------+
@@ -5205,14 +5438,14 @@ void LoadFingerprintData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_fp.csv";
    if(!FileIsExist(filename)) return;
-   
+
    int handle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-   
+
    // Skip all 15 header fields (FIXED BUG 9/13)
    for(int h = 0; h < 15; h++)
       FileReadString(handle);
-   
+
    g_fingerprintCount = 0;
    while(!FileIsEnding(handle) && g_fingerprintCount < MAX_FINGERPRINTS)
    {
@@ -5231,14 +5464,14 @@ void LoadFingerprintData()
       g_fingerprints[g_fingerprintCount].strengthScore = FileReadNumber(handle);
       g_fingerprints[g_fingerprintCount].confidenceMultiplier = FileReadNumber(handle);
       g_fingerprints[g_fingerprintCount].decayWeight = FileReadNumber(handle);
-      
+
       // Apply decay on load
       g_fingerprints[g_fingerprintCount].decayWeight *= INPUT_LEARNING_DECAY;
-      
+
       if(StringLen(g_fingerprints[g_fingerprintCount].id) > 0)
          g_fingerprintCount++;
    }
-   
+
    FileClose(handle);
    Print("Fingerprints loaded: ", g_fingerprintCount);
 }
@@ -5248,10 +5481,10 @@ void SaveTrainingData()
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_training.csv";
    int handle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-   
+
    FileWrite(handle, "Ticket", "EntryTime", "CloseTime", "Combo", "Profit", "IsWin",
              "Confidence", "Threat", "MTF", "VolRatio", "Session", "Day", "Regime", "FP");
-   
+
    for(int i = 0; i < g_trainingDataCount; i++)
    {
       FileWrite(handle,
@@ -5270,7 +5503,7 @@ void SaveTrainingData()
          (int)g_trainingData[i].regime,
          g_trainingData[i].fingerprintId);
    }
-   
+
    FileClose(handle);
 }
 //+------------------------------------------------------------------+
@@ -5278,14 +5511,14 @@ void LoadTrainingData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_training.csv";
    if(!FileIsExist(filename)) return;
-   
+
    int handle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-   
+
    // Skip header (14 fields)
    for(int h = 0; h < 14; h++)
       FileReadString(handle);
-   
+
    g_trainingDataCount = 0;
    while(!FileIsEnding(handle) && g_trainingDataCount < INPUT_MAX_TRAINING_DATA)
    {
@@ -5303,11 +5536,11 @@ void LoadTrainingData()
       g_trainingData[g_trainingDataCount].dayOfWeek = (int)FileReadNumber(handle);
       g_trainingData[g_trainingDataCount].regime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
       g_trainingData[g_trainingDataCount].fingerprintId = FileReadString(handle);
-      
+
       if(g_trainingData[g_trainingDataCount].ticket > 0)
          g_trainingDataCount++;
    }
-   
+
    FileClose(handle);
    Print("Training data loaded: ", g_trainingDataCount, " records");
 }
@@ -5317,7 +5550,7 @@ void SaveAdaptiveParams()
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_adaptive.bin";
    int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-   
+
    FileWriteDouble(handle, g_adaptive.lotMultiplier);
    FileWriteDouble(handle, g_adaptive.slAdjustPips);
    FileWriteDouble(handle, g_adaptive.tpAdjustPips);
@@ -5327,7 +5560,7 @@ void SaveAdaptiveParams()
    FileWriteDouble(handle, g_adaptive.minConfThreshold);
    FileWriteInteger(handle, g_adaptive.maxPositions);
    FileWriteInteger(handle, g_totalTrades);
-   
+
    FileClose(handle);
 }
 //+------------------------------------------------------------------+
@@ -5335,10 +5568,10 @@ void LoadAdaptiveParams()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_adaptive.bin";
    if(!FileIsExist(filename)) return;
-   
+
    int handle = FileOpen(filename, FILE_READ | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-   
+
    g_adaptive.lotMultiplier = FileReadDouble(handle);
    g_adaptive.slAdjustPips = FileReadDouble(handle);
    g_adaptive.tpAdjustPips = FileReadDouble(handle);
@@ -5348,9 +5581,9 @@ void LoadAdaptiveParams()
    g_adaptive.minConfThreshold = FileReadDouble(handle);
    g_adaptive.maxPositions = FileReadInteger(handle);
    g_totalTrades = FileReadInteger(handle);
-   
+
    FileClose(handle);
-   
+
    // V7.2 FIX (BUG 1, 2): Validate ALL loaded adaptive params with sane defaults
    // lotMultiplier: 0.5?2.0 (prevent zero or negative)
    if(g_adaptive.lotMultiplier <= 0 || g_adaptive.lotMultiplier > 2.0 || !MathIsValidNumber(g_adaptive.lotMultiplier))
@@ -5359,7 +5592,7 @@ void LoadAdaptiveParams()
       g_adaptive.lotMultiplier = 1.0;
    }
    g_adaptive.lotMultiplier = MathMax(0.5, MathMin(g_adaptive.lotMultiplier, 2.0));
-   
+
    // threatMultiplier: 0.5?2.0 (excessive values block all trades)
    if(g_adaptive.threatMultiplier <= 0 || g_adaptive.threatMultiplier > 2.0 || !MathIsValidNumber(g_adaptive.threatMultiplier))
    {
@@ -5367,7 +5600,7 @@ void LoadAdaptiveParams()
       g_adaptive.threatMultiplier = 1.0;
    }
    g_adaptive.threatMultiplier = MathMax(0.5, MathMin(g_adaptive.threatMultiplier, 2.0));
-   
+
    // minConfThreshold: 20?80 (100?% would block everything)
    if(g_adaptive.minConfThreshold < 0 || g_adaptive.minConfThreshold > 100 || !MathIsValidNumber(g_adaptive.minConfThreshold))
    {
@@ -5376,7 +5609,7 @@ void LoadAdaptiveParams()
       g_adaptive.minConfThreshold = INPUT_MIN_CONFIDENCE;
    }
    g_adaptive.minConfThreshold = MathMax(20.0, MathMin(g_adaptive.minConfThreshold, 80.0));
-   
+
    // maxPositions: at least 2 (0?? gate always blocks)
    if(g_adaptive.maxPositions <= 0 || g_adaptive.maxPositions > INPUT_MAX_CONCURRENT_TRADES + 5)
    {
@@ -5385,7 +5618,7 @@ void LoadAdaptiveParams()
       g_adaptive.maxPositions = INPUT_MAX_CONCURRENT_TRADES;
    }
    g_adaptive.maxPositions = MathMax(g_adaptive.maxPositions, 2);
-   
+
    // confMultiplierCap: 1.0?2.0
    if(g_adaptive.confMultiplierCap <= 0 || g_adaptive.confMultiplierCap > 3.0 || !MathIsValidNumber(g_adaptive.confMultiplierCap))
    {
@@ -5394,7 +5627,7 @@ void LoadAdaptiveParams()
       g_adaptive.confMultiplierCap = 1.5;
    }
    g_adaptive.confMultiplierCap = MathMax(1.0, MathMin(g_adaptive.confMultiplierCap, 2.0));
-   
+
    Print("Adaptive params loaded and VALIDATED. Total trades: ", g_totalTrades,
          " | lotMult=", g_adaptive.lotMultiplier,
          " | threatMult=", g_adaptive.threatMultiplier,
@@ -5550,16 +5783,16 @@ void DrawStatsPanel()
    static datetime lastPanelUpdate = 0;
    if(TimeCurrent() - lastPanelUpdate < 5) return; // Throttle to 5?seconds
    lastPanelUpdate = TimeCurrent();
-   
+
    int x = 10, y = 30;
    color bgColor = clrDarkSlateGray;
    color txtColor = clrWhite;
-   
+
    string prefix = "V7_Panel_";
-   
+
    // Delete old objects
    ObjectsDeleteAll(0, prefix);
-   
+
    // Background rectangle
    ObjectCreate(0, prefix + "bg", OBJ_RECTANGLE_LABEL, 0, 0, 0);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_XDISTANCE, x);
@@ -5569,23 +5802,23 @@ void DrawStatsPanel()
    ObjectSetInteger(0, prefix + "bg", OBJPROP_BGCOLOR, bgColor);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_BORDER_TYPE, BORDER_FLAT);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   
+
    y += 10;
-   
+
    // Title
    CreateLabel(prefix + "title", "EA V7.2 HumanBrain (13 BUGS FIXED)", x + 10, y, clrGold, 10);
    y += 20;
-   
+
    // State
    string stateStr = EnumToString(g_eaState);
    color stateColor = clrLime;
    if(g_eaState == STATE_EXTREME_RISK) stateColor = clrRed;
    else if(g_eaState == STATE_RECOVERY_ACTIVE) stateColor = clrOrange;
    else if(g_eaState == STATE_DRAWDOWN_PROTECT) stateColor = clrYellow;
-   
+
    CreateLabel(prefix + "state", "State: " + stateStr, x + 10, y, stateColor, 9);
    y += 18;
-   
+
    // Threat
    double threat = CalculateMarketThreat();
    ENUM_THREAT_ZONE zone = GetThreatZone(threat);
@@ -5594,15 +5827,15 @@ void DrawStatsPanel()
    else if(zone == THREAT_RED)    thColor = clrOrangeRed;
    else if(zone == THREAT_ORANGE)thColor = clrOrange;
    else if(zone == THREAT_YELLOW)thColor = clrYellow;
-   
+
    CreateLabel(prefix + "threat", "Threat: " + DoubleToString(threat,1) + " (" +
                EnumToString(zone) + ")", x + 10, y, thColor, 9);
    y += 18;
-   
+
    // Regime
    CreateLabel(prefix + "regime", "Regime: " + EnumToString(g_currentRegime), x + 10, y, txtColor, 9);
    y += 18;
-   
+
    // Position counts (broker counts)
    int mainPos = CountMainPositionsFromBroker();
    int totalPos = CountAllOurPositions();
@@ -5620,7 +5853,7 @@ void DrawStatsPanel()
                IntegerToString(totalPos) + " total (max " + IntegerToString(g_adaptive.maxPositions) + ")",
                x + 10, y, txtColor, 9);
    y += 18;
-   
+
    // Daily stats
    CreateLabel(prefix + "daily", "Today: " + IntegerToString(g_daily.tradesPlaced) + " trades | W:" +
                IntegerToString(g_daily.winsToday) + " L:" + IntegerToString(g_daily.lossesToday),
@@ -5632,7 +5865,7 @@ void DrawStatsPanel()
                " | Closed Processed: " + IntegerToString(g_closedDealsProcessedTotal),
                x + 10, y, txtColor, 9);
    y += 18;
-   
+
    // P&L today
    double netToday = g_daily.profitToday - g_daily.lossToday;
    color plColor = netToday >= 0 ? clrLime : clrRed;
@@ -5643,25 +5876,25 @@ void DrawStatsPanel()
    CreateLabel(prefix + "dailycap", "Daily loss cap uses dayStartBalance=" + DoubleToString(g_daily.dayStartBalance, 2) +
                " (limit " + DoubleToString(maxDayLoss, 2) + ")", x + 10, y, txtColor, 9);
    y += 18;
-   
+
    // Streak
    CreateLabel(prefix + "streak", "Streak: W" + IntegerToString(g_consecutiveWins) +
                " / L" + IntegerToString(g_consecutiveLosses),
                x + 10, y, txtColor, 9);
    y += 18;
-   
+
    // Drawdown
    double dd = CalculateDrawdownPercent();
    color ddColor = dd < 1 ? clrLime : (dd < 2 ? clrYellow : clrRed);
    CreateLabel(prefix + "dd", "Drawdown: " + DoubleToString(dd,2) + "%", x + 10, y, ddColor, 9);
    y += 18;
-   
+
    // Adaptive params
    CreateLabel(prefix + "adapt", "Lot Mult: " + DoubleToString(g_adaptive.lotMultiplier,2) +
                " | Min Conf: " + DoubleToString(g_adaptive.minConfThreshold,1) + "%",
                x + 10, y, txtColor, 9);
    y += 18;
-   
+
       // Total trades
    CreateLabel(prefix + "total", "Total Trades: " + IntegerToString(g_totalTrades), x + 10, y, txtColor, 9);
    y += 18;
@@ -5692,24 +5925,24 @@ void DrawStatsPanel()
                   " Unmatched:" + IntegerToString(g_rlUnmatchedCloses), x + 10, y, clrCyan, 9);
       y += 18;
    }
-   
+
    // ML info
    if(INPUT_ENABLE_ML)
    {
       CreateLabel(prefix + "ml", "Training Data: " + IntegerToString(g_trainingDataCount), x + 10, y, clrCyan, 9);
       y += 18;
    }
-   
+
    // Settings summary
    CreateLabel(prefix + "settings", "MinSig:" + IntegerToString(INPUT_MIN_SIGNALS) +
                " MTF:" + IntegerToString(INPUT_MIN_MTF_SCORE) +
                " ADX:" + (INPUT_USE_ADX_FILTER ? "ON" : "OFF"),
                x + 10, y, clrGray, 8);
    y += 16;
-   
+
    // Version line
    CreateLabel(prefix + "version", "V7.2 - 13 critical bugs fixed (threat/drawdown/signals/adaptive)", x + 10, y, clrGray, 8);
-   
+
    ChartRedraw(0);
 }
 //+------------------------------------------------------------------+
@@ -5793,11 +6026,23 @@ void ManageTrailingTP()
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
       if(!PositionSelectByTicket(ticket)) continue;
 
+      // High-spread policy: close winners immediately, do not touch losing-position stops/TP.
+      if(HandleHighSpreadPositionPolicy(ticket))
+         continue;
+
+      if(!CanModifyPosition(ticket))
+         continue;
+
+      if(!CanAttemptTPModify(ticket))
+         continue;
+
       ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
       double tp = PositionGetDouble(POSITION_TP);
+      double sl = PositionGetDouble(POSITION_SL);
       double current = PositionGetDouble(POSITION_PRICE_CURRENT);
       double entry = PositionGetDouble(POSITION_PRICE_OPEN);
       int dir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
@@ -5810,10 +6055,34 @@ void ManageTrailingTP()
 
       double newTP = current + dir * INPUT_TRAIL_STEP_POINTS * _Point;
 
+      // Normalize and enforce minimum distance by stop-level/freeze-level constraints
+      newTP = NormalizeDouble(newTP, g_digits);
+      double minDistPoints = (double)MathMax(g_stopLevel, g_freezeLevel);
+      double minDistPrice = minDistPoints * g_point;
+      if(minDistPrice > 0)
+      {
+         if(dir == 1 && (newTP - current) < minDistPrice)
+            newTP = NormalizeDouble(current + minDistPrice, g_digits);
+         else if(dir == -1 && (current - newTP) < minDistPrice)
+            newTP = NormalizeDouble(current - minDistPrice, g_digits);
+      }
+
       // BUY: TP should move up; SELL: TP should move down (further away in profit direction)
       bool shouldMove = (dir == 1) ? (newTP > tp) : (newTP < tp);
-      if(shouldMove)
-         g_trade.PositionModify(ticket, PositionGetDouble(POSITION_SL), newTP);
+      if(!shouldMove)
+         continue;
+
+      if(g_trade.PositionModify(ticket, sl, newTP))
+      {
+         ResetTPFailureTracker(ticket);
+      }
+      else
+      {
+         RegisterTPModifyFailure(ticket);
+         LogWithRestartGuard("TRAIL TP MODIFY FAILED: ticket=" + IntegerToString((int)ticket) +
+                            " | retcode=" + IntegerToString((int)g_trade.ResultRetcode()) +
+                            " | comment=" + g_trade.ResultComment());
+      }
    }
 }
 
@@ -5844,7 +6113,7 @@ void HandleMultiLevelPartial(ulong ticket)
    double open = PositionGetDouble(POSITION_PRICE_OPEN);
    double tp = PositionGetDouble(POSITION_TP);
    double current = PositionGetDouble(POSITION_PRICE_CURRENT);
-   
+
    double totalDist = MathAbs(tp - open);
    if(totalDist <= 0) return;
    double progress = MathAbs(current - open) / totalDist;
