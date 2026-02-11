@@ -145,6 +145,10 @@ input double   INPUT_TRAIL_ACTIVATION_POINTS = 200.0;// Activate after this prof
 input bool     INPUT_ENABLE_TRAILING_TP      = true; // Enable trailing TP logic
 input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable running positions immediately when spread spikes
 input double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
+input bool     INPUT_ENABLE_WIN_STREAK_LOT_MULTIPLIER = true; // Enable lot multiplier after consecutive wins
+input int      INPUT_WIN_STREAK_TRIGGER_WINS = 2; // Number of consecutive wins required to trigger boost
+input double   INPUT_WIN_STREAK_LOT_MULTIPLIER = 1.25; // Lot multiplier applied after trigger wins
+input int      INPUT_WIN_STREAK_MAX_BOOST_ORDERS = 3; // Apply boosted lot to next N orders
 //--- Recovery Averaging System
 input group    "=== Recovery Averaging System ==="
 input bool     INPUT_ENABLE_RECOVERY         = false; // Enable recovery averaging (FIXED: Disabled by default)
@@ -495,6 +499,7 @@ double   g_peakEquity = 0;
 double   g_startingBalance = 0;
 int      g_consecutiveLosses = 0;
 int      g_consecutiveWins = 0;
+int      g_winStreakBoostOrdersRemaining = 0;
 double   g_averageSpread = 0;
 int      g_spreadSamples = 0;
 double   g_totalSpread = 0;
@@ -2873,7 +2878,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    {
       g_gateDiagnostics.signalsRejects++;
       if(INPUT_ENABLE_LOGGING)
-         Print("Signal detection failed");
+         LogWithRestartGuard("Signal detection failed");
       return false;
    }
 
@@ -2881,7 +2886,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    {
       g_gateDiagnostics.signalsRejects++;
       if(INPUT_ENABLE_LOGGING)
-         Print("Not enough signals: ", signals.totalSignals, " < ", INPUT_MIN_SIGNALS);
+         LogWithRestartGuard("Not enough signals: " + IntegerToString(signals.totalSignals) + " < " + IntegerToString(INPUT_MIN_SIGNALS));
       return false;
    }
 
@@ -2935,7 +2940,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
          if(adx[0] < INPUT_ADX_MIN_THRESHOLD)
          {
             if(INPUT_ENABLE_LOGGING)
-               Print("ADX filter failed: ", adx[0], " < ", INPUT_ADX_MIN_THRESHOLD);
+               LogWithRestartGuard("ADX filter failed: " + DoubleToString(adx[0], 2) + " < " + DoubleToString(INPUT_ADX_MIN_THRESHOLD, 2));
             return false;
          }
       }
@@ -2946,7 +2951,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
     if(!CheckSameDirectionLimit(direction, dirReject))
     {
        if(INPUT_ENABLE_LOGGING)
-          Print("Same-direction limit: ", dirReject);
+          LogWithRestartGuard("Same-direction limit: " + dirReject);
        return false;
     }
 
@@ -2955,7 +2960,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
     if(!CheckProximity(direction, proxReject))
     {
        if(INPUT_ENABLE_LOGGING)
-          Print("Proximity reject: ", proxReject);
+          LogWithRestartGuard("Proximity reject: " + proxReject);
        return false;
     }
 
@@ -2965,7 +2970,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
     {
        g_gateDiagnostics.mtfRejects++;
        if(INPUT_ENABLE_LOGGING)
-          Print("MTF alignment failed: ", mtfScore, " < ", INPUT_MIN_MTF_SCORE);
+          LogWithRestartGuard("MTF alignment failed: " + IntegerToString(mtfScore) + " < " + IntegerToString(INPUT_MIN_MTF_SCORE));
        return false;
     }
 
@@ -2983,7 +2988,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    {
       g_gateDiagnostics.threatRejects++;
       if(INPUT_ENABLE_LOGGING)
-         Print("Threat too high: ", threat, " > ", INPUT_MAX_THREAT_ENTRY);
+         LogWithRestartGuard("Threat too high: " + DoubleToString(threat, 2) + " > " + DoubleToString(INPUT_MAX_THREAT_ENTRY, 2));
       return false;
    }
 
@@ -2997,7 +3002,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    {
       g_gateDiagnostics.confidenceRejects++;
       if(INPUT_ENABLE_LOGGING)
-         Print("Confidence too low: ", confidence, " < ", minConf);
+         LogWithRestartGuard("Confidence too low: " + DoubleToString(confidence, 2) + " < " + DoubleToString(minConf, 2));
       return false;
    }
 
@@ -3014,7 +3019,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
       if((double)MathRand() / 32767.0 < INPUT_RL_WEIGHT)
       {
          if(INPUT_ENABLE_LOGGING)
-            Print("RL decided to skip trade");
+            LogWithRestartGuard("RL decided to skip trade");
          return false;
       }
    }
@@ -3024,7 +3029,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    {
       g_gateDiagnostics.threatRejects++;
       if(INPUT_ENABLE_LOGGING)
-         Print("Extreme threat zone â€“ blocking trade");
+         LogWithRestartGuard("Extreme threat zone - blocking trade");
       return false;
    }
 
@@ -3033,7 +3038,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    if(!CalculateSLTP(direction, threat, slPoints, tpPoints))
    {
       if(INPUT_ENABLE_LOGGING)
-         Print("SL/TP calculation failed");
+         LogWithRestartGuard("SL/TP calculation failed");
       return false;
    }
 
@@ -3321,6 +3326,34 @@ void LogWithRestartGuard(const string message)
    }
 }
 //+------------------------------------------------------------------+
+double GetWinStreakLotMultiplier()
+{
+   if(!INPUT_ENABLE_WIN_STREAK_LOT_MULTIPLIER)
+      return 1.0;
+
+   if(g_winStreakBoostOrdersRemaining <= 0)
+      return 1.0;
+
+   if(INPUT_WIN_STREAK_LOT_MULTIPLIER <= 0)
+      return 1.0;
+
+   return INPUT_WIN_STREAK_LOT_MULTIPLIER;
+}
+//+------------------------------------------------------------------+
+void ConsumeWinStreakBoostOrder()
+{
+   if(!INPUT_ENABLE_WIN_STREAK_LOT_MULTIPLIER)
+      return;
+
+   if(g_winStreakBoostOrdersRemaining <= 0)
+      return;
+
+   g_winStreakBoostOrdersRemaining--;
+
+   if(INPUT_ENABLE_LOGGING)
+      LogWithRestartGuard("WIN STREAK LOT BOOST USED: remainingOrders=" + IntegerToString(g_winStreakBoostOrdersRemaining));
+}
+//+------------------------------------------------------------------+
 bool IsSpreadTooHighNow()
 {
    double spreadPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
@@ -3587,6 +3620,9 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
    // Adaptive multiplier
    lotSize *= g_adaptive.lotMultiplier;
 
+   // Consecutive-win lot boost (optional)
+   lotSize *= GetWinStreakLotMultiplier();
+
    // Round to lot step and clamp to limits
    lotSize = MathFloor(lotSize / g_lotStep) * g_lotStep;
    lotSize = MathMax(lotSize, g_risk.minLot);
@@ -3751,6 +3787,7 @@ bool ExecuteOrder(const DecisionResult &decision)
             " | Zone: ", EnumToString(decision.threatZone),
             " | Signals: ", decision.signalCombination);
 
+      ConsumeWinStreakBoostOrder();
       g_lastOrderTime = TimeCurrent();
       g_daily.tradesPlaced++;
       g_totalTrades++;
@@ -3796,6 +3833,7 @@ bool ExecuteOrder(const DecisionResult &decision)
                       RecordStateAction(state, decision.rlAction, positionId);
          }
 
+         ConsumeWinStreakBoostOrder();
          g_lastOrderTime = TimeCurrent();
          g_daily.tradesPlaced++;
          g_totalTrades++;
@@ -4701,11 +4739,24 @@ void ProcessClosedPositions()
          g_consecutiveLosses = 0;
          g_daily.winsToday++;
          g_daily.profitToday += netProfit;
+
+         if(INPUT_ENABLE_WIN_STREAK_LOT_MULTIPLIER &&
+            INPUT_WIN_STREAK_TRIGGER_WINS > 0 &&
+            INPUT_WIN_STREAK_MAX_BOOST_ORDERS > 0 &&
+            g_consecutiveWins >= INPUT_WIN_STREAK_TRIGGER_WINS)
+         {
+            g_winStreakBoostOrdersRemaining = INPUT_WIN_STREAK_MAX_BOOST_ORDERS;
+            if(INPUT_ENABLE_LOGGING)
+               LogWithRestartGuard("WIN STREAK LOT BOOST ARMED: consecutiveWins=" + IntegerToString(g_consecutiveWins) +
+                                  " | nextOrders=" + IntegerToString(g_winStreakBoostOrdersRemaining) +
+                                  " | multiplier=" + DoubleToString(INPUT_WIN_STREAK_LOT_MULTIPLIER, 2));
+         }
       }
       else
       {
          g_consecutiveLosses++;
          g_consecutiveWins = 0;
+         g_winStreakBoostOrdersRemaining = 0;
          g_daily.lossesToday++;
          g_daily.lossToday += MathAbs(netProfit);
       }
