@@ -1,8 +1,4 @@
-﻿//+------------------------------------------------------------------+
-//|                                EA_V7_HumanBrain_Complete.mq5     |
-//|                              Copyright 2026, HumanBrain AI EA    |
-//|                        Complete Strategy Implementation V7.1     |
-//+------------------------------------------------------------------+
+
 #property copyright "HumanBrain EA V7.3 - Position Management Fixed"
 #property link      ""
 #property version   "7.30"
@@ -219,6 +215,8 @@ input bool     INPUT_LOG_COMBINATION_INSIGHTS = true; // Print best/worst combin
 input bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include recovery/aux positions in age-timeout close
 input int      INPUT_POSITION_AGE_CHECK_SECONDS = 5; // Throttle stale-position timeout checks
 input int      INPUT_HISTORY_PROCESS_INTERVAL_SECONDS = 2; // Throttle closed-deal history scan
+input int      INPUT_HISTORY_BOOTSTRAP_DAYS = 7; // Initial history window (days) when no watermark exists
+input int      INPUT_HISTORY_SAFETY_MARGIN_SECONDS = 300; // History overlap to avoid missing boundary deals
 input int      INPUT_STATE_CHECKPOINT_MINUTES = 5; // Periodic persistence checkpoint
 input int      INPUT_RL_PENDING_MAX_AGE_HOURS = 72; // Expire unmatched RL pending entries
 //--- Indicator Settings
@@ -421,6 +419,7 @@ struct CombinationStats
 struct DailyStats
 {
    datetime dayStart;
+   double   dayStartBalance;
    int      tradesPlaced;
    int      closedDealsToday;
    int      winsToday;
@@ -551,6 +550,7 @@ AIResponse g_aiResponse;
 datetime g_lastAIQuery = 0;
 //--- History tracking
 ulong    g_lastProcessedDealTicket = 0;
+datetime g_lastProcessedDealTime = 0;
 datetime g_lastPositionAgeCheck = 0;
 datetime g_lastTrailingTPCheck = 0;
 datetime g_lastHistoryProcessTime = 0;
@@ -928,15 +928,12 @@ bool IsEAExpired()
 void OnTick()
 {
    //--- Expiry check
-   if(IsEAExpired())
+   static bool expiryWarned = false;
+   bool expired = IsEAExpired();
+   if(expired && !expiryWarned)
    {
-      static bool expiryWarned = false;
-      if(!expiryWarned)
-      {
-         Print("EA EXPIRED. No new trades will be placed.");
-         expiryWarned = true;
-      }
-      return;
+      Print("EA EXPIRED. No new trades will be placed.");
+      expiryWarned = true;
    }
 
    //--- 1. Sync positions (single source of truth from broker)
@@ -969,7 +966,7 @@ void OnTick()
    if(INPUT_ENABLE_50PCT_CLOSE)
       Handle50PercentLotClose();
 
-   if(INPUT_ENABLE_RECOVERY)
+   if(INPUT_ENABLE_RECOVERY && !expired)
       MonitorRecoveryAveraging();
 
    CheckRecoveryTimeouts();
@@ -1007,11 +1004,14 @@ void OnTick()
       CalculateAverageATR();
       DetectMarketRegime();
 
-      //--- 6. Execute order
-      DecisionResult decision;
-      ZeroMemory(decision);
-      if(RunDecisionPipeline(decision) && decision.shouldTrade)
-         ExecuteOrder(decision);
+      //--- 6. Execute order (entry path blocked while expired)
+      if(!expired)
+      {
+         DecisionResult decision;
+         ZeroMemory(decision);
+         if(RunDecisionPipeline(decision) && decision.shouldTrade)
+            ExecuteOrder(decision);
+      }
    }
 
    //--- Update panel
@@ -3084,7 +3084,7 @@ bool CheckAllGates(string &rejectReason)
    }
    
    double dayLoss = g_daily.lossToday;
-   double maxDayLoss = g_startingBalance * (INPUT_DAILY_LOSS_LIMIT_PERCENT / 100.0);
+   double maxDayLoss = g_daily.dayStartBalance * (INPUT_DAILY_LOSS_LIMIT_PERCENT / 100.0);
    if(dayLoss >= maxDayLoss)
    {
       rejectReason = "Daily loss limit reached";
@@ -4421,36 +4421,53 @@ void ProcessClosedPositions()
       return;
    g_lastHistoryProcessTime = now;
 
-   if(!HistorySelect(now - 86400, now))
+   int safetyMargin = MathMax(0, INPUT_HISTORY_SAFETY_MARGIN_SECONDS);
+   datetime fromTime = 0;
+
+   if(g_lastProcessedDealTime > 0)
+      fromTime = g_lastProcessedDealTime - safetyMargin;
+   else
+      fromTime = now - (datetime)(MathMax(1, INPUT_HISTORY_BOOTSTRAP_DAYS) * 86400);
+
+   if(fromTime < 0)
+      fromTime = 0;
+
+   if(!HistorySelect(fromTime, now))
       return;
-   
+
    int dealsTotal = HistoryDealsTotal();
-   for(int i = dealsTotal - 1; i >= 0; i--)
+   datetime maxProcessedDealTime = g_lastProcessedDealTime;
+   ulong maxProcessedDealTicketAtTime = g_lastProcessedDealTicket;
+
+   for(int i = 0; i < dealsTotal; i++)
    {
       ulong dealTicket = HistoryDealGetTicket(i);
       if(dealTicket == 0) continue;
-      if(dealTicket <= g_lastProcessedDealTicket) break;
-      
+
       if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
       if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
-      
+
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT) continue;
-      
+
       datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+
+      // Time watermark filter with ticket deduplication at the boundary timestamp
+      if(closeTime < g_lastProcessedDealTime) continue;
+      if(closeTime == g_lastProcessedDealTime && dealTicket <= g_lastProcessedDealTicket) continue;
 
       double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT);
       double swap = HistoryDealGetDouble(dealTicket, DEAL_SWAP);
       double commission = HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
       double netProfit = profit + swap + commission;
-      
+
       bool isWin = (netProfit > 0);
       g_daily.closedDealsToday++;
       g_closedDealsProcessedTotal++;
 
       // Always persist minimal closed-trade record (independent from ML/RL/Markov)
       RecordClosedDealData(dealTicket, netProfit);
-      
+
       // Update consecutive streak counters
       if(isWin)
       {
@@ -4466,7 +4483,7 @@ void ProcessClosedPositions()
          g_daily.lossesToday++;
          g_daily.lossToday += MathAbs(netProfit);
       }
-      
+
       // Markov update (if enabled)
       if(INPUT_ENABLE_MARKOV)
       {
@@ -4474,7 +4491,7 @@ void ProcessClosedPositions()
          if(netProfit > 1) newState = MARKOV_WIN;
          else if(netProfit < -1) newState = MARKOV_LOSS;
          else newState = MARKOV_EVEN;
-         
+
          UpdateMarkovTransition(g_lastMarkovState, newState);
       }
 
@@ -4519,14 +4536,35 @@ void ProcessClosedPositions()
 
       // Fingerprint learning update (if enabled)
       UpdateFingerprintOnClose(posId, netProfit, isWin, closeTime);
-      
-      g_lastProcessedDealTicket = dealTicket;
-      
+
+      if(closeTime > maxProcessedDealTime)
+      {
+         maxProcessedDealTime = closeTime;
+         maxProcessedDealTicketAtTime = dealTicket;
+      }
+      else if(closeTime == maxProcessedDealTime && dealTicket > maxProcessedDealTicketAtTime)
+      {
+         maxProcessedDealTicketAtTime = dealTicket;
+      }
+
       Print("CLOSED DEAL: DealTicket ", dealTicket,
             " | PositionTicket: ", posId,
             " | P&L: ", netProfit,
             " | Win: ", isWin, " | ConsWin: ", g_consecutiveWins,
             " | ConsLoss: ", g_consecutiveLosses);
+   }
+
+   if(maxProcessedDealTime > g_lastProcessedDealTime ||
+      (maxProcessedDealTime == g_lastProcessedDealTime && maxProcessedDealTicketAtTime > g_lastProcessedDealTicket))
+   {
+      g_lastProcessedDealTime = maxProcessedDealTime;
+      g_lastProcessedDealTicket = maxProcessedDealTicketAtTime;
+   }
+   else if(g_lastProcessedDealTime == 0)
+   {
+      // Bootstrap: avoid rescanning the same large range on every tick
+      g_lastProcessedDealTime = now;
+      g_lastProcessedDealTicket = 0;
    }
 }
 //+------------------------------------------------------------------+
@@ -4897,6 +4935,7 @@ void ParseAIResponse(const string &response)
 void ResetDailyCounters()
 {
    g_daily.dayStart = iTime(_Symbol, PERIOD_D1, 0);
+   g_daily.dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_daily.tradesPlaced = 0;
    g_daily.closedDealsToday = 0;
    g_daily.winsToday = 0;
@@ -4918,7 +4957,7 @@ void CheckDailyReset()
       
       CleanupInactivePositions();
       
-      Print("=== NEW DAY RESET ===");
+      Print("=== NEW DAY RESET === | Daily loss baseline balance=", DoubleToString(g_daily.dayStartBalance, 2));
    }
 }
 //+------------------------------------------------------------------+
@@ -5373,8 +5412,9 @@ void SaveRuntimeState()
       return;
    }
 
-   FileWriteInteger(handle, 2); // schema version
+   FileWriteInteger(handle, 3); // schema version
    FileWriteLong(handle, (long)g_lastProcessedDealTicket);
+   FileWriteLong(handle, (long)g_lastProcessedDealTime);
    FileWriteInteger(handle, g_rlMatchedUpdates);
    FileWriteInteger(handle, g_rlUnmatchedCloses);
    FileWriteInteger(handle, g_closedDealsProcessedTotal);
@@ -5409,7 +5449,7 @@ void LoadRuntimeState()
    }
 
    int version = FileReadInteger(handle);
-   if(version != 1 && version != 2)
+   if(version != 1 && version != 2 && version != 3)
    {
       Print("WARNING: Runtime state version mismatch: ", version);
       FileClose(handle);
@@ -5417,6 +5457,10 @@ void LoadRuntimeState()
    }
 
    g_lastProcessedDealTicket = (ulong)FileReadLong(handle);
+   if(version >= 3)
+      g_lastProcessedDealTime = (datetime)FileReadLong(handle);
+   else
+      g_lastProcessedDealTime = 0;
    g_rlMatchedUpdates = FileReadInteger(handle);
    g_rlUnmatchedCloses = FileReadInteger(handle);
    g_closedDealsProcessedTotal = FileReadInteger(handle);
@@ -5486,6 +5530,7 @@ void LoadRuntimeState()
    if(INPUT_ENABLE_LOGGING)
    {
       Print("Runtime state loaded: lastDeal=", g_lastProcessedDealTicket,
+            " | lastDealTime=", TimeToString(g_lastProcessedDealTime, TIME_DATE|TIME_SECONDS),
             " | RL matched=", g_rlMatchedUpdates,
             " | RL unmatched=", g_rlUnmatchedCloses,
             " | closed processed=", g_closedDealsProcessedTotal,
@@ -5592,6 +5637,11 @@ void DrawStatsPanel()
    double netToday = g_daily.profitToday - g_daily.lossToday;
    color plColor = netToday >= 0 ? clrLime : clrRed;
    CreateLabel(prefix + "pnl", "P&L Today: " + DoubleToString(netToday, 2), x + 10, y, plColor, 9);
+   y += 18;
+
+   double maxDayLoss = g_daily.dayStartBalance * (INPUT_DAILY_LOSS_LIMIT_PERCENT / 100.0);
+   CreateLabel(prefix + "dailycap", "Daily loss cap uses dayStartBalance=" + DoubleToString(g_daily.dayStartBalance, 2) +
+               " (limit " + DoubleToString(maxDayLoss, 2) + ")", x + 10, y, txtColor, 9);
    y += 18;
    
    // Streak
