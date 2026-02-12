@@ -462,6 +462,9 @@ struct RLStateAction
    double   slDistance;
    double   lot;
    double   tickValue;
+   double   confidenceSnapshot;
+   int      mtfScoreSnapshot;
+   double   comboStrengthSnapshot;
 };
 struct ClosedPositionContext
 {
@@ -602,6 +605,9 @@ datetime g_lastCheckpointTime = 0;
 int      g_closedDealsProcessedTotal = 0;
 int      g_rlMatchedUpdates = 0;
 int      g_rlUnmatchedCloses = 0;
+int      g_rlRuntimeRejectBadStateAction = 0;
+int      g_rlRuntimeRejectTicketMismatch = 0;
+int      g_rlRuntimeRejectNaNRiskBasis = 0;
 int      g_syncMissingCount = 0;
 int      g_syncNewCount = 0;
 int      g_syncDuplicateCount = 0;
@@ -2346,8 +2352,36 @@ ENUM_RL_ACTION GetRLAction(int state)
    }
 }
 //+------------------------------------------------------------------+
+double GetCombinationStrengthSnapshot(const string &combination)
+{
+   for(int i = 0; i < g_combinationStatsCount; i++)
+   {
+      if(g_combinationStats[i].combination == combination)
+         return g_combinationStats[i].strengthScore;
+   }
+   return 50.0;
+}
+//+------------------------------------------------------------------+
+double ResolveNextStateConfidence(const RLStateAction &rec)
+{
+   if(MathIsValidNumber(rec.confidenceSnapshot) && rec.confidenceSnapshot >= 0.0 && rec.confidenceSnapshot <= 100.0)
+      return rec.confidenceSnapshot;
+
+   // Deterministic fallback: combine MTF score and combo strength snapshot.
+   double mtfComponent = 50.0;
+   if(rec.mtfScoreSnapshot >= -4 && rec.mtfScoreSnapshot <= 4)
+      mtfComponent = 50.0 + rec.mtfScoreSnapshot * 7.5;
+
+   double comboComponent = 50.0;
+   if(MathIsValidNumber(rec.comboStrengthSnapshot))
+      comboComponent = MathMax(0.0, MathMin(100.0, rec.comboStrengthSnapshot));
+
+   return MathMax(0.0, MathMin(100.0, (mtfComponent * 0.4) + (comboComponent * 0.6)));
+}
+//+------------------------------------------------------------------+
 void RecordStateAction(int state, ENUM_RL_ACTION action, ulong orderTicket, ulong positionId,
-                       double entryPrice, double slDistance, double lot, double tickValue)
+                       double entryPrice, double slDistance, double lot, double tickValue,
+                       double confidenceSnapshot, int mtfScoreSnapshot, double comboStrengthSnapshot)
 {
    const int pendingCap = MathMax(1, INPUT_RL_PENDING_HARD_CAP);
 
@@ -2414,6 +2448,9 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong orderTicket, ulon
    g_pendingRL[g_pendingRLCount].slDistance = slDistance;
    g_pendingRL[g_pendingRLCount].lot = lot;
    g_pendingRL[g_pendingRLCount].tickValue = tickValue;
+   g_pendingRL[g_pendingRLCount].confidenceSnapshot = confidenceSnapshot;
+   g_pendingRL[g_pendingRLCount].mtfScoreSnapshot = mtfScoreSnapshot;
+   g_pendingRL[g_pendingRLCount].comboStrengthSnapshot = comboStrengthSnapshot;
    g_pendingRLCount++;
 
    if(INPUT_ENABLE_LOGGING)
@@ -2526,8 +2563,9 @@ void UpdateRLFromTrade(ulong positionId, double reward)
       if(g_pendingRL[i].positionTicket == positionId)
       {
          matched = true;
-         int state = g_pendingRL[i].state;
-         ENUM_RL_ACTION action = g_pendingRL[i].action;
+         RLStateAction rec = g_pendingRL[i];
+         int state = rec.state;
+         ENUM_RL_ACTION action = rec.action;
 
          if(state < 0 || state >= Q_TABLE_STATES || action < 0 || action >= Q_TABLE_ACTIONS)
          {
@@ -2546,7 +2584,8 @@ void UpdateRLFromTrade(ulong positionId, double reward)
          double threat = CalculateMarketThreat();
          int positions = CountMainPositionsFromBroker();
          double dd = CalculateDrawdownPercent();
-         int nextState = DetermineRLState(50, threat, positions, dd, g_consecutiveWins > 0);
+         double nextConfidence = ResolveNextStateConfidence(rec);
+         int nextState = DetermineRLState(nextConfidence, threat, positions, dd, g_consecutiveWins > 0);
          double nextStateMaxQ = g_qTable[nextState][0];
 
          for(int a = 1; a < Q_TABLE_ACTIONS; a++)
@@ -2570,6 +2609,7 @@ void UpdateRLFromTrade(ulong positionId, double reward)
          if(INPUT_ENABLE_LOGGING)
             Print("RL Update: State=", state, " Action=", EnumToString(action),
                   " Reward=", reward, " OldQ=", oldQ, " NewQ=", newQ,
+                  " | NextConf=", DoubleToString(nextConfidence, 2),
                   " | PositionId=", positionId,
                   " | PendingRemaining=", g_pendingRLCount);
 
@@ -2635,23 +2675,32 @@ void CleanupStalePendingRL()
 //+------------------------------------------------------------------+
 //| SECTION 16: MARKOV CHAIN ANALYSIS (Part 4.2)                     |
 //+------------------------------------------------------------------+
+int GetMarkovRowTotal(const ENUM_MARKOV_STATE row)
+{
+   int rowTotal = 0;
+   for(int to = 0; to < MARKOV_STATES; to++)
+      rowTotal += MathMax(g_markovCounts[row][to], 0);
+   return rowTotal;
+}
+//+------------------------------------------------------------------+
+bool HasMarkovRowEvidence(const ENUM_MARKOV_STATE row, const int minimumRowSamples)
+{
+   return (GetMarkovRowTotal(row) >= minimumRowSamples);
+}
+//+------------------------------------------------------------------+
 void RecomputeMarkovTransitionsFromCounts()
 {
+   const double laplaceAlpha = 1.0; // Dirichlet/Laplace smoothing for sparse rows.
+
    for(int from = 0; from < MARKOV_STATES; from++)
    {
-      int rowTotal = 0;
-      for(int to = 0; to < MARKOV_STATES; to++)
-         rowTotal += MathMax(g_markovCounts[from][to], 0);
+      int rowTotal = GetMarkovRowTotal((ENUM_MARKOV_STATE)from);
+      double denominator = rowTotal + (laplaceAlpha * MARKOV_STATES);
 
-      if(rowTotal > 0)
+      for(int to = 0; to < MARKOV_STATES; to++)
       {
-         for(int to = 0; to < MARKOV_STATES; to++)
-            g_markovTransitions[from][to] = (double)MathMax(g_markovCounts[from][to], 0) / rowTotal;
-      }
-      else
-      {
-         for(int to = 0; to < MARKOV_STATES; to++)
-            g_markovTransitions[from][to] = 1.0 / MARKOV_STATES;
+         double numerator = MathMax(g_markovCounts[from][to], 0) + laplaceAlpha;
+         g_markovTransitions[from][to] = numerator / denominator;
       }
    }
 }
@@ -2705,7 +2754,10 @@ void LogMarkovAdjustmentSimulation()
 //+------------------------------------------------------------------+
 double GetMarkovConfidenceAdjustment()
 {
-   if(!INPUT_ENABLE_MARKOV || g_markovTradesRecorded < 10)
+   const int minimumObservations = 10;
+   const int minimumRowSamples = 3;
+
+   if(!INPUT_ENABLE_MARKOV || g_markovQueueCount < minimumObservations)
       return 0;
 
    double adjustment = 0;
@@ -2713,17 +2765,23 @@ double GetMarkovConfidenceAdjustment()
    // After consecutive wins, check the probability of a WIN->LOSS transition
    if(g_consecutiveWins >= 3)
    {
-      double pLoss = g_markovTransitions[MARKOV_WIN][MARKOV_LOSS];
-      if(pLoss > 0.4)
-         adjustment = -5.0 * (g_consecutiveWins - 2);
+      if(HasMarkovRowEvidence(MARKOV_WIN, minimumRowSamples))
+      {
+         double pLoss = g_markovTransitions[MARKOV_WIN][MARKOV_LOSS];
+         if(pLoss > 0.4)
+            adjustment = -5.0 * (g_consecutiveWins - 2);
+      }
    }
 
    // After consecutive losses, apply proportional mean-reversion boost
    if(g_consecutiveLosses >= 3)
    {
-      double pWin = g_markovTransitions[MARKOV_LOSS][MARKOV_WIN];
-      if(pWin > 0.3)
-         adjustment += 3.0 * (g_consecutiveLosses - 2);
+      if(HasMarkovRowEvidence(MARKOV_LOSS, minimumRowSamples))
+      {
+         double pWin = g_markovTransitions[MARKOV_LOSS][MARKOV_WIN];
+         if(pWin > 0.3)
+            adjustment += 3.0 * (g_consecutiveLosses - 2);
+      }
    }
 
    adjustment = MathMax(-15.0, MathMin(15.0, adjustment));
@@ -3955,7 +4013,9 @@ bool ExecuteOrder(const DecisionResult &decision)
                            (decision.direction == 1 ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) + INPUT_PENDING_STOP_OFFSET_POINTS * g_point
                                                     : SymbolInfoDouble(_Symbol, SYMBOL_BID) - INPUT_PENDING_STOP_OFFSET_POINTS * g_point),
                            decision.slPoints * g_point, decision.lotSize,
-                           SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE));
+                           SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE),
+                           decision.confidence, decision.mtfScore,
+                           GetCombinationStrengthSnapshot(decision.signalCombination));
       }
 
       ConsumeStreakMultiplierOrder();
@@ -4003,7 +4063,9 @@ bool ExecuteOrder(const DecisionResult &decision)
                                           g_consecutiveWins >= 2);
                       RecordStateAction(state, decision.rlAction, orderTicket, positionId,
                                         price, decision.slPoints * g_point, decision.lotSize,
-                                        SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE));
+                                        SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE),
+                                        decision.confidence, decision.mtfScore,
+                                        GetCombinationStrengthSnapshot(decision.signalCombination));
          }
 
          ConsumeStreakMultiplierOrder();
@@ -6113,7 +6175,7 @@ void SaveRuntimeState()
       return;
    }
 
-   FileWriteInteger(handle, 5);
+   FileWriteInteger(handle, 6);
    FileWriteLong(handle, (long)g_lastProcessedDealTicket);
    FileWriteLong(handle, (long)g_lastProcessedDealTime);
    FileWriteLong(handle, (long)g_lastProcessedEntryDealTicket);
@@ -6138,6 +6200,9 @@ void SaveRuntimeState()
       FileWriteDouble(handle, g_pendingRL[i].slDistance);
       FileWriteDouble(handle, g_pendingRL[i].lot);
       FileWriteDouble(handle, g_pendingRL[i].tickValue);
+      FileWriteDouble(handle, g_pendingRL[i].confidenceSnapshot);
+      FileWriteInteger(handle, g_pendingRL[i].mtfScoreSnapshot);
+      FileWriteDouble(handle, g_pendingRL[i].comboStrengthSnapshot);
       checksum += g_pendingRL[i].state + (int)g_pendingRL[i].action + (int)(g_pendingRL[i].positionTicket % 2147483647);
    }
 
@@ -6158,7 +6223,7 @@ void LoadRuntimeState()
    }
 
    int version = FileReadInteger(handle);
-   if(version != 1 && version != 2 && version != 3 && version != 4 && version != 5)
+   if(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6)
    {
       Print("WARNING: Runtime state version mismatch: ", version);
       FileClose(handle);
@@ -6183,6 +6248,7 @@ void LoadRuntimeState()
    g_closedDealsProcessedTotal = FileReadInteger(handle);
 
    int restored = 0, stale = 0, deduped = 0, droppedInvalid = 0;
+   int droppedBadStateAction = 0, droppedTicketMismatch = 0, droppedNaNRiskBasis = 0;
    int checksum = (int)(g_lastProcessedDealTicket % 2147483647) + (int)g_lastProcessedDealTime + (int)(g_lastProcessedEntryDealTicket % 2147483647) + (int)g_lastProcessedEntryDealTime + g_rlMatchedUpdates + g_rlUnmatchedCloses + g_closedDealsProcessedTotal;
 
    if(version >= 2)
@@ -6210,17 +6276,34 @@ void LoadRuntimeState()
          rec.slDistance = FileReadDouble(handle);
          rec.lot = FileReadDouble(handle);
          rec.tickValue = FileReadDouble(handle);
+         rec.confidenceSnapshot = (version >= 6) ? FileReadDouble(handle) : 50.0;
+         rec.mtfScoreSnapshot = (version >= 6) ? FileReadInteger(handle) : 0;
+         rec.comboStrengthSnapshot = (version >= 6) ? FileReadDouble(handle) : 50.0;
 
          checksum += rec.state + (int)rec.action + (int)(rec.positionTicket % 2147483647);
 
-         bool invalid = (rec.state < 0 || rec.state >= Q_TABLE_STATES || rec.action < 0 || rec.action >= Q_TABLE_ACTIONS || rec.positionTicket == 0 || !MathIsValidNumber(rec.entryPrice) || !MathIsValidNumber(rec.slDistance) || !MathIsValidNumber(rec.lot) || !MathIsValidNumber(rec.tickValue));
-         if(invalid) { droppedInvalid++; continue; }
+         bool badStateAction = (rec.state < 0 || rec.state >= Q_TABLE_STATES || rec.action < 0 || rec.action >= Q_TABLE_ACTIONS);
+         bool ticketMismatch = (rec.positionTicket == 0 && rec.orderTicket == 0);
+         bool nanRiskBasis = (!MathIsValidNumber(rec.entryPrice) || !MathIsValidNumber(rec.slDistance) || !MathIsValidNumber(rec.lot) || !MathIsValidNumber(rec.tickValue));
+
+         if(badStateAction || ticketMismatch || nanRiskBasis)
+         {
+            droppedInvalid++;
+            if(badStateAction) droppedBadStateAction++;
+            if(ticketMismatch) droppedTicketMismatch++;
+            if(nanRiskBasis) droppedNaNRiskBasis++;
+            continue;
+         }
 
          if(maxAgeSec > 0 && (now - rec.timestamp) > maxAgeSec) { stale++; continue; }
 
          bool dup = false;
          for(int j = 0; j < g_pendingRLCount; j++)
-            if(g_pendingRL[j].positionTicket == rec.positionTicket) { dup = true; break; }
+         {
+            bool samePosition = (rec.positionTicket > 0 && g_pendingRL[j].positionTicket == rec.positionTicket);
+            bool samePendingOrder = (rec.positionTicket == 0 && rec.orderTicket > 0 && g_pendingRL[j].positionTicket == 0 && g_pendingRL[j].orderTicket == rec.orderTicket);
+            if(samePosition || samePendingOrder) { dup = true; break; }
+         }
          if(dup) { deduped++; continue; }
 
          if(g_pendingRLCount >= pendingCap) continue;
@@ -6234,12 +6317,19 @@ void LoadRuntimeState()
    if(version >= 5 && fileChecksum != checksum)
       Print("WARNING: Runtime state checksum mismatch expected=", fileChecksum, " computed=", checksum);
 
+   g_rlRuntimeRejectBadStateAction = droppedBadStateAction;
+   g_rlRuntimeRejectTicketMismatch = droppedTicketMismatch;
+   g_rlRuntimeRejectNaNRiskBasis = droppedNaNRiskBasis;
+
    if(INPUT_ENABLE_LOGGING)
       Print("Runtime state loaded: lastDeal=", g_lastProcessedDealTicket,
             " | pending restored=", restored,
             " | stale dropped=", stale,
             " | deduped=", deduped,
             " | invalid dropped=", droppedInvalid,
+            " | rejectBadStateAction=", droppedBadStateAction,
+            " | rejectTicketMismatch=", droppedTicketMismatch,
+            " | rejectNaNRiskBasis=", droppedNaNRiskBasis,
             " | pending active=", g_pendingRLCount,
             " | schema=", version);
 }
