@@ -191,6 +191,7 @@ input int      INPUT_RL_MIN_TRADES      = 20;     // Min trades before RL applie
 input double   INPUT_RL_WEIGHT          = 0.3;    // RL weight in final decision (0-1)
 input bool     INPUT_RL_USE_RAW_REWARD  = false;  // Use raw netProfit reward instead of normalized profit/risk
 input int      INPUT_RL_PENDING_HARD_CAP = 500;   // Hard cap for pending RL entries
+input bool     INPUT_STRICT_STATE_LOAD  = true;   // Strict runtime load: reset pending RL/watermarks on checksum mismatch
 //--- Markov Chain Analysis
 input group    "=== Markov Chain Analysis ==="
 input bool     INPUT_ENABLE_MARKOV      = false;  // Enable Markov chain analysis (FIXED: Disabled for backtesting)
@@ -223,6 +224,7 @@ input bool     INPUT_ENABLE_COMBINATION_ADAPTIVE = true; // Priority 2: learn pe
 input int      INPUT_COMBO_MIN_TRADES   = 10;     // Minimum trades required per combination for analysis
 input double   INPUT_COMBO_CONFIDENCE_WEIGHT = 0.3; // How strongly combo strength affects confidence
 input bool     INPUT_LOG_COMBINATION_INSIGHTS = true; // Print best/worst combination insights
+input int      INPUT_COMBO_INSIGHT_TOP_N = 1;     // Number of best/worst combos to log per refresh
 input bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include recovery/aux positions in age-timeout close
 input int      INPUT_POSITION_AGE_CHECK_SECONDS = 5; // Throttle stale-position timeout checks
 input int      INPUT_HISTORY_PROCESS_INTERVAL_SECONDS = 2; // Throttle closed-deal history scan
@@ -230,6 +232,8 @@ input int      INPUT_HISTORY_BOOTSTRAP_DAYS = 7; // Initial history window (days
 input int      INPUT_HISTORY_SAFETY_MARGIN_SECONDS = 300; // History overlap to avoid missing boundary deals
 input int      INPUT_STATE_CHECKPOINT_MINUTES = 5; // Periodic persistence checkpoint
 input int      INPUT_RL_PENDING_MAX_AGE_HOURS = 72; // Expire unmatched RL pending entries
+input int      INPUT_ON_TICK_BUDGET_MS = 30;      // Soft per-tick budget for non-critical work
+input int      INPUT_HEAVY_BASE_INTERVAL_SECONDS = 2; // Base throttle for expensive maintenance tasks
 //--- Indicator Settings
 input group    "=== Indicator Settings ==="
 input int      INPUT_EMA_FAST        = 8;         // Fast EMA period
@@ -273,6 +277,18 @@ input int      INPUT_REPEAT_LOG_RESTART_THRESHOLD = 50; // Restart EA when exact
 #define Q_TABLE_STATES            108
 #define Q_TABLE_ACTIONS           4
 #define MARKOV_STATES             3
+#define QTABLE_SCHEMA_VERSION     3
+#define RUNTIME_SCHEMA_VERSION    7
+#define QTABLE_HASH_SENTINEL      0x51424C31
+#define RUNTIME_HASH_SENTINEL     0x52554E31
+
+enum ENUM_POSITION_SUBTYPE
+{
+   SUBTYPE_MAIN      = 0,
+   SUBTYPE_RECOVERY  = 1,
+   SUBTYPE_AVERAGING = 2,
+   SUBTYPE_AUX       = 3
+};
 //+------------------------------------------------------------------+
 //| SECTION 4: STRUCTURES                                            |
 //+------------------------------------------------------------------+
@@ -394,9 +410,12 @@ struct TrainingData
    double   threatAtEntry;
    int      mtfScore;
    double   volatilityRatio;
-   int      session;
-   int      dayOfWeek;
-   ENUM_MARKET_REGIME regime;
+   int      entrySession;
+   int      closeSession;
+   int      entryDayOfWeek;
+   int      closeDayOfWeek;
+   ENUM_MARKET_REGIME entryRegime;
+   ENUM_MARKET_REGIME closeRegime;
    string   fingerprintId;
    int      rlState;
    ENUM_RL_ACTION rlAction;
@@ -479,6 +498,7 @@ struct MarkovTransitionEvent
 {
    ENUM_MARKOV_STATE fromState;
    ENUM_MARKOV_STATE toState;
+   datetime          observedAt;
 };
 struct AIResponse
 {
@@ -620,6 +640,15 @@ ENUM_MARKOV_STATE g_lastMarkovState = MARKOV_EVEN;
 int      g_markovTradesRecorded = 0;
 MarkovTransitionEvent g_markovQueue[];
 int      g_markovQueueCount = 0;
+int      g_markovQueueHead = 0;
+
+ulong    g_tickMsHistory = 0;
+ulong    g_tickMsManagePositions = 0;
+ulong    g_tickMsDecision = 0;
+ulong    g_tickMsPanel = 0;
+ulong    g_tickMsPersistence = 0;
+datetime g_lastHeavyHistoryRun = 0;
+datetime g_lastPanelRun = 0;
 //--- AI Integration
 AIResponse g_aiResponse;
 datetime g_lastAIQuery = 0;
@@ -771,7 +800,7 @@ int OnInit()
    g_adaptive.tradesAtLastOpt = 0;
       ZeroMemory(g_gateDiagnostics);
    //--- Setup trade object
-   g_trade.SetExpertMagicNumber(INPUT_MAGIC_NUMBER);
+   g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_MAIN));
    g_trade.SetDeviationInPoints(30);
    g_trade.SetTypeFilling(ORDER_FILLING_FOK);
    g_trade.SetAsyncMode(false);
@@ -1063,7 +1092,9 @@ bool IsEAExpired()
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   //--- Expiry check
+   ulong tickStartMs = GetTickCount();
+   datetime now = TimeCurrent();
+
    static bool expiryWarned = false;
    bool expired = IsEAExpired();
    if(expired && !expiryWarned)
@@ -1072,27 +1103,29 @@ void OnTick()
       expiryWarned = true;
    }
 
-   //--- 1. Sync positions (single source of truth from broker)
    SyncPositionStates();
 
-   //--- 2. Process history before removing inactive position context
-   ProcessClosedPositions();
-   ProcessEntryDeals();
-   CleanupInactivePositions();
-   CleanupRecentClosedContext();
-   CleanupStalePendingRL();
+   ulong t0 = GetTickCount();
+   int adaptiveIntervalSec = MathMax(1, INPUT_HEAVY_BASE_INTERVAL_SECONDS);
+   if(g_lastHeavyHistoryRun == 0 || (now - g_lastHeavyHistoryRun) >= adaptiveIntervalSec)
+   {
+      ProcessClosedPositions();
+      ProcessEntryDeals();
+      CleanupInactivePositions();
+      CleanupRecentClosedContext();
+      CleanupStalePendingRL();
+      g_lastHeavyHistoryRun = now;
+   }
+   g_tickMsHistory = GetTickCount() - t0;
 
-   //--- High-spread protective actions before any stop-management logic
    HandleHighSpreadOpenPositions();
 
-   //--- 3. Update learning
    if(INPUT_ENABLE_ADAPTIVE)
       CheckAdaptiveOptimization();
-
    if(INPUT_AI_MODE != AI_OFF && ShouldQueryAI())
       QueryDeepSeekAI();
 
-   //--- 4. Manage open positions
+   t0 = GetTickCount();
    ManageTrailingTP();
    CheckPositionAgeTimeout();
    CleanupExpiredPendingStopOrders();
@@ -1104,19 +1137,15 @@ void OnTick()
       if(ticket == 0) continue;
       HandleMultiLevelPartial(ticket);
    }
-
    if(INPUT_ENABLE_50PCT_CLOSE)
       Handle50PercentLotClose();
-
    if(INPUT_ENABLE_RECOVERY && !expired)
       MonitorRecoveryAveraging();
-
    CheckRecoveryTimeouts();
+   g_tickMsManagePositions = GetTickCount() - t0;
 
-   //--- Equity tracking and protection
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   if(equity > g_peakEquity)
-      g_peakEquity = equity;
+   if(equity > g_peakEquity) g_peakEquity = equity;
 
    double equityFloor = g_startingBalance * (INPUT_EQUITY_FLOOR_PERCENT / 100.0);
    if(equity < equityFloor)
@@ -1145,17 +1174,14 @@ void OnTick()
       return;
    }
 
-   //--- 5. Evaluate new entry (once per M1 bar)
+   t0 = GetTickCount();
    datetime currentBarTime = iTime(_Symbol, PERIOD_M1, 0);
    if(currentBarTime != g_lastBarTime)
    {
       g_lastBarTime = currentBarTime;
-
       UpdateAverageSpread();
       CalculateAverageATR();
       DetectMarketRegime();
-
-      //--- 6. Execute order (entry path blocked while expired)
       if(!expired)
       {
          DecisionResult decision;
@@ -1164,21 +1190,29 @@ void OnTick()
             ExecuteOrder(decision);
       }
    }
+   g_tickMsDecision = GetTickCount() - t0;
 
-   //--- Update panel
-   if(INPUT_SHOW_PANEL)
+   t0 = GetTickCount();
+   if(INPUT_SHOW_PANEL && (g_lastPanelRun == 0 || (now - g_lastPanelRun) >= 2))
+   {
       DrawStatsPanel();
+      g_lastPanelRun = now;
+   }
+   g_tickMsPanel = GetTickCount() - t0;
 
-   //--- 7. Persist checkpoint
+   t0 = GetTickCount();
    if(INPUT_STATE_CHECKPOINT_MINUTES > 0 &&
-      (g_lastCheckpointTime == 0 || TimeCurrent() - g_lastCheckpointTime >= INPUT_STATE_CHECKPOINT_MINUTES * 60))
+      (g_lastCheckpointTime == 0 || now - g_lastCheckpointTime >= INPUT_STATE_CHECKPOINT_MINUTES * 60) &&
+      (int)(GetTickCount() - tickStartMs) <= INPUT_ON_TICK_BUDGET_MS)
    {
       SaveRuntimeState();
       if(INPUT_ENABLE_FINGERPRINT)
          SaveFingerprintData();
-      g_lastCheckpointTime = TimeCurrent();
+      g_lastCheckpointTime = now;
    }
+   g_tickMsPersistence = GetTickCount() - t0;
 }
+
 //+------------------------------------------------------------------+
 //| SECTION 9: EA STATE MANAGEMENT                                   |
 //+------------------------------------------------------------------+
@@ -1241,7 +1275,7 @@ void HandleExtremeRisk()
       if(ticket == 0) continue;
       if(!PositionSelectByTicket(ticket)) continue;
       if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != INPUT_MAGIC_NUMBER) continue;
+      if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC))) continue;
 
       datetime posTime = (datetime)PositionGetInteger(POSITION_TIME);
       if(posTime < oldestTime)
@@ -1262,6 +1296,48 @@ void HandleExtremeRisk()
 //+------------------------------------------------------------------+
 //| SECTION 10: POSITION COUNTING - FIXED!                           |
 //+------------------------------------------------------------------+
+uint FNV1aStart() { return 2166136261; }
+uint FNV1aUpdateByte(uint hash, uint b) { return (hash ^ (b & 0xFF)) * 16777619; }
+uint FNV1aUpdateInt(uint hash, int value)
+{
+   uint v=(uint)value;
+   for(int i=0;i<4;i++) hash=FNV1aUpdateByte(hash,(v>>(i*8))&0xFF);
+   return hash;
+}
+uint FNV1aUpdateLong(uint hash, long value)
+{
+   ulong v=(ulong)value;
+   for(int i=0;i<8;i++) hash=FNV1aUpdateByte(hash,(uint)((v>>(i*8))&0xFF));
+   return hash;
+}
+uint FNV1aUpdateDouble(uint hash, double value)
+{
+   long scaled=(long)MathRound(value*1000000.0);
+   return FNV1aUpdateLong(hash, scaled);
+}
+
+int BuildMagicForSubtype(ENUM_POSITION_SUBTYPE subtype)
+{
+   return INPUT_MAGIC_NUMBER + ((int)subtype * 100000000);
+}
+bool IsOurMagic(const long magic)
+{
+   int base=(int)(magic % 100000000);
+   if(base<0) base+=100000000;
+   return base==INPUT_MAGIC_NUMBER;
+}
+ENUM_POSITION_SUBTYPE InferSubtypeFromComment(const string &comment)
+{
+   if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) return SUBTYPE_RECOVERY;
+   if(StringFind(comment, COMMENT_AVG_PREFIX) >= 0) return SUBTYPE_AVERAGING;
+   return SUBTYPE_MAIN;
+}
+bool IsAuxSubtypeByMagic(long magic)
+{
+   int subtype=(int)(magic/100000000);
+   return (subtype==SUBTYPE_RECOVERY || subtype==SUBTYPE_AVERAGING || subtype==SUBTYPE_AUX);
+}
+
 //--- Helper: returns true only if the position belongs to this EA
 bool IsOurPosition(ulong ticket)
 {
@@ -1269,7 +1345,7 @@ bool IsOurPosition(ulong ticket)
       return false;
    if(PositionGetString(POSITION_SYMBOL) != _Symbol)
       return false;
-   if(PositionGetInteger(POSITION_MAGIC) != INPUT_MAGIC_NUMBER)
+   if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC)))
       return false;
    return true;
 }
@@ -1280,7 +1356,7 @@ bool IsOurPendingOrder(ulong ticket)
       return false;
    if(OrderGetString(ORDER_SYMBOL) != _Symbol)
       return false;
-   if(OrderGetInteger(ORDER_MAGIC) != INPUT_MAGIC_NUMBER)
+   if(!IsOurMagic(OrderGetInteger(ORDER_MAGIC)))
       return false;
 
    ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
@@ -1336,7 +1412,7 @@ void CleanupExpiredPendingStopOrders()
       request.action = TRADE_ACTION_REMOVE;
       request.order = ticket;
       request.symbol = _Symbol;
-      request.magic = INPUT_MAGIC_NUMBER;
+      request.magic = BuildMagicForSubtype(SUBTYPE_MAIN);
       request.comment = "PENDING_EXPIRED_CLEANUP";
 
       bool sent = OrderSend(request, result);
@@ -1366,12 +1442,15 @@ int CountMainPositionsFromBroker()
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
 
+      long magic = PositionGetInteger(POSITION_MAGIC);
       string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
-      if(StringFind(comment, COMMENT_AVG_PREFIX)      >= 0) continue;
-      if(StringFind(comment, COMMENT_HEDGE_PREFIX)    >= 0) continue;
-      if(StringFind(comment, COMMENT_GRID_PREFIX)     >= 0) continue;
-      if(StringFind(comment, COMMENT_50PCT_PREFIX)    >= 0) continue;
+      bool auxByMagic = IsAuxSubtypeByMagic(magic);
+      bool auxByComment = (StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
+                           StringFind(comment, COMMENT_AVG_PREFIX)      >= 0 ||
+                           StringFind(comment, COMMENT_HEDGE_PREFIX)    >= 0 ||
+                           StringFind(comment, COMMENT_GRID_PREFIX)     >= 0 ||
+                           StringFind(comment, COMMENT_50PCT_PREFIX)    >= 0);
+      if(auxByMagic || auxByComment) continue;
 
       mainCount++;
    }
@@ -1416,8 +1495,10 @@ int CountRecoveryPositions()
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
 
+      long magic = PositionGetInteger(POSITION_MAGIC);
       string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
+      if(IsAuxSubtypeByMagic(magic) ||
+         StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
          StringFind(comment, COMMENT_AVG_PREFIX)      >= 0)
          count++;
    }
@@ -2740,35 +2821,36 @@ void RecomputeMarkovTransitionsFromCounts()
 //+------------------------------------------------------------------+
 void UpdateMarkovTransition(ENUM_MARKOV_STATE fromState, ENUM_MARKOV_STATE toState)
 {
-   g_markovCounts[fromState][toState]++;
-   g_markovTradesRecorded++;
-
-   MarkovTransitionEvent event;
-   event.fromState = fromState;
-   event.toState = toState;
-   int newSize = g_markovQueueCount + 1;
-   ArrayResize(g_markovQueue, newSize);
-   g_markovQueue[g_markovQueueCount] = event;
-   g_markovQueueCount = newSize;
-
-   int lookback = INPUT_MARKOV_LOOKBACK;
-   if(lookback > 0)
+   int lookback = MathMax(1, INPUT_MARKOV_LOOKBACK);
+   if(ArraySize(g_markovQueue) != lookback)
    {
-      while(g_markovQueueCount > lookback)
-      {
-         ENUM_MARKOV_STATE oldFrom = g_markovQueue[0].fromState;
-         ENUM_MARKOV_STATE oldTo = g_markovQueue[0].toState;
-
-         g_markovCounts[oldFrom][oldTo] = MathMax(g_markovCounts[oldFrom][oldTo] - 1, 0);
-
-         for(int i = 1; i < g_markovQueueCount; i++)
-            g_markovQueue[i - 1] = g_markovQueue[i];
-
-         g_markovQueueCount--;
-         ArrayResize(g_markovQueue, g_markovQueueCount);
-      }
+      ArrayResize(g_markovQueue, lookback);
+      g_markovQueueCount = 0;
+      g_markovQueueHead = 0;
+      ArrayInitialize(g_markovCounts, 0);
+      g_markovTradesRecorded = 0;
    }
 
+   if(g_markovQueueCount >= lookback)
+   {
+      MarkovTransitionEvent oldEvent = g_markovQueue[g_markovQueueHead];
+      g_markovCounts[oldEvent.fromState][oldEvent.toState] = MathMax(g_markovCounts[oldEvent.fromState][oldEvent.toState] - 1, 0);
+      g_markovQueue[g_markovQueueHead].fromState = fromState;
+      g_markovQueue[g_markovQueueHead].toState = toState;
+      g_markovQueue[g_markovQueueHead].observedAt = TimeCurrent();
+      g_markovQueueHead = (g_markovQueueHead + 1) % lookback;
+   }
+   else
+   {
+      int idx = (g_markovQueueHead + g_markovQueueCount) % lookback;
+      g_markovQueue[idx].fromState = fromState;
+      g_markovQueue[idx].toState = toState;
+      g_markovQueue[idx].observedAt = TimeCurrent();
+      g_markovQueueCount++;
+   }
+
+   g_markovCounts[fromState][toState]++;
+   g_markovTradesRecorded++;
    RecomputeMarkovTransitionsFromCounts();
    g_lastMarkovState = toState;
 }
@@ -2795,26 +2877,24 @@ double GetMarkovConfidenceAdjustment()
 
    double adjustment = 0;
 
-   // After consecutive wins, check the probability of a WIN->LOSS transition
-   if(g_consecutiveWins >= 3)
+   if(g_consecutiveWins >= 3 && HasMarkovRowEvidence(MARKOV_WIN, minimumRowSamples))
    {
-      if(HasMarkovRowEvidence(MARKOV_WIN, minimumRowSamples))
-      {
-         double pLoss = g_markovTransitions[MARKOV_WIN][MARKOV_LOSS];
-         if(pLoss > 0.4)
-            adjustment = -5.0 * (g_consecutiveWins - 2);
-      }
+      double pLoss = g_markovTransitions[MARKOV_WIN][MARKOV_LOSS];
+      int rowTotal = GetMarkovRowTotal(MARKOV_WIN);
+      double certainty = MathMin(1.0, (double)rowTotal / (double)MathMax(minimumRowSamples * 4, 1));
+      double shrunk = pLoss * certainty;
+      if(shrunk > 0.4)
+         adjustment = -5.0 * (g_consecutiveWins - 2) * certainty;
    }
 
-   // After consecutive losses, apply proportional mean-reversion boost
-   if(g_consecutiveLosses >= 3)
+   if(g_consecutiveLosses >= 3 && HasMarkovRowEvidence(MARKOV_LOSS, minimumRowSamples))
    {
-      if(HasMarkovRowEvidence(MARKOV_LOSS, minimumRowSamples))
-      {
-         double pWin = g_markovTransitions[MARKOV_LOSS][MARKOV_WIN];
-         if(pWin > 0.3)
-            adjustment += 3.0 * (g_consecutiveLosses - 2);
-      }
+      double pWin = g_markovTransitions[MARKOV_LOSS][MARKOV_WIN];
+      int rowTotal = GetMarkovRowTotal(MARKOV_LOSS);
+      double certainty = MathMin(1.0, (double)rowTotal / (double)MathMax(minimumRowSamples * 4, 1));
+      double shrunk = pWin * certainty;
+      if(shrunk > 0.3)
+         adjustment += 3.0 * (g_consecutiveLosses - 2) * certainty;
    }
 
    adjustment = MathMax(-15.0, MathMin(15.0, adjustment));
@@ -2848,6 +2928,14 @@ double GetMLConfidenceMultiplier(const string &combination)
    return 1.0; // Unknown combination
 }
 //+------------------------------------------------------------------+
+double GetFingerprintTimeDecay(const datetime lastSeen)
+{
+   if(lastSeen <= 0) return 1.0;
+   double elapsedDays = (double)MathMax(0, TimeCurrent() - lastSeen) / 86400.0;
+   double lambda = MathMax(0.001, 1.0 - INPUT_LEARNING_DECAY);
+   return MathExp(-lambda * elapsedDays);
+}
+
 double GetFingerprintBoost(const string &fpId, const string &combination)
 {
    for(int i = 0; i < g_fingerprintCount; i++)
@@ -2857,11 +2945,12 @@ double GetFingerprintBoost(const string &fpId, const string &combination)
          if(g_fingerprints[i].totalOccurrences >= 5)
          {
             double winRate = g_fingerprints[i].winRate;
-            if(winRate >= 0.7) return 10.0;
-            else if(winRate >= 0.6) return 5.0;
+            double decay = GetFingerprintTimeDecay(g_fingerprints[i].lastSeen);
+            if(winRate >= 0.7) return 10.0 * decay;
+            else if(winRate >= 0.6) return 5.0 * decay;
             else if(winRate >= 0.5) return 0.0;
-            else if(winRate >= 0.4) return -5.0;
-            else return -10.0;
+            else if(winRate >= 0.4) return -5.0 * decay;
+            else return -10.0 * decay;
          }
       }
    }
@@ -2874,6 +2963,56 @@ string GenerateFingerprint(const SignalResult &signals, int session, int dayOfWe
           "_D" + IntegerToString(dayOfWeek) + "_R" + IntegerToString((int)g_currentRegime);
 }
 //+------------------------------------------------------------------+
+
+void RecomputeCombinationDerivedMetrics(int idx)
+{
+   if(idx < 0 || idx >= g_combinationStatsCount) return;
+   if(g_combinationStats[idx].totalTrades <= 0) return;
+
+   g_combinationStats[idx].winRate = (double)g_combinationStats[idx].wins / g_combinationStats[idx].totalTrades;
+   g_combinationStats[idx].profitFactor = (g_combinationStats[idx].totalLoss > 0.0) ?
+      g_combinationStats[idx].totalProfit / g_combinationStats[idx].totalLoss :
+      (g_combinationStats[idx].totalProfit > 0.0 ? 10.0 : 0.0);
+   g_combinationStats[idx].avgProfit = (g_combinationStats[idx].wins > 0) ?
+      g_combinationStats[idx].totalProfit / g_combinationStats[idx].wins : 0.0;
+   g_combinationStats[idx].avgLoss = (g_combinationStats[idx].losses > 0) ?
+      g_combinationStats[idx].totalLoss / g_combinationStats[idx].losses : 0.0;
+
+   double score = 50.0;
+   double wrComponent = MathMax(MathMin((g_combinationStats[idx].winRate - 0.5) * 100.0, 30.0), -30.0);
+   double pfComponent = MathMax(MathMin((g_combinationStats[idx].profitFactor - 1.0) * 20.0, 25.0), -25.0);
+   score = MathMax(MathMin(score + wrComponent + pfComponent, 100.0), 0.0);
+   g_combinationStats[idx].strengthScore = score;
+   g_combinationStats[idx].confidenceMultiplier = MathMax(MathMin(1.0 + (score - 50.0) / 200.0, 1.5), 0.5);
+}
+
+void UpdateCombinationStatsIncremental(const TrainingData &row)
+{
+   int idx = -1;
+   for(int i = 0; i < g_combinationStatsCount; i++)
+      if(g_combinationStats[i].combination == row.signalCombination) { idx = i; break; }
+
+   if(idx < 0 && g_combinationStatsCount < MAX_COMBINATION_STATS)
+   {
+      idx = g_combinationStatsCount++;
+      ZeroMemory(g_combinationStats[idx]);
+      g_combinationStats[idx].combination = row.signalCombination;
+   }
+   if(idx < 0) return;
+
+   g_combinationStats[idx].totalTrades++;
+   if(row.isWin) { g_combinationStats[idx].wins++; g_combinationStats[idx].totalProfit += row.profitLoss; }
+   else { g_combinationStats[idx].losses++; g_combinationStats[idx].totalLoss += MathAbs(row.profitLoss); }
+
+   if(row.entrySession == 0) { g_combinationStats[idx].asianTotal++; if(row.isWin) g_combinationStats[idx].asianWins++; }
+   else if(row.entrySession == 1) { g_combinationStats[idx].londonTotal++; if(row.isWin) g_combinationStats[idx].londonWins++; }
+   else if(row.entrySession == 2) { g_combinationStats[idx].nyTotal++; if(row.isWin) g_combinationStats[idx].nyWins++; }
+
+   if(row.entryRegime == REGIME_TRENDING) { g_combinationStats[idx].trendingTotal++; if(row.isWin) g_combinationStats[idx].trendingWins++; }
+   else if(row.entryRegime == REGIME_RANGING) { g_combinationStats[idx].rangingTotal++; if(row.isWin) g_combinationStats[idx].rangingWins++; }
+
+   RecomputeCombinationDerivedMetrics(idx);
+}
 void RecalculateCombinationStats()
 {
    // Reset stats
@@ -2910,29 +3049,29 @@ void RecalculateCombinationStats()
          }
 
          // Session breakdown
-         if(g_trainingData[i].session == 0)
+         if(g_trainingData[i].entrySession == 0)
          {
             g_combinationStats[idx].asianTotal++;
             if(g_trainingData[i].isWin) g_combinationStats[idx].asianWins++;
          }
-         else if(g_trainingData[i].session == 1)
+         else if(g_trainingData[i].entrySession == 1)
          {
             g_combinationStats[idx].londonTotal++;
             if(g_trainingData[i].isWin) g_combinationStats[idx].londonWins++;
          }
-         else if(g_trainingData[i].session == 2)
+         else if(g_trainingData[i].entrySession == 2)
          {
             g_combinationStats[idx].nyTotal++;
             if(g_trainingData[i].isWin) g_combinationStats[idx].nyWins++;
          }
 
          // Regime breakdown
-         if(g_trainingData[i].regime == REGIME_TRENDING)
+         if(g_trainingData[i].entryRegime == REGIME_TRENDING)
          {
             g_combinationStats[idx].trendingTotal++;
             if(g_trainingData[i].isWin) g_combinationStats[idx].trendingWins++;
          }
-         else if(g_trainingData[i].regime == REGIME_RANGING)
+         else if(g_trainingData[i].entryRegime == REGIME_RANGING)
          {
             g_combinationStats[idx].rangingTotal++;
             if(g_trainingData[i].isWin) g_combinationStats[idx].rangingWins++;
@@ -2987,6 +3126,7 @@ void RecalculateCombinationStats()
 
    if(INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_LOG_COMBINATION_INSIGHTS)
    {
+      int topN = MathMax(1, INPUT_COMBO_INSIGHT_TOP_N);
       int bestIdx = -1;
       int worstIdx = -1;
       for(int i = 0; i < g_combinationStatsCount; i++)
@@ -3931,7 +4071,7 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
 
    request.action = TRADE_ACTION_PENDING;
    request.symbol = _Symbol;
-   request.magic = INPUT_MAGIC_NUMBER;
+   request.magic = BuildMagicForSubtype(SUBTYPE_MAIN);
    request.volume = decision.lotSize;
    request.deviation = 30;
    request.comment = comment;
@@ -3997,7 +4137,7 @@ ulong ResolveOpenedPositionId(ulong orderTicket, string comment)
             ulong dealTicket = HistoryDealGetTicket(i);
             if(dealTicket == 0) continue;
             if((ulong)HistoryDealGetInteger(dealTicket, DEAL_ORDER) != orderTicket) continue;
-            if((ulong)HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
+            if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC))) continue;
             if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
 
             ulong positionId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
@@ -4665,6 +4805,7 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
    string comment = COMMENT_AVG_PREFIX + IntegerToString((int)parentTicket);
 
    g_trade.SetTypeFilling(GetFillingMode());
+   g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_AVERAGING));
 
    if(g_trade.PositionOpen(_Symbol, orderType, lots, price, sl, tp, comment))
    {
@@ -4883,9 +5024,9 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
          {
             if(StringLen(fpId) == 0) fpId = g_trainingData[i].fingerprintId;
             if(StringLen(combination) == 0) combination = g_trainingData[i].signalCombination;
-            if(g_trainingData[i].session >= 0) session = g_trainingData[i].session;
-            dayOfWeek = g_trainingData[i].dayOfWeek;
-            regime = g_trainingData[i].regime;
+            if(g_trainingData[i].entrySession >= 0) session = g_trainingData[i].entrySession;
+            dayOfWeek = g_trainingData[i].entryDayOfWeek;
+            regime = g_trainingData[i].entryRegime;
             break;
          }
       }
@@ -5019,7 +5160,7 @@ bool GetPositionHistoryVolumes(ulong positionId, double &openedVolume, double &c
       ulong deal = HistoryDealGetTicket(i);
       if(deal == 0) continue;
       if(HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol) continue;
-      if((ulong)HistoryDealGetInteger(deal, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
+      if(!IsOurMagic(HistoryDealGetInteger(deal, DEAL_MAGIC))) continue;
 
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(deal, DEAL_ENTRY);
       double vol = HistoryDealGetDouble(deal, DEAL_VOLUME);
@@ -5131,7 +5272,7 @@ void ProcessClosedPositions()
       ulong dealTicket = HistoryDealGetTicket(i);
       if(dealTicket == 0) continue;
       if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
-      if((ulong)HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
+      if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC))) continue;
 
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT) continue;
@@ -5299,7 +5440,7 @@ void ProcessEntryDeals()
       ulong dealTicket = HistoryDealGetTicket(i);
       if(dealTicket == 0) continue;
       if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
-      if((ulong)HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != INPUT_MAGIC_NUMBER) continue;
+      if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC))) continue;
 
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
       if(entry != DEAL_ENTRY_IN && entry != DEAL_ENTRY_INOUT)
@@ -5449,13 +5590,16 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
    g_trainingData[idx].profitLoss = netProfit;
    g_trainingData[idx].isWin = isWin;
    g_trainingData[idx].exitType = isWin ? "WIN_CLOSE" : "LOSS_CLOSE";
-   g_trainingData[idx].session = GetSessionFromTime(closeTime); // Correct session attribution from close time
+   g_trainingData[idx].closeSession = GetSessionFromTime(closeTime);
 
    MqlDateTime dt;
-   TimeToStruct(closeTime, dt); // Correct weekday attribution from close time
-   g_trainingData[idx].dayOfWeek = dt.day_of_week;
-   g_trainingData[idx].regime = g_currentRegime;
+   TimeToStruct(closeTime, dt);
+   g_trainingData[idx].closeDayOfWeek = dt.day_of_week;
+   g_trainingData[idx].closeRegime = g_currentRegime;
    g_trainingData[idx].volatilityRatio = CalculateVolatilityRatio();
+   g_trainingData[idx].entrySession = g_trainingData[idx].closeSession;
+   g_trainingData[idx].entryDayOfWeek = g_trainingData[idx].closeDayOfWeek;
+   g_trainingData[idx].entryRegime = g_trainingData[idx].closeRegime;
 
    // Find matching position context (live first, then recently-closed archive)
    PositionState ctx;
@@ -5470,18 +5614,25 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
       g_trainingData[idx].slPrice = ctx.slPrice;
       g_trainingData[idx].tpPrice = ctx.tpPrice;
       g_trainingData[idx].entryTime = ctx.entryTime;
+      g_trainingData[idx].entrySession = GetSessionFromTime(ctx.entryTime);
+      MqlDateTime edt;
+      TimeToStruct(ctx.entryTime, edt);
+      g_trainingData[idx].entryDayOfWeek = edt.day_of_week;
+      g_trainingData[idx].entryRegime = g_currentRegime;
       g_trainingData[idx].holdingMinutes = (int)MathMax((closeTime - ctx.entryTime) / 60, 0);
    }
 
-   // Recompute combination/session stats from corrected records immediately.
-   RecalculateCombinationStats();
+   // Incremental update on append; periodic full rebuild for consistency.
+   UpdateCombinationStatsIncremental(g_trainingData[idx]);
+   if((g_trainingDataCount % 200) == 0)
+      RecalculateCombinationStats();
 
    if(INPUT_ENABLE_LOGGING)
       Print("TRAINING DATA: DealTicket=", dealTicket,
             " | PositionId=", positionId,
             " | NetPnl=", netProfit,
-            " | Session=", g_trainingData[idx].session,
-            " | Day=", g_trainingData[idx].dayOfWeek);
+            " | EntrySession=", g_trainingData[idx].entrySession,
+            " | CloseSession=", g_trainingData[idx].closeSession);
 }
 //+------------------------------------------------------------------+
 //| SECTION 27: ADAPTIVE OPTIMIZATION (Part 14)                      |
@@ -5918,29 +6069,33 @@ void SaveQTable()
    int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
 
-   FileWriteInteger(handle, 2); // schema version
+   uint checksum = FNV1aStart();
+   checksum = FNV1aUpdateInt(checksum, QTABLE_HASH_SENTINEL);
+   checksum = FNV1aUpdateInt(checksum, QTABLE_SCHEMA_VERSION);
+   checksum = FNV1aUpdateInt(checksum, Q_TABLE_STATES);
+   checksum = FNV1aUpdateInt(checksum, Q_TABLE_ACTIONS);
+   checksum = FNV1aUpdateInt(checksum, g_rlTradesCompleted);
 
-   // Write checksum header
-   int checksum = 0;
-   for(int s = 0; s < Q_TABLE_STATES; s++)
-      for(int a = 0; a < Q_TABLE_ACTIONS; a++)
-         checksum += (int)(g_qTable[s][a] * 100);
-
-   FileWriteInteger(handle, checksum);
+   FileWriteInteger(handle, QTABLE_SCHEMA_VERSION);
    FileWriteInteger(handle, g_rlTradesCompleted);
 
-   // Write Q?table
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
+      {
          FileWriteDouble(handle, g_qTable[s][a]);
+         checksum = FNV1aUpdateDouble(checksum, g_qTable[s][a]);
+      }
 
-   // Write visit counts
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
+      {
          FileWriteInteger(handle, g_qVisits[s][a]);
+         checksum = FNV1aUpdateInt(checksum, g_qVisits[s][a]);
+      }
 
+   FileWriteInteger(handle, (int)checksum);
    FileClose(handle);
-   Print("Q?Table saved: ", g_rlTradesCompleted, " trades recorded");
+   Print("Q-Table saved: ", g_rlTradesCompleted, " trades recorded");
 }
 //+------------------------------------------------------------------+
 void LoadQTable()
@@ -5952,7 +6107,7 @@ void LoadQTable()
    if(handle == INVALID_HANDLE) return;
 
    int version = FileReadInteger(handle);
-   if(version != 2)
+   if(version != 2 && version != QTABLE_SCHEMA_VERSION)
    {
       Print("WARNING: Q-Table schema mismatch. Resetting.");
       FileClose(handle);
@@ -5962,61 +6117,77 @@ void LoadQTable()
       return;
    }
 
-   int checksum = FileReadInteger(handle);
-   g_rlTradesCompleted = FileReadInteger(handle);
-
-   for(int s = 0; s < Q_TABLE_STATES; s++)
-      for(int a = 0; a < Q_TABLE_ACTIONS; a++)
-         g_qTable[s][a] = FileReadDouble(handle);
-
-   for(int s = 0; s < Q_TABLE_STATES; s++)
-      for(int a = 0; a < Q_TABLE_ACTIONS; a++)
-         g_qVisits[s][a] = FileReadInteger(handle);
-
-   // Verify checksum
-   int verifySum = 0;
-   for(int s = 0; s < Q_TABLE_STATES; s++)
-      for(int a = 0; a < Q_TABLE_ACTIONS; a++)
-         verifySum += (int)(g_qTable[s][a] * 100);
-
-   if(verifySum != checksum)
+   if(version == 2)
    {
-      Print("WARNING: Q?Table checksum mismatch. Resetting.");
+      int checksumLegacy = FileReadInteger(handle);
+      g_rlTradesCompleted = FileReadInteger(handle);
+      for(int s = 0; s < Q_TABLE_STATES; s++) for(int a = 0; a < Q_TABLE_ACTIONS; a++) g_qTable[s][a] = FileReadDouble(handle);
+      for(int s = 0; s < Q_TABLE_STATES; s++) for(int a = 0; a < Q_TABLE_ACTIONS; a++) g_qVisits[s][a] = FileReadInteger(handle);
+      int verifySum = 0;
+      for(int s = 0; s < Q_TABLE_STATES; s++) for(int a = 0; a < Q_TABLE_ACTIONS; a++) verifySum += (int)(g_qTable[s][a] * 100);
+      if(verifySum != checksumLegacy) { ArrayInitialize(g_qTable, 0); ArrayInitialize(g_qVisits, 0); g_rlTradesCompleted = 0; }
+      FileClose(handle);
+      return;
+   }
+
+   g_rlTradesCompleted = FileReadInteger(handle);
+   uint checksum = FNV1aStart();
+   checksum = FNV1aUpdateInt(checksum, QTABLE_HASH_SENTINEL);
+   checksum = FNV1aUpdateInt(checksum, QTABLE_SCHEMA_VERSION);
+   checksum = FNV1aUpdateInt(checksum, Q_TABLE_STATES);
+   checksum = FNV1aUpdateInt(checksum, Q_TABLE_ACTIONS);
+   checksum = FNV1aUpdateInt(checksum, g_rlTradesCompleted);
+
+   for(int s = 0; s < Q_TABLE_STATES; s++)
+      for(int a = 0; a < Q_TABLE_ACTIONS; a++)
+      {
+         g_qTable[s][a] = FileReadDouble(handle);
+         checksum = FNV1aUpdateDouble(checksum, g_qTable[s][a]);
+      }
+
+   for(int s = 0; s < Q_TABLE_STATES; s++)
+      for(int a = 0; a < Q_TABLE_ACTIONS; a++)
+      {
+         g_qVisits[s][a] = FileReadInteger(handle);
+         checksum = FNV1aUpdateInt(checksum, g_qVisits[s][a]);
+      }
+
+   int fileChecksum = FileReadInteger(handle);
+   FileClose(handle);
+   if((int)checksum != fileChecksum)
+   {
+      Print("WARNING: Q-Table checksum mismatch. Resetting.");
       ArrayInitialize(g_qTable, 0);
       ArrayInitialize(g_qVisits, 0);
       g_rlTradesCompleted = 0;
+      return;
    }
-   else
-   {
-      Print("Q?Table loaded: ", g_rlTradesCompleted, " trades");
-   }
-
-   FileClose(handle);
+   Print("Q-Table loaded: ", g_rlTradesCompleted, " trades");
 }
-//+------------------------------------------------------------------+
+
 void SaveMarkovData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_markov.bin";
    int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
 
-   FileWriteInteger(handle, 4); // schema version
+   FileWriteInteger(handle, 5);
    FileWriteInteger(handle, g_markovTradesRecorded);
    FileWriteInteger(handle, (int)g_lastMarkovState);
+   FileWriteInteger(handle, g_markovQueueHead);
+   FileWriteInteger(handle, g_markovQueueCount);
 
    for(int i = 0; i < MARKOV_STATES; i++)
       for(int j = 0; j < MARKOV_STATES; j++)
          FileWriteInteger(handle, g_markovCounts[i][j]);
 
-   for(int i = 0; i < MARKOV_STATES; i++)
-      for(int j = 0; j < MARKOV_STATES; j++)
-         FileWriteDouble(handle, g_markovTransitions[i][j]);
-
-   FileWriteInteger(handle, g_markovQueueCount);
-   for(int i = 0; i < g_markovQueueCount; i++)
+   int cap = ArraySize(g_markovQueue);
+   FileWriteInteger(handle, cap);
+   for(int i = 0; i < cap; i++)
    {
       FileWriteInteger(handle, (int)g_markovQueue[i].fromState);
       FileWriteInteger(handle, (int)g_markovQueue[i].toState);
+      FileWriteLong(handle, (long)g_markovQueue[i].observedAt);
    }
 
    FileClose(handle);
@@ -6031,7 +6202,7 @@ void LoadMarkovData()
    if(handle == INVALID_HANDLE) return;
 
    int version = FileReadInteger(handle);
-   if(version != 2 && version != 3)
+   if(version < 2 || version > 5)
    {
       Print("WARNING: Markov schema mismatch. Keeping defaults.");
       FileClose(handle);
@@ -6040,40 +6211,30 @@ void LoadMarkovData()
 
    g_markovTradesRecorded = FileReadInteger(handle);
    g_lastMarkovState = (ENUM_MARKOV_STATE)FileReadInteger(handle);
+   g_markovQueueHead = (version >= 5) ? FileReadInteger(handle) : 0;
+   g_markovQueueCount = (version >= 3) ? FileReadInteger(handle) : 0;
 
    for(int i = 0; i < MARKOV_STATES; i++)
       for(int j = 0; j < MARKOV_STATES; j++)
          g_markovCounts[i][j] = FileReadInteger(handle);
 
-   for(int i = 0; i < MARKOV_STATES; i++)
-      for(int j = 0; j < MARKOV_STATES; j++)
-         g_markovTransitions[i][j] = FileReadDouble(handle);
+   int cap = (version >= 5) ? FileReadInteger(handle) : g_markovQueueCount;
+   if(cap < 0) cap = 0;
+   ArrayResize(g_markovQueue, cap);
+   if(g_markovQueueCount > cap) g_markovQueueCount = cap;
 
-   if(version >= 3)
+   for(int i = 0; i < cap; i++)
    {
-      g_markovQueueCount = FileReadInteger(handle);
-      if(g_markovQueueCount < 0)
-         g_markovQueueCount = 0;
-      ArrayResize(g_markovQueue, g_markovQueueCount);
-      for(int i = 0; i < g_markovQueueCount; i++)
-      {
-         g_markovQueue[i].fromState = (ENUM_MARKOV_STATE)FileReadInteger(handle);
-         g_markovQueue[i].toState = (ENUM_MARKOV_STATE)FileReadInteger(handle);
-      }
+      g_markovQueue[i].fromState = (ENUM_MARKOV_STATE)FileReadInteger(handle);
+      g_markovQueue[i].toState = (ENUM_MARKOV_STATE)FileReadInteger(handle);
+      g_markovQueue[i].observedAt = (version >= 5) ? (datetime)FileReadLong(handle) : 0;
    }
-   else
-   {
-      // Backward compatibility for v2: queue wasn't persisted.
-      g_markovQueueCount = 0;
-      ArrayResize(g_markovQueue, 0);
-   }
+
+   if(cap > 0) g_markovQueueHead = ((g_markovQueueHead % cap) + cap) % cap;
+   else g_markovQueueHead = 0;
 
    RecomputeMarkovTransitionsFromCounts();
-
    FileClose(handle);
-   Print("Markov data loaded: ", g_markovTradesRecorded,
-         " transitions | Queue size=", g_markovQueueCount,
-         " | Schema v", version);
 }
 //+------------------------------------------------------------------+
 void SaveFingerprintData()
@@ -6166,7 +6327,6 @@ void LoadFingerprintData()
          continue;
       }
 
-      row.decayWeight *= INPUT_LEARNING_DECAY;
       g_fingerprints[g_fingerprintCount++] = row;
    }
 
@@ -6185,7 +6345,8 @@ void SaveTrainingData()
 
    FileWrite(handle, "Schema", TRAINING_SCHEMA_VERSION, "Rows", g_trainingDataCount);
    FileWrite(handle, "Ticket", "EntryTime", "CloseTime", "Combo", "Profit", "IsWin",
-             "Confidence", "Threat", "MTF", "VolRatio", "Session", "Day", "Regime", "FP");
+             "Confidence", "Threat", "MTF", "VolRatio", "EntrySession", "CloseSession",
+             "EntryDay", "CloseDay", "EntryRegime", "CloseRegime", "FP");
 
    for(int i = 0; i < g_trainingDataCount; i++)
    {
@@ -6200,9 +6361,12 @@ void SaveTrainingData()
          g_trainingData[i].threatAtEntry,
          g_trainingData[i].mtfScore,
          g_trainingData[i].volatilityRatio,
-         g_trainingData[i].session,
-         g_trainingData[i].dayOfWeek,
-         (int)g_trainingData[i].regime,
+         g_trainingData[i].entrySession,
+         g_trainingData[i].closeSession,
+         g_trainingData[i].entryDayOfWeek,
+         g_trainingData[i].closeDayOfWeek,
+         (int)g_trainingData[i].entryRegime,
+         (int)g_trainingData[i].closeRegime,
          g_trainingData[i].fingerprintId);
    }
 
@@ -6230,7 +6394,7 @@ void LoadTrainingData()
       return;
    }
 
-   for(int h = 0; h < 14; h++)
+   for(int h = 0; h < 17; h++)
       FileReadString(handle);
 
    g_trainingDataCount = 0;
@@ -6248,16 +6412,19 @@ void LoadTrainingData()
       row.threatAtEntry = FileReadNumber(handle);
       row.mtfScore = (int)FileReadNumber(handle);
       row.volatilityRatio = FileReadNumber(handle);
-      row.session = (int)FileReadNumber(handle);
-      row.dayOfWeek = (int)FileReadNumber(handle);
-      row.regime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
+      row.entrySession = (int)FileReadNumber(handle);
+      row.closeSession = (int)FileReadNumber(handle);
+      row.entryDayOfWeek = (int)FileReadNumber(handle);
+      row.closeDayOfWeek = (int)FileReadNumber(handle);
+      row.entryRegime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
+      row.closeRegime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
       row.fingerprintId = FileReadString(handle);
 
       bool valid = (row.ticket > 0 && MathIsValidNumber(row.profitLoss) &&
                     MathIsValidNumber(row.confidenceAtEntry) && row.confidenceAtEntry >= 0.0 && row.confidenceAtEntry <= 100.0 &&
                     MathIsValidNumber(row.threatAtEntry) && row.threatAtEntry >= 0.0 && row.threatAtEntry <= 100.0 &&
                     MathIsValidNumber(row.volatilityRatio) && row.volatilityRatio > 0.0 && row.volatilityRatio < 20.0 &&
-                    row.session >= -1 && row.session <= 2 && row.dayOfWeek >= 0 && row.dayOfWeek <= 6);
+                    row.entrySession >= -1 && row.entrySession <= 2 && row.closeSession >= -1 && row.closeSession <= 2 && row.entryDayOfWeek >= 0 && row.entryDayOfWeek <= 6 && row.closeDayOfWeek >= 0 && row.closeDayOfWeek <= 6);
       if(!valid)
       {
          badRows++;
@@ -6380,13 +6547,9 @@ void SaveRuntimeState()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_runtime.bin";
    int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
-   if(handle == INVALID_HANDLE)
-   {
-      Print("WARNING: SaveRuntimeState failed to open ", filename);
-      return;
-   }
+   if(handle == INVALID_HANDLE) return;
 
-   FileWriteInteger(handle, 6);
+   FileWriteInteger(handle, RUNTIME_SCHEMA_VERSION);
    FileWriteLong(handle, (long)g_lastProcessedDealTicket);
    FileWriteLong(handle, (long)g_lastProcessedDealTime);
    FileWriteLong(handle, (long)g_lastProcessedEntryDealTicket);
@@ -6395,10 +6558,20 @@ void SaveRuntimeState()
    FileWriteInteger(handle, g_rlUnmatchedCloses);
    FileWriteInteger(handle, g_closedDealsProcessedTotal);
 
-   int checksum = (int)(g_lastProcessedDealTicket % 2147483647) + (int)g_lastProcessedDealTime + (int)(g_lastProcessedEntryDealTicket % 2147483647) + (int)g_lastProcessedEntryDealTime + g_rlMatchedUpdates + g_rlUnmatchedCloses + g_closedDealsProcessedTotal;
-   int pendingToWrite = MathMin(g_pendingRLCount, MathMax(0, INPUT_RL_PENDING_HARD_CAP));
+   int pendingToWrite = MathMin(g_pendingRLCount, MathMax(1, INPUT_RL_PENDING_HARD_CAP));
    FileWriteInteger(handle, pendingToWrite);
-   checksum += pendingToWrite;
+
+   uint checksum = FNV1aStart();
+   checksum = FNV1aUpdateInt(checksum, RUNTIME_HASH_SENTINEL);
+   checksum = FNV1aUpdateInt(checksum, RUNTIME_SCHEMA_VERSION);
+   checksum = FNV1aUpdateLong(checksum, (long)g_lastProcessedDealTicket);
+   checksum = FNV1aUpdateLong(checksum, (long)g_lastProcessedDealTime);
+   checksum = FNV1aUpdateLong(checksum, (long)g_lastProcessedEntryDealTicket);
+   checksum = FNV1aUpdateLong(checksum, (long)g_lastProcessedEntryDealTime);
+   checksum = FNV1aUpdateInt(checksum, g_rlMatchedUpdates);
+   checksum = FNV1aUpdateInt(checksum, g_rlUnmatchedCloses);
+   checksum = FNV1aUpdateInt(checksum, g_closedDealsProcessedTotal);
+   checksum = FNV1aUpdateInt(checksum, pendingToWrite);
 
    for(int i = 0; i < pendingToWrite; i++)
    {
@@ -6414,11 +6587,30 @@ void SaveRuntimeState()
       FileWriteDouble(handle, g_pendingRL[i].confidenceSnapshot);
       FileWriteInteger(handle, g_pendingRL[i].mtfScoreSnapshot);
       FileWriteDouble(handle, g_pendingRL[i].comboStrengthSnapshot);
-      checksum += g_pendingRL[i].state + (int)g_pendingRL[i].action + (int)(g_pendingRL[i].positionTicket % 2147483647);
+
+      checksum = FNV1aUpdateInt(checksum, g_pendingRL[i].state);
+      checksum = FNV1aUpdateInt(checksum, (int)g_pendingRL[i].action);
+      checksum = FNV1aUpdateLong(checksum, (long)g_pendingRL[i].orderTicket);
+      checksum = FNV1aUpdateLong(checksum, (long)g_pendingRL[i].positionTicket);
+      checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].entryPrice);
+      checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].slDistance);
+      checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].lot);
+      checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].tickValue);
    }
 
-   FileWriteInteger(handle, checksum);
+   FileWriteInteger(handle, (int)checksum);
    FileClose(handle);
+}
+
+void ResetRuntimeStateAfterIntegrityFailure()
+{
+   g_pendingRLCount = 0;
+   g_lastProcessedDealTicket = 0;
+   g_lastProcessedDealTime = 0;
+   g_lastProcessedEntryDealTicket = 0;
+   g_lastProcessedEntryDealTime = 0;
+   g_rlMatchedUpdates = 0;
+   g_rlUnmatchedCloses = 0;
 }
 
 void LoadRuntimeState()
@@ -6434,7 +6626,7 @@ void LoadRuntimeState()
    }
 
    int version = FileReadInteger(handle);
-   if(version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6)
+   if(version < 1 || version > RUNTIME_SCHEMA_VERSION)
    {
       Print("WARNING: Runtime state version mismatch: ", version);
       FileClose(handle);
@@ -6443,106 +6635,73 @@ void LoadRuntimeState()
 
    g_lastProcessedDealTicket = (ulong)FileReadLong(handle);
    g_lastProcessedDealTime = (version >= 3) ? (datetime)FileReadLong(handle) : 0;
-   if(version >= 4)
-   {
-      g_lastProcessedEntryDealTicket = (ulong)FileReadLong(handle);
-      g_lastProcessedEntryDealTime = (datetime)FileReadLong(handle);
-   }
-   else
-   {
-      g_lastProcessedEntryDealTicket = 0;
-      g_lastProcessedEntryDealTime = 0;
-   }
-
+   g_lastProcessedEntryDealTicket = (version >= 4) ? (ulong)FileReadLong(handle) : 0;
+   g_lastProcessedEntryDealTime = (version >= 4) ? (datetime)FileReadLong(handle) : 0;
    g_rlMatchedUpdates = FileReadInteger(handle);
    g_rlUnmatchedCloses = FileReadInteger(handle);
    g_closedDealsProcessedTotal = FileReadInteger(handle);
 
-   int restored = 0, stale = 0, deduped = 0, droppedInvalid = 0;
-   int droppedBadStateAction = 0, droppedTicketMismatch = 0, droppedNaNRiskBasis = 0;
-   int checksum = (int)(g_lastProcessedDealTicket % 2147483647) + (int)g_lastProcessedDealTime + (int)(g_lastProcessedEntryDealTicket % 2147483647) + (int)g_lastProcessedEntryDealTime + g_rlMatchedUpdates + g_rlUnmatchedCloses + g_closedDealsProcessedTotal;
+   int pendingRead = (version >= 2) ? FileReadInteger(handle) : 0;
+   if(pendingRead < 0) pendingRead = 0;
 
-   if(version >= 2)
+   uint checksum = FNV1aStart();
+   checksum = FNV1aUpdateInt(checksum, RUNTIME_HASH_SENTINEL);
+   checksum = FNV1aUpdateInt(checksum, version);
+   checksum = FNV1aUpdateLong(checksum, (long)g_lastProcessedDealTicket);
+   checksum = FNV1aUpdateLong(checksum, (long)g_lastProcessedDealTime);
+   checksum = FNV1aUpdateLong(checksum, (long)g_lastProcessedEntryDealTicket);
+   checksum = FNV1aUpdateLong(checksum, (long)g_lastProcessedEntryDealTime);
+   checksum = FNV1aUpdateInt(checksum, g_rlMatchedUpdates);
+   checksum = FNV1aUpdateInt(checksum, g_rlUnmatchedCloses);
+   checksum = FNV1aUpdateInt(checksum, g_closedDealsProcessedTotal);
+   checksum = FNV1aUpdateInt(checksum, pendingRead);
+
+   g_pendingRLCount = 0;
+   int pendingCap = MathMax(1, INPUT_RL_PENDING_HARD_CAP);
+   if(ArraySize(g_pendingRL) < pendingCap) ArrayResize(g_pendingRL, pendingCap);
+
+   for(int i = 0; i < pendingRead; i++)
    {
-      int pendingRead = FileReadInteger(handle);
-      if(pendingRead < 0) pendingRead = 0;
-      checksum += pendingRead;
+      RLStateAction rec;
+      rec.state = FileReadInteger(handle);
+      rec.action = (ENUM_RL_ACTION)FileReadInteger(handle);
+      rec.timestamp = (datetime)FileReadLong(handle);
+      rec.orderTicket = (version >= 4) ? (ulong)FileReadLong(handle) : 0;
+      rec.positionTicket = (ulong)FileReadLong(handle);
+      rec.entryPrice = FileReadDouble(handle);
+      rec.slDistance = FileReadDouble(handle);
+      rec.lot = FileReadDouble(handle);
+      rec.tickValue = FileReadDouble(handle);
+      rec.confidenceSnapshot = (version >= 6) ? FileReadDouble(handle) : 50.0;
+      rec.mtfScoreSnapshot = (version >= 6) ? FileReadInteger(handle) : 0;
+      rec.comboStrengthSnapshot = (version >= 6) ? FileReadDouble(handle) : 50.0;
 
-      const int pendingCap = MathMax(1, INPUT_RL_PENDING_HARD_CAP);
-      int maxAgeSec = INPUT_RL_PENDING_MAX_AGE_HOURS * 3600;
-      datetime now = TimeCurrent();
+      checksum = FNV1aUpdateInt(checksum, rec.state);
+      checksum = FNV1aUpdateInt(checksum, (int)rec.action);
+      checksum = FNV1aUpdateLong(checksum, (long)rec.orderTicket);
+      checksum = FNV1aUpdateLong(checksum, (long)rec.positionTicket);
+      checksum = FNV1aUpdateDouble(checksum, rec.entryPrice);
+      checksum = FNV1aUpdateDouble(checksum, rec.slDistance);
+      checksum = FNV1aUpdateDouble(checksum, rec.lot);
+      checksum = FNV1aUpdateDouble(checksum, rec.tickValue);
 
-      g_pendingRLCount = 0;
-      if(ArraySize(g_pendingRL) < pendingCap) ArrayResize(g_pendingRL, pendingCap);
-
-      for(int i = 0; i < pendingRead; i++)
-      {
-         RLStateAction rec;
-         rec.state = FileReadInteger(handle);
-         rec.action = (ENUM_RL_ACTION)FileReadInteger(handle);
-         rec.timestamp = (datetime)FileReadLong(handle);
-         rec.orderTicket = (version >= 4) ? (ulong)FileReadLong(handle) : 0;
-         rec.positionTicket = (ulong)FileReadLong(handle);
-         rec.entryPrice = FileReadDouble(handle);
-         rec.slDistance = FileReadDouble(handle);
-         rec.lot = FileReadDouble(handle);
-         rec.tickValue = FileReadDouble(handle);
-         rec.confidenceSnapshot = (version >= 6) ? FileReadDouble(handle) : 50.0;
-         rec.mtfScoreSnapshot = (version >= 6) ? FileReadInteger(handle) : 0;
-         rec.comboStrengthSnapshot = (version >= 6) ? FileReadDouble(handle) : 50.0;
-
-         checksum += rec.state + (int)rec.action + (int)(rec.positionTicket % 2147483647);
-
-         bool badStateAction = (rec.state < 0 || rec.state >= Q_TABLE_STATES || rec.action < 0 || rec.action >= Q_TABLE_ACTIONS);
-         bool ticketMismatch = (rec.positionTicket == 0 && rec.orderTicket == 0);
-         bool nanRiskBasis = (!MathIsValidNumber(rec.entryPrice) || !MathIsValidNumber(rec.slDistance) || !MathIsValidNumber(rec.lot) || !MathIsValidNumber(rec.tickValue));
-
-         if(badStateAction || ticketMismatch || nanRiskBasis)
-         {
-            droppedInvalid++;
-            if(badStateAction) droppedBadStateAction++;
-            if(ticketMismatch) droppedTicketMismatch++;
-            if(nanRiskBasis) droppedNaNRiskBasis++;
-            continue;
-         }
-
-         if(maxAgeSec > 0 && (now - rec.timestamp) > maxAgeSec) { stale++; continue; }
-
-         bool dup = false;
-         for(int j = 0; j < g_pendingRLCount; j++)
-         {
-            bool samePosition = (rec.positionTicket > 0 && g_pendingRL[j].positionTicket == rec.positionTicket);
-            bool samePendingOrder = (rec.positionTicket == 0 && rec.orderTicket > 0 && g_pendingRL[j].positionTicket == 0 && g_pendingRL[j].orderTicket == rec.orderTicket);
-            if(samePosition || samePendingOrder) { dup = true; break; }
-         }
-         if(dup) { deduped++; continue; }
-
-         if(g_pendingRLCount >= pendingCap) continue;
+      if(g_pendingRLCount < pendingCap)
          g_pendingRL[g_pendingRLCount++] = rec;
-         restored++;
-      }
    }
 
-   int fileChecksum = (version >= 5) ? FileReadInteger(handle) : checksum;
+   int fileChecksum = (version >= 5) ? FileReadInteger(handle) : (int)checksum;
    FileClose(handle);
-   if(version >= 5 && fileChecksum != checksum)
-      Print("WARNING: Runtime state checksum mismatch expected=", fileChecksum, " computed=", checksum);
 
-   g_rlRuntimeRejectBadStateAction = droppedBadStateAction;
-   g_rlRuntimeRejectTicketMismatch = droppedTicketMismatch;
-   g_rlRuntimeRejectNaNRiskBasis = droppedNaNRiskBasis;
-
-   if(INPUT_ENABLE_LOGGING)
-      Print("Runtime state loaded: lastDeal=", g_lastProcessedDealTicket,
-            " | pending restored=", restored,
-            " | stale dropped=", stale,
-            " | deduped=", deduped,
-            " | invalid dropped=", droppedInvalid,
-            " | rejectBadStateAction=", droppedBadStateAction,
-            " | rejectTicketMismatch=", droppedTicketMismatch,
-            " | rejectNaNRiskBasis=", droppedNaNRiskBasis,
-            " | pending active=", g_pendingRLCount,
-            " | schema=", version);
+   bool checksumOk = ((int)checksum == fileChecksum);
+   if(!checksumOk)
+   {
+      Print("WARNING: Runtime state checksum mismatch expected=", fileChecksum, " computed=", (int)checksum);
+      if(INPUT_STRICT_STATE_LOAD)
+      {
+         Print("STRICT LOAD: Discarding runtime RL pending state and resetting watermarks.");
+         ResetRuntimeStateAfterIntegrityFailure();
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -6560,11 +6719,9 @@ void DrawStatsPanel()
 
    string prefix = "V7_Panel_";
 
-   // Delete old objects
-   ObjectsDeleteAll(0, prefix);
-
-   // Background rectangle
-   ObjectCreate(0, prefix + "bg", OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   // Background rectangle (create once, then update)
+   if(ObjectFind(0, prefix + "bg") < 0)
+      ObjectCreate(0, prefix + "bg", OBJ_RECTANGLE_LABEL, 0, 0, 0);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_XSIZE, 360);
@@ -6722,7 +6879,8 @@ void DrawStatsPanel()
 //+------------------------------------------------------------------+
 void CreateLabel(string name, string text, int x, int y, color clr, int fontSize)
 {
-   ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
@@ -6764,7 +6922,9 @@ void CheckPositionAgeTimeout()
       if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) continue;
 
       string comment = PositionGetString(POSITION_COMMENT);
-      bool isAux = (StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      bool isAux = IsAuxSubtypeByMagic(magic) ||
+                   (StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
                     StringFind(comment, COMMENT_AVG_PREFIX)      >= 0 ||
                     StringFind(comment, COMMENT_HEDGE_PREFIX)    >= 0);
       if(isAux && !INPUT_AGE_TIMEOUT_INCLUDE_AUX)
