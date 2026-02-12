@@ -286,9 +286,9 @@ struct RiskParams
 struct AdaptiveParams
 {
    double lotMultiplier;        // Dynamic lot multiplier
-   double slAdjustPips;         // SL adjustment in pips
-   double tpAdjustPips;         // TP adjustment in pips
-   double trailAdjustPips;      // Trail adjustment in pips
+   double slAdjustPoints;         // SL adjustment in points
+   double tpAdjustPoints;         // TP adjustment in points
+   double trailAdjustPoints;      // Trail adjustment in points
    double threatMultiplier;     // Threat calculation multiplier
    double confMultiplierCap;    // Max ML confidence multiplier
    double minConfThreshold;     // Dynamic min confidence
@@ -440,6 +440,10 @@ struct DailyStats
    double   profitToday;
    double   lossToday;
    double   peakEquityToday;
+   double   realizedDealPnlToday;        // Deal-leg cashflow (can include partial closes)
+   double   realizedFinalPositionPnlToday; // Terminal position outcome PnL
+   int      strategyWinsToday;           // Strategy-level terminal wins
+   int      strategyLossesToday;         // Strategy-level terminal losses
 };
 struct GateDiagnostics
 {
@@ -513,6 +517,35 @@ int      g_digits;
 double   g_contractSize;
 long     g_stopLevel;
 long     g_freezeLevel;
+
+//--- Persistence / validation schema
+#define FP_SCHEMA_VERSION         2
+#define TRAINING_SCHEMA_VERSION   2
+#define ADAPTIVE_SCHEMA_VERSION   2
+
+double GetPipSize(const string symbol)
+{
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   if(digits == 3 || digits == 5)
+      return SymbolInfoDouble(symbol, SYMBOL_POINT) * 10.0;
+   return SymbolInfoDouble(symbol, SYMBOL_POINT);
+}
+
+double PipsToPoints(const string symbol, double pips)
+{
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   double pipSize = GetPipSize(symbol);
+   if(point <= 0.0 || pipSize <= 0.0 || !MathIsValidNumber(pips))
+      return 0.0;
+   return pips * (pipSize / point);
+}
+
+bool ReplaceFileAtomic(const string tmpName, const string finalName)
+{
+   if(FileIsExist(finalName))
+      FileDelete(finalName);
+   return FileMove(tmpName, 0, finalName, 0, FILE_REWRITE);
+}
 //--- Risk
 RiskParams g_risk;
 AdaptiveParams g_adaptive;
@@ -727,9 +760,9 @@ int OnInit()
 
    //--- Initialize adaptive parameters
    g_adaptive.lotMultiplier = 1.0;
-   g_adaptive.slAdjustPips = 0;
-   g_adaptive.tpAdjustPips = 0;
-   g_adaptive.trailAdjustPips = 0;
+   g_adaptive.slAdjustPoints = 0;
+   g_adaptive.tpAdjustPoints = 0;
+   g_adaptive.trailAdjustPoints = 0;
    g_adaptive.threatMultiplier = 1.0;
    g_adaptive.confMultiplierCap = 1.5;
    g_adaptive.minConfThreshold = INPUT_MIN_CONFIDENCE;
@@ -1674,9 +1707,9 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
             " comboNon1=", (comboNonNeutral ? "true" : "false"));
    }
 
-   //--- FIXED: Reduced threat?based penalty
-   if(threat > 60)  // FIXED: Changed from 40
-      conf -= (threat - 60) * 0.2; // FIXED: Reduced from 0.4
+   //--- Canonical threat penalty budget: keep a single confidence penalty path
+   if(threat > 60)
+      conf -= (threat - 60) * 0.12;
 
    //--- Final clamp
    if(conf < 0) conf = 0;
@@ -3143,11 +3176,12 @@ bool RunDecisionPipeline(DecisionResult &decision)
    double threat = CalculateMarketThreat();
    ENUM_THREAT_ZONE threatZone = GetThreatZone(threat);
 
-   if(threat > INPUT_MAX_THREAT_ENTRY)
+   // Soft gate near threshold, hard gate only when materially above threshold
+   if(threat > (INPUT_MAX_THREAT_ENTRY + 10.0))
    {
       g_gateDiagnostics.threatRejects++;
       if(INPUT_ENABLE_LOGGING)
-         LogWithRestartGuard("Threat too high: " + DoubleToString(threat, 2) + " > " + DoubleToString(INPUT_MAX_THREAT_ENTRY, 2));
+         LogWithRestartGuard("Threat hard-block: " + DoubleToString(threat, 2) + " > " + DoubleToString(INPUT_MAX_THREAT_ENTRY + 10.0, 2));
       return false;
    }
 
@@ -3203,6 +3237,14 @@ bool RunDecisionPipeline(DecisionResult &decision)
 
    //--- STEP 12: Position sizing (threat + confidence + RL)
    double lotSize = CalculateLotSize(slPoints, confidence, threat, rlAction);
+
+   // Soft threat gating before hard no-trade: shrink lot near threat threshold
+   if(threat > INPUT_MAX_THREAT_ENTRY)
+   {
+      double over = threat - INPUT_MAX_THREAT_ENTRY;
+      double threatSoftFactor = MathMax(0.25, 1.0 - (over / 10.0) * 0.5);
+      lotSize *= threatSoftFactor;
+   }
    if(INPUT_ENABLE_HIGH_ADX_RISK_MODE)
    {
       double adxNow[];
@@ -3721,9 +3763,16 @@ int GetCurrentSession()
    slPoints = atr[0] * INPUT_SL_ATR_MULTIPLIER / g_point;
    tpPoints = atr[0] * INPUT_TP_ATR_MULTIPLIER / g_point;
 
-   // Adaptive adjustments
-   slPoints += g_adaptive.slAdjustPips / g_point;
-   tpPoints += g_adaptive.tpAdjustPips / g_point;
+   // Adaptive adjustments (already stored in points)
+   slPoints += g_adaptive.slAdjustPoints;
+   tpPoints += g_adaptive.tpAdjustPoints;
+
+   // Sane bounds per symbol before further transforms
+   double maxAdaptiveShift = MathMax(10.0, SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * 3.0);
+   slPoints = MathMax(slPoints, 1.0);
+   tpPoints = MathMax(tpPoints, 1.0);
+   g_adaptive.slAdjustPoints = MathMax(-maxAdaptiveShift, MathMin(g_adaptive.slAdjustPoints, maxAdaptiveShift));
+   g_adaptive.tpAdjustPoints = MathMax(-maxAdaptiveShift, MathMin(g_adaptive.tpAdjustPoints, maxAdaptiveShift));
 
    // Threat-based SL tightening
    ENUM_THREAT_ZONE zone = GetThreatZone(threat);
@@ -4107,9 +4156,17 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
    int idx = g_positionCount;
    g_positionCount++;
 
-   double price = (decision.direction == 1) ?
-                  SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
-                  SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double price = 0.0;
+   if(positionTicket > 0 && PositionSelectByTicket(positionTicket))
+      price = PositionGetDouble(POSITION_PRICE_OPEN);
+
+   if(price <= 0.0 || !MathIsValidNumber(price))
+   {
+      // Fallback only when broker position cannot be selected yet.
+      price = (decision.direction == 1) ?
+             SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
+             SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   }
 
      g_positions[idx].ticket = positionTicket;
    g_positions[idx].direction = decision.direction;
@@ -4140,6 +4197,11 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
    g_positions[idx].isActive = true;
    g_positions[idx].maxProfit = 0;
    g_positions[idx].maxLoss = 0;
+
+   if(INPUT_ENABLE_LOGGING)
+      Print("TRACK NEW POSITION: ticket=", positionTicket,
+            " | entryPrice=", DoubleToString(g_positions[idx].entryPrice, g_digits),
+            " | source=", (PositionSelectByTicket(positionTicket) ? "POSITION_PRICE_OPEN" : "snapshot"));
 }
 //+------------------------------------------------------------------+
 //| SECTION 23: 50% LOT CLOSE SYSTEM (Part 8)                        |
@@ -4333,7 +4395,7 @@ void ManageTrailingStops()
       return;
 
    double trailDistance = atr[0] * INPUT_TRAIL_ATR_MULTIPLIER +
-                          g_adaptive.trailAdjustPips * g_point;
+                          g_adaptive.trailAdjustPoints * g_point;
 
    int total = PositionsTotal();
    for(int i = 0; i < total; i++)
@@ -5005,7 +5067,9 @@ void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetim
       g_consecutiveWins++;
       g_consecutiveLosses = 0;
       g_daily.winsToday++;
+      g_daily.strategyWinsToday++;
       g_daily.profitToday += finalNetProfit;
+      g_daily.realizedFinalPositionPnlToday += finalNetProfit;
       if(INPUT_ENABLE_STREAK_LOT_MULTIPLIER && INPUT_STREAK_TRIGGER_WINS > 0 && INPUT_STREAK_MULTIPLIER_ORDERS > 0 && g_consecutiveWins >= INPUT_STREAK_TRIGGER_WINS && dealTicket != g_lastStreakActivatedDeal)
       {
          g_streakMultiplierOrdersRemaining = INPUT_STREAK_MULTIPLIER_ORDERS;
@@ -5018,7 +5082,9 @@ void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetim
       g_consecutiveWins = 0;
       g_streakMultiplierOrdersRemaining = 0;
       g_daily.lossesToday++;
+      g_daily.strategyLossesToday++;
       g_daily.lossToday += MathAbs(finalNetProfit);
+      g_daily.realizedFinalPositionPnlToday += finalNetProfit;
    }
 
    double entryPrice = 0.0, slDistance = 0.0, lot = 0.0, tickValue = 0.0, riskBasis = 0.0, normalizedReward = finalNetProfit;
@@ -5081,6 +5147,7 @@ void ProcessClosedPositions()
       double dealVolume = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
 
       g_daily.closedDealsToday++;
+      g_daily.realizedDealPnlToday += netProfit;
       g_closedDealsProcessedTotal++;
       RecordClosedDealData(dealTicket, netProfit);
 
@@ -5142,6 +5209,76 @@ void ProcessClosedPositions()
    }
 }
 //+------------------------------------------------------------------+
+
+void UpsertTrackedPositionFromEntryDeal(ulong positionId, ulong dealTicket)
+{
+   if(positionId == 0 || dealTicket == 0)
+      return;
+
+   double dealPrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+   datetime dealTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+   if(dealPrice <= 0.0 || !MathIsValidNumber(dealPrice))
+      return;
+
+   int idx = -1;
+   for(int i = 0; i < g_positionCount; i++)
+   {
+      if(g_positions[i].isActive && g_positions[i].ticket == positionId)
+      {
+         idx = i;
+         break;
+      }
+   }
+
+   if(idx < 0)
+   {
+      if(g_positionCount >= MAX_POSITIONS)
+         return;
+
+      idx = g_positionCount++;
+      g_positions[idx].ticket = positionId;
+      g_positions[idx].comment = "";
+      g_positions[idx].signalCombination = "";
+      g_positions[idx].fingerprintId = "";
+      g_positions[idx].confidenceAtEntry = 50.0;
+      g_positions[idx].threatAtEntry = 30.0;
+      g_positions[idx].mtfScoreAtEntry = 0;
+      g_positions[idx].halfSLHit = false;
+      g_positions[idx].lotReduced = false;
+      g_positions[idx].partialClosed = false;
+      g_positions[idx].multiPartialLevel1Done = false;
+      g_positions[idx].multiPartialLevel2Done = false;
+      g_positions[idx].movedToBreakeven = false;
+      g_positions[idx].recoveryCount = 0;
+      g_positions[idx].lastRecoveryTime = 0;
+      g_positions[idx].maxProfit = 0;
+      g_positions[idx].maxLoss = 0;
+      g_positions[idx].isActive = true;
+   }
+
+   g_positions[idx].entryPrice = dealPrice;
+   if(g_positions[idx].entryTime <= 0)
+      g_positions[idx].entryTime = dealTime;
+
+   if(PositionSelectByTicket(positionId))
+   {
+      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double deltaPoints = MathAbs(openPrice - dealPrice) / g_point;
+      if(deltaPoints > 3.0)
+         Print("ENTRY PRICE CONSISTENCY WARNING: pos=", positionId,
+               " | dealPrice=", DoubleToString(dealPrice, g_digits),
+               " | positionOpen=", DoubleToString(openPrice, g_digits),
+               " | deltaPts=", DoubleToString(deltaPoints, 1));
+      g_positions[idx].entryPrice = openPrice;
+      g_positions[idx].slPrice = PositionGetDouble(POSITION_SL);
+      g_positions[idx].tpPrice = PositionGetDouble(POSITION_TP);
+      g_positions[idx].currentLots = PositionGetDouble(POSITION_VOLUME);
+      g_positions[idx].originalLots = MathMax(g_positions[idx].originalLots, g_positions[idx].currentLots);
+      g_positions[idx].direction = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      g_positions[idx].comment = PositionGetString(POSITION_COMMENT);
+   }
+}
+
 void ProcessEntryDeals()
 {
    datetime now = TimeCurrent();
@@ -5176,6 +5313,9 @@ void ProcessEntryDeals()
       ulong positionId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
       if(orderTicket > 0 && positionId > 0)
          RemapPendingRLToPosition(orderTicket, positionId);
+
+      // Pending-stop fills and market entries are normalized from broker deal/position data.
+      UpsertTrackedPositionFromEntryDeal(positionId, dealTicket);
 
       g_daily.tradesPlaced++;
       if(INPUT_ENABLE_LOGGING)
@@ -5406,7 +5546,7 @@ void PerformAdaptiveOptimization()
    {
       // Underperforming: reduce risk moderately
       g_adaptive.lotMultiplier = g_adaptive.lotMultiplier * (1.0 - INPUT_ADAPT_UNDERPERF_LOT_REDUCE * 0.5);
-      g_adaptive.slAdjustPips -= 2.0;
+      g_adaptive.slAdjustPoints -= 2.0;
       g_adaptive.threatMultiplier += 0.03;
       g_adaptive.maxPositions -= 1;
       g_adaptive.minConfThreshold += 2.0;
@@ -5419,9 +5559,9 @@ void PerformAdaptiveOptimization()
       g_adaptive.lotMultiplier += (baselineLotMultiplier - g_adaptive.lotMultiplier) * 0.25;
       g_adaptive.threatMultiplier += (baselineThreatMultiplier - g_adaptive.threatMultiplier) * 0.20;
       g_adaptive.minConfThreshold += (baselineMinConf - g_adaptive.minConfThreshold) * 0.20;
-      g_adaptive.slAdjustPips += (baselineSLAdjust - g_adaptive.slAdjustPips) * 0.25;
-      g_adaptive.tpAdjustPips += (baselineTPAdjust - g_adaptive.tpAdjustPips) * 0.25;
-      g_adaptive.trailAdjustPips += (baselineTrailAdjust - g_adaptive.trailAdjustPips) * 0.20;
+      g_adaptive.slAdjustPoints += (baselineSLAdjust - g_adaptive.slAdjustPoints) * 0.25;
+      g_adaptive.tpAdjustPoints += (baselineTPAdjust - g_adaptive.tpAdjustPoints) * 0.25;
+      g_adaptive.trailAdjustPoints += (baselineTrailAdjust - g_adaptive.trailAdjustPoints) * 0.20;
       int posDelta = baselineMaxPositions - g_adaptive.maxPositions;
       if(posDelta != 0)
          g_adaptive.maxPositions += (posDelta > 0 ? 1 : -1);
@@ -5431,10 +5571,10 @@ void PerformAdaptiveOptimization()
    else if(isOutperform)
    {
       // Outperforming: controlled expansion + SL reversion toward neutral
-      g_adaptive.trailAdjustPips += INPUT_ADAPT_OVERPERF_TRAIL_ADD;
+      g_adaptive.trailAdjustPoints += PipsToPoints(_Symbol, INPUT_ADAPT_OVERPERF_TRAIL_ADD);
       g_adaptive.lotMultiplier += 0.04;
       g_adaptive.maxPositions += 1;
-      g_adaptive.slAdjustPips += (baselineSLAdjust - g_adaptive.slAdjustPips) * 0.35;
+      g_adaptive.slAdjustPoints += (baselineSLAdjust - g_adaptive.slAdjustPoints) * 0.35;
       g_adaptive.minConfThreshold += (baselineMinConf - g_adaptive.minConfThreshold) * 0.15;
 
       Print("ADAPTIVE: Outperforming - controlled expansion enabled");
@@ -5442,9 +5582,9 @@ void PerformAdaptiveOptimization()
 
    // Safety clamps for adaptive parameters
    g_adaptive.lotMultiplier = MathMax(0.50, MathMin(g_adaptive.lotMultiplier, 1.50));
-   g_adaptive.slAdjustPips = MathMax(-30.0, MathMin(g_adaptive.slAdjustPips, 30.0));
-   g_adaptive.tpAdjustPips = MathMax(-30.0, MathMin(g_adaptive.tpAdjustPips, 30.0));
-   g_adaptive.trailAdjustPips = MathMax(-10.0, MathMin(g_adaptive.trailAdjustPips, 50.0));
+   g_adaptive.slAdjustPoints = MathMax(-30.0, MathMin(g_adaptive.slAdjustPoints, 30.0));
+   g_adaptive.tpAdjustPoints = MathMax(-30.0, MathMin(g_adaptive.tpAdjustPoints, 30.0));
+   g_adaptive.trailAdjustPoints = MathMax(-10.0, MathMin(g_adaptive.trailAdjustPoints, 50.0));
    g_adaptive.threatMultiplier = MathMax(0.80, MathMin(g_adaptive.threatMultiplier, 1.50));
    g_adaptive.minConfThreshold = MathMax(20.0, MathMin(g_adaptive.minConfThreshold, 85.0));
    g_adaptive.maxPositions = (int)MathMax(1, MathMin(g_adaptive.maxPositions, INPUT_MAX_CONCURRENT_TRADES + 2));
@@ -5454,9 +5594,9 @@ void PerformAdaptiveOptimization()
             " neutral=", (isNeutral ? "true" : "false"),
             " out=", (isOutperform ? "true" : "false"),
             " | lotMul=", DoubleToString(g_adaptive.lotMultiplier, 3),
-            " | slAdj=", DoubleToString(g_adaptive.slAdjustPips, 2),
-            " | tpAdj=", DoubleToString(g_adaptive.tpAdjustPips, 2),
-            " | trailAdj=", DoubleToString(g_adaptive.trailAdjustPips, 2),
+            " | slAdj=", DoubleToString(g_adaptive.slAdjustPoints, 2),
+            " | tpAdj=", DoubleToString(g_adaptive.tpAdjustPoints, 2),
+            " | trailAdj=", DoubleToString(g_adaptive.trailAdjustPoints, 2),
             " | threatMul=", DoubleToString(g_adaptive.threatMultiplier, 3),
             " | minConf=", DoubleToString(g_adaptive.minConfThreshold, 2),
             " | maxPos=", g_adaptive.maxPositions);
@@ -5637,6 +5777,10 @@ void ResetDailyCounters()
    g_daily.profitToday = 0;
    g_daily.lossToday = 0;
    g_daily.peakEquityToday = AccountInfoDouble(ACCOUNT_EQUITY);
+   g_daily.realizedDealPnlToday = 0.0;
+   g_daily.realizedFinalPositionPnlToday = 0.0;
+   g_daily.strategyWinsToday = 0;
+   g_daily.strategyLossesToday = 0;
 }
 void CheckDailyReset()
 {
@@ -5935,9 +6079,11 @@ void LoadMarkovData()
 void SaveFingerprintData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_fp.csv";
-   int handle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+   string tmpName = filename + ".tmp";
+   int handle = FileOpen(tmpName, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
 
+   FileWrite(handle, "Schema", FP_SCHEMA_VERSION, "Rows", g_fingerprintCount);
    FileWrite(handle, "ID", "Combo", "Session", "Day", "Regime", "Total", "Wins", "Losses",
              "WinRate", "PF", "AvgProfit", "AvgLoss", "Strength", "Multiplier", "Decay");
 
@@ -5962,6 +6108,8 @@ void SaveFingerprintData()
    }
 
    FileClose(handle);
+   if(!ReplaceFileAtomic(tmpName, filename))
+      Print("WARNING: Failed atomic replace for fingerprint file ", filename);
 }
 //+------------------------------------------------------------------+
 void LoadFingerprintData()
@@ -5972,46 +6120,70 @@ void LoadFingerprintData()
    int handle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
 
-   // Skip all 15 header fields (FIXED BUG 9/13)
+   // Metadata line (schema + row count)
+   string schemaKey = FileReadString(handle);
+   int schemaVer = (int)FileReadNumber(handle);
+   string rowsKey = FileReadString(handle);
+   int rowCount = (int)FileReadNumber(handle);
+   if(schemaKey != "Schema" || rowsKey != "Rows")
+   {
+      Print("WARNING: Fingerprint CSV header corrupt. Skipping load.");
+      FileClose(handle);
+      return;
+   }
+
    for(int h = 0; h < 15; h++)
       FileReadString(handle);
 
    g_fingerprintCount = 0;
+   int badRows = 0;
    while(!FileIsEnding(handle) && g_fingerprintCount < MAX_FINGERPRINTS)
    {
-      g_fingerprints[g_fingerprintCount].id = FileReadString(handle);
-      g_fingerprints[g_fingerprintCount].signalCombination = FileReadString(handle);
-      g_fingerprints[g_fingerprintCount].session = (int)FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].dayOfWeek = (int)FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].regime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].totalOccurrences = (int)FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].wins = (int)FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].losses = (int)FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].winRate = FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].profitFactor = FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].avgProfit = FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].avgLoss = FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].strengthScore = FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].confidenceMultiplier = FileReadNumber(handle);
-      g_fingerprints[g_fingerprintCount].decayWeight = FileReadNumber(handle);
+      SignalFingerprint row;
+      row.id = FileReadString(handle);
+      row.signalCombination = FileReadString(handle);
+      row.session = (int)FileReadNumber(handle);
+      row.dayOfWeek = (int)FileReadNumber(handle);
+      row.regime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
+      row.totalOccurrences = (int)FileReadNumber(handle);
+      row.wins = (int)FileReadNumber(handle);
+      row.losses = (int)FileReadNumber(handle);
+      row.winRate = FileReadNumber(handle);
+      row.profitFactor = FileReadNumber(handle);
+      row.avgProfit = FileReadNumber(handle);
+      row.avgLoss = FileReadNumber(handle);
+      row.strengthScore = FileReadNumber(handle);
+      row.confidenceMultiplier = FileReadNumber(handle);
+      row.decayWeight = FileReadNumber(handle);
 
-      // Apply decay on load
-      g_fingerprints[g_fingerprintCount].decayWeight *= INPUT_LEARNING_DECAY;
+      bool valid = (StringLen(row.id) > 0 && row.session >= -1 && row.session <= 2 &&
+                    row.dayOfWeek >= 0 && row.dayOfWeek <= 6 &&
+                    MathIsValidNumber(row.winRate) && row.winRate >= 0.0 && row.winRate <= 100.0 &&
+                    MathIsValidNumber(row.confidenceMultiplier) && row.confidenceMultiplier >= 0.1 && row.confidenceMultiplier <= 3.0);
+      if(!valid)
+      {
+         badRows++;
+         continue;
+      }
 
-      if(StringLen(g_fingerprints[g_fingerprintCount].id) > 0)
-         g_fingerprintCount++;
+      row.decayWeight *= INPUT_LEARNING_DECAY;
+      g_fingerprints[g_fingerprintCount++] = row;
    }
 
    FileClose(handle);
-   Print("Fingerprints loaded: ", g_fingerprintCount);
+   if(schemaVer != FP_SCHEMA_VERSION)
+      Print("WARNING: Fingerprint schema mismatch file=", schemaVer, " expected=", FP_SCHEMA_VERSION);
+   Print("Fingerprints loaded: ", g_fingerprintCount, " | badRows=", badRows, " | declaredRows=", rowCount);
 }
 //+------------------------------------------------------------------+
 void SaveTrainingData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_training.csv";
-   int handle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+   string tmpName = filename + ".tmp";
+   int handle = FileOpen(tmpName, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
 
+   FileWrite(handle, "Schema", TRAINING_SCHEMA_VERSION, "Rows", g_trainingDataCount);
    FileWrite(handle, "Ticket", "EntryTime", "CloseTime", "Combo", "Profit", "IsWin",
              "Confidence", "Threat", "MTF", "VolRatio", "Session", "Day", "Regime", "FP");
 
@@ -6035,6 +6207,8 @@ void SaveTrainingData()
    }
 
    FileClose(handle);
+   if(!ReplaceFileAtomic(tmpName, filename))
+      Print("WARNING: Failed atomic replace for training file ", filename);
 }
 //+------------------------------------------------------------------+
 void LoadTrainingData()
@@ -6045,46 +6219,72 @@ void LoadTrainingData()
    int handle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
 
-   // Skip header (14 fields)
+   string schemaKey = FileReadString(handle);
+   int schemaVer = (int)FileReadNumber(handle);
+   string rowsKey = FileReadString(handle);
+   int rowCount = (int)FileReadNumber(handle);
+   if(schemaKey != "Schema" || rowsKey != "Rows")
+   {
+      Print("WARNING: Training CSV header corrupt. Skipping load.");
+      FileClose(handle);
+      return;
+   }
+
    for(int h = 0; h < 14; h++)
       FileReadString(handle);
 
    g_trainingDataCount = 0;
+   int badRows = 0;
    while(!FileIsEnding(handle) && g_trainingDataCount < INPUT_MAX_TRAINING_DATA)
    {
-      g_trainingData[g_trainingDataCount].ticket = (ulong)FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].entryTime = (datetime)FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].closeTime = (datetime)FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].signalCombination = FileReadString(handle);
-      g_trainingData[g_trainingDataCount].profitLoss = FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].isWin = ((int)FileReadNumber(handle) == 1);
-      g_trainingData[g_trainingDataCount].confidenceAtEntry = FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].threatAtEntry = FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].mtfScore = (int)FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].volatilityRatio = FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].session = (int)FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].dayOfWeek = (int)FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].regime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
-      g_trainingData[g_trainingDataCount].fingerprintId = FileReadString(handle);
+      TrainingData row;
+      row.ticket = (ulong)FileReadNumber(handle);
+      row.entryTime = (datetime)FileReadNumber(handle);
+      row.closeTime = (datetime)FileReadNumber(handle);
+      row.signalCombination = FileReadString(handle);
+      row.profitLoss = FileReadNumber(handle);
+      row.isWin = ((int)FileReadNumber(handle) == 1);
+      row.confidenceAtEntry = FileReadNumber(handle);
+      row.threatAtEntry = FileReadNumber(handle);
+      row.mtfScore = (int)FileReadNumber(handle);
+      row.volatilityRatio = FileReadNumber(handle);
+      row.session = (int)FileReadNumber(handle);
+      row.dayOfWeek = (int)FileReadNumber(handle);
+      row.regime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
+      row.fingerprintId = FileReadString(handle);
 
-      if(g_trainingData[g_trainingDataCount].ticket > 0)
-         g_trainingDataCount++;
+      bool valid = (row.ticket > 0 && MathIsValidNumber(row.profitLoss) &&
+                    MathIsValidNumber(row.confidenceAtEntry) && row.confidenceAtEntry >= 0.0 && row.confidenceAtEntry <= 100.0 &&
+                    MathIsValidNumber(row.threatAtEntry) && row.threatAtEntry >= 0.0 && row.threatAtEntry <= 100.0 &&
+                    MathIsValidNumber(row.volatilityRatio) && row.volatilityRatio > 0.0 && row.volatilityRatio < 20.0 &&
+                    row.session >= -1 && row.session <= 2 && row.dayOfWeek >= 0 && row.dayOfWeek <= 6);
+      if(!valid)
+      {
+         badRows++;
+         continue;
+      }
+
+      g_trainingData[g_trainingDataCount++] = row;
    }
 
    FileClose(handle);
-   Print("Training data loaded: ", g_trainingDataCount, " records");
+   if(schemaVer != TRAINING_SCHEMA_VERSION)
+      Print("WARNING: Training schema mismatch file=", schemaVer, " expected=", TRAINING_SCHEMA_VERSION);
+   Print("Training data loaded: ", g_trainingDataCount, " records | badRows=", badRows, " | declaredRows=", rowCount);
 }
 //+------------------------------------------------------------------+
 void SaveAdaptiveParams()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_adaptive.bin";
-   int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
+   string tmpName = filename + ".tmp";
+   int handle = FileOpen(tmpName, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
 
+   FileWriteInteger(handle, ADAPTIVE_SCHEMA_VERSION);
    FileWriteDouble(handle, g_adaptive.lotMultiplier);
-   FileWriteDouble(handle, g_adaptive.slAdjustPips);
-   FileWriteDouble(handle, g_adaptive.tpAdjustPips);
-   FileWriteDouble(handle, g_adaptive.trailAdjustPips);
+   FileWriteDouble(handle, g_adaptive.slAdjustPoints);
+   FileWriteDouble(handle, g_adaptive.tpAdjustPoints);
+   FileWriteDouble(handle, g_adaptive.trailAdjustPoints);
    FileWriteDouble(handle, g_adaptive.threatMultiplier);
    FileWriteDouble(handle, g_adaptive.confMultiplierCap);
    FileWriteDouble(handle, g_adaptive.minConfThreshold);
@@ -6092,6 +6292,8 @@ void SaveAdaptiveParams()
    FileWriteInteger(handle, g_totalTrades);
 
    FileClose(handle);
+   if(!ReplaceFileAtomic(tmpName, filename))
+      Print("WARNING: Failed atomic replace for adaptive file ", filename);
 }
 //+------------------------------------------------------------------+
 void LoadAdaptiveParams()
@@ -6102,10 +6304,19 @@ void LoadAdaptiveParams()
    int handle = FileOpen(filename, FILE_READ | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
 
+   int version = FileReadInteger(handle);
+   if(version <= 0 || version > ADAPTIVE_SCHEMA_VERSION)
+   {
+      Print("WARNING: Adaptive params schema unsupported: ", version, " - using defaults");
+      FileClose(handle);
+      InitializeAdaptiveParams();
+      return;
+   }
+
    g_adaptive.lotMultiplier = FileReadDouble(handle);
-   g_adaptive.slAdjustPips = FileReadDouble(handle);
-   g_adaptive.tpAdjustPips = FileReadDouble(handle);
-   g_adaptive.trailAdjustPips = FileReadDouble(handle);
+   g_adaptive.slAdjustPoints = FileReadDouble(handle);
+   g_adaptive.tpAdjustPoints = FileReadDouble(handle);
+   g_adaptive.trailAdjustPoints = FileReadDouble(handle);
    g_adaptive.threatMultiplier = FileReadDouble(handle);
    g_adaptive.confMultiplierCap = FileReadDouble(handle);
    g_adaptive.minConfThreshold = FileReadDouble(handle);
