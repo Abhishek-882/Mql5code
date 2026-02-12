@@ -103,6 +103,49 @@ input double   INPUT_DAILY_LOSS_LIMIT_PERCENT = 3.0; // Max daily loss %
 input int      INPUT_MAX_DAILY_TRADES        = 50;   // Max trades per day (FIXED: Increased from 20)
 input int      INPUT_MAX_CONSECUTIVE_LOSSES  = 10;   // Max consecutive losses before pause (FIXED: Increased from 5)
 input bool     INPUT_RESET_CONSEC_DAILY      = true; // Reset consecutive losses daily
+//--- Extreme Risk Controls (Default OFF)
+input group    "=== Extreme Risk Controls (Default OFF) ==="
+input bool     INPUT_ENABLE_EXTREME_BY_THREAT = false;
+input bool     INPUT_ENABLE_EXTREME_BY_DRAWDOWN = false;
+input bool     INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT = false;
+input bool     INPUT_ENABLE_DRAWDOWN_PROTECT_STATE = false;
+input double   INPUT_EXTREME_ENTER_THREAT = 80.0;
+input double   INPUT_EXTREME_ENTER_DRAWDOWN = 10.0;
+input double   INPUT_EXTREME_EXIT_THREAT = 70.0;
+input double   INPUT_EXTREME_EXIT_DRAWDOWN = 7.0;
+input int      INPUT_EXTREME_EXIT_MAX_TOTAL_POSITIONS = 1;
+input bool     INPUT_ENABLE_EXTREME_ON_TICK_HANDLER = false;
+input bool     INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN = false;
+input bool     INPUT_ENABLE_EXTREME_CLOSE_OLDEST = false;
+input bool     INPUT_ENABLE_EXTREME_FILTER_SYMBOL = false;
+input bool     INPUT_ENABLE_EXTREME_FILTER_MAGIC = false;
+input bool     INPUT_ENABLE_EXTREME_THROTTLE = false;
+input int      INPUT_EXTREME_CLOSE_INTERVAL_SECONDS = 5;
+input int      INPUT_EXTREME_MAX_CLOSES_PER_CALL = 1;
+input bool     INPUT_ENABLE_EQUITY_FLOOR_TRIGGER = false;
+input bool     INPUT_ENABLE_EQUITY_FLOOR_FORCE_EXTREME_STATE = false;
+input bool     INPUT_ENABLE_EQUITY_FLOOR_CLOSE_ALL = false;
+input bool     INPUT_ENABLE_EQUITY_FLOOR_RETURN_AFTER_ACTION = false;
+input bool     INPUT_ENABLE_CLOSE_ALL_POSITIONS_API = false;
+input bool     INPUT_ENABLE_CLOSE_ALL_ONLY_OUR_POSITIONS = false; // RISK: false can close positions not created by this EA
+input bool     INPUT_ENABLE_CLOSE_ALL_SYMBOL_FILTER = false;
+input bool     INPUT_CLOSE_ALL_SYMBOL_SCOPE_CURRENT = true;
+input bool     INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE = false;
+input bool     INPUT_ENABLE_THREAT_HARD_BLOCK = false;
+input bool     INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK = false;
+input bool     INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK = false;
+input bool     INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT = false;
+input bool     INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT = false;
+input bool     INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT = false;
+input bool     INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE = false;
+input bool     INPUT_ENABLE_CLOSE_PARTIAL_TP = false;
+input bool     INPUT_ENABLE_CLOSE_MULTI_LEVEL_PARTIAL = false;
+input bool     INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN = false;
+input bool     INPUT_ENABLE_MODIFY_TRAILING_SL = false;
+input bool     INPUT_ENABLE_MODIFY_TRAILING_TP = false;
+input bool     INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD = false;
+input bool     INPUT_USE_LEGACY_BEHAVIOR_MAPPING = true;
+input bool     INPUT_FORCE_NEW_TOGGLES_ONLY = false;
 //--- Entry Conditions (FIXED: Relaxed thresholds)
 input group    "=== Entry Conditions ==="
 input int      INPUT_MIN_SIGNALS       = 3;       // Minimum signals required (FIXED: Raised to prevent false entries)
@@ -728,6 +771,74 @@ struct ModifyFailureTracker
    datetime nextRetryTime;
 };
 ModifyFailureTracker g_tpModifyFailures[];
+
+// EXTREME_RISK_TOGGLE_COVERAGE_CHECKLIST
+// - UpdateEAState
+// - OnTick extreme branch
+// - HandleExtremeRisk
+// - Equity floor block
+// - CloseAllPositions
+// - CheckAllGates protection-state gate
+// - RunDecisionPipeline threat blocks
+// - CheckRecoveryTimeouts
+// - CheckPositionAgeTimeout
+// - HandleHighSpreadOpenPositions
+// - Handle50PercentLotClose
+// - ManagePartialClose
+// - HandleMultiLevelPartial
+// - ManageTrailingStops
+// - ManageTrailingTP
+// - MoveToBreakeven
+// - ShouldSkipStopAdjustmentsForTicket
+
+bool g_effExtremeByThreat = false;
+bool g_effExtremeByDrawdown = false;
+bool g_effExtremeHysteresisExit = false;
+bool g_effDrawdownProtectState = false;
+bool g_effExtremeOnTickHandler = false;
+bool g_effExtremeOnTickEarlyReturn = false;
+bool g_effExtremeCloseOldest = false;
+bool g_effExtremeFilterSymbol = false;
+bool g_effExtremeFilterMagic = false;
+bool g_effExtremeThrottle = false;
+bool g_effEquityFloorTrigger = false;
+bool g_effEquityFloorForceState = false;
+bool g_effEquityFloorCloseAll = false;
+bool g_effEquityFloorReturn = false;
+bool g_effCloseAllApi = false;
+bool g_effCloseAllOnlyOur = false;
+bool g_effCloseAllSymbolFilter = false;
+bool g_effGateProtectionBlock = false;
+bool g_effThreatHardBlock = false;
+bool g_effThreatExtremeZoneBlock = false;
+bool g_effThreatSoftLotShrink = false;
+bool g_effCloseRecoveryTimeout = false;
+bool g_effClosePositionAgeTimeout = false;
+bool g_effCloseHighSpreadProfit = false;
+bool g_effClose50PctDefensive = false;
+bool g_effClosePartialTP = false;
+bool g_effCloseMultiLevelPartial = false;
+bool g_effModifyMoveToBE = false;
+bool g_effModifyTrailingSL = false;
+bool g_effModifyTrailingTP = false;
+bool g_effModifySkipLossOnHighSpread = false;
+
+bool ResolveRuntimeToggle(bool legacyFlag, bool newToggle)
+{
+   if(INPUT_FORCE_NEW_TOGGLES_ONLY)
+      return newToggle;
+   if(INPUT_USE_LEGACY_BEHAVIOR_MAPPING)
+      return (legacyFlag || newToggle);
+   return newToggle;
+}
+
+void LogToggleMatrix(const string feature, bool legacyFlag, bool newToggle, bool effective)
+{
+   Print("TOGGLE MATRIX: ", feature,
+         " | legacy=", (legacyFlag ? "ON" : "OFF"),
+         " | new=", (newToggle ? "ON" : "OFF"),
+         " | effective=", (effective ? "ON" : "OFF"));
+}
 //+------------------------------------------------------------------+
 //| SECTION 6: INITIALIZATION                                        |
 //+------------------------------------------------------------------+
@@ -936,6 +1047,79 @@ int OnInit()
       Print("WARNING: Combination-adaptive enabled while ML disabled. Using training-data only mode.");
 
    LoadRuntimeState();
+
+   g_effExtremeByThreat = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_BY_THREAT);
+   g_effExtremeByDrawdown = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_BY_DRAWDOWN);
+   g_effExtremeHysteresisExit = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT);
+   g_effDrawdownProtectState = ResolveRuntimeToggle(true, INPUT_ENABLE_DRAWDOWN_PROTECT_STATE);
+   g_effExtremeOnTickHandler = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_ON_TICK_HANDLER);
+   g_effExtremeOnTickEarlyReturn = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN);
+   g_effExtremeCloseOldest = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_CLOSE_OLDEST);
+   g_effExtremeFilterSymbol = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_FILTER_SYMBOL);
+   g_effExtremeFilterMagic = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_FILTER_MAGIC);
+   g_effExtremeThrottle = ResolveRuntimeToggle(true, INPUT_ENABLE_EXTREME_THROTTLE);
+   g_effEquityFloorTrigger = ResolveRuntimeToggle(true, INPUT_ENABLE_EQUITY_FLOOR_TRIGGER);
+   g_effEquityFloorForceState = ResolveRuntimeToggle(true, INPUT_ENABLE_EQUITY_FLOOR_FORCE_EXTREME_STATE);
+   g_effEquityFloorCloseAll = ResolveRuntimeToggle(true, INPUT_ENABLE_EQUITY_FLOOR_CLOSE_ALL);
+   g_effEquityFloorReturn = ResolveRuntimeToggle(true, INPUT_ENABLE_EQUITY_FLOOR_RETURN_AFTER_ACTION);
+   g_effCloseAllApi = ResolveRuntimeToggle(true, INPUT_ENABLE_CLOSE_ALL_POSITIONS_API);
+   g_effCloseAllOnlyOur = ResolveRuntimeToggle(true, INPUT_ENABLE_CLOSE_ALL_ONLY_OUR_POSITIONS);
+   g_effCloseAllSymbolFilter = ResolveRuntimeToggle(true, INPUT_ENABLE_CLOSE_ALL_SYMBOL_FILTER);
+   g_effGateProtectionBlock = ResolveRuntimeToggle(true, INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE);
+   g_effThreatHardBlock = ResolveRuntimeToggle(true, INPUT_ENABLE_THREAT_HARD_BLOCK);
+   g_effThreatExtremeZoneBlock = ResolveRuntimeToggle(true, INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK);
+   g_effThreatSoftLotShrink = ResolveRuntimeToggle(true, INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK);
+   g_effCloseRecoveryTimeout = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT);
+   g_effClosePositionAgeTimeout = ResolveRuntimeToggle(INPUT_POSITION_AGE_HOURS > 0, INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT);
+   g_effCloseHighSpreadProfit = ResolveRuntimeToggle(INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD, INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT);
+   g_effClose50PctDefensive = ResolveRuntimeToggle(INPUT_ENABLE_50PCT_CLOSE, INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE);
+   g_effClosePartialTP = ResolveRuntimeToggle(INPUT_ENABLE_PARTIAL_CLOSE, INPUT_ENABLE_CLOSE_PARTIAL_TP);
+   g_effCloseMultiLevelPartial = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_MULTI_LEVEL_PARTIAL);
+   g_effModifyMoveToBE = ResolveRuntimeToggle(INPUT_MOVE_BE_AFTER_PARTIAL, INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN);
+   g_effModifyTrailingSL = ResolveRuntimeToggle(INPUT_ENABLE_TRAILING, INPUT_ENABLE_MODIFY_TRAILING_SL);
+   g_effModifyTrailingTP = ResolveRuntimeToggle(INPUT_ENABLE_TRAILING_TP, INPUT_ENABLE_MODIFY_TRAILING_TP);
+   g_effModifySkipLossOnHighSpread = ResolveRuntimeToggle(INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD, INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD);
+
+   LogToggleMatrix("UpdateEAState.ExtremeByThreat", true, INPUT_ENABLE_EXTREME_BY_THREAT, g_effExtremeByThreat);
+   LogToggleMatrix("UpdateEAState.ExtremeByDrawdown", true, INPUT_ENABLE_EXTREME_BY_DRAWDOWN, g_effExtremeByDrawdown);
+   LogToggleMatrix("UpdateEAState.HysteresisExit", true, INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT, g_effExtremeHysteresisExit);
+   LogToggleMatrix("UpdateEAState.DrawdownProtectState", true, INPUT_ENABLE_DRAWDOWN_PROTECT_STATE, g_effDrawdownProtectState);
+   LogToggleMatrix("OnTick.ExtremeHandler", true, INPUT_ENABLE_EXTREME_ON_TICK_HANDLER, g_effExtremeOnTickHandler);
+   LogToggleMatrix("OnTick.ExtremeEarlyReturn", true, INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN, g_effExtremeOnTickEarlyReturn);
+   LogToggleMatrix("HandleExtremeRisk.CloseOldest", true, INPUT_ENABLE_EXTREME_CLOSE_OLDEST, g_effExtremeCloseOldest);
+   LogToggleMatrix("EquityFloor.Trigger", true, INPUT_ENABLE_EQUITY_FLOOR_TRIGGER, g_effEquityFloorTrigger);
+   LogToggleMatrix("CloseAllPositions.API", true, INPUT_ENABLE_CLOSE_ALL_POSITIONS_API, g_effCloseAllApi);
+   LogToggleMatrix("CheckAllGates.ProtectionState", true, INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE, g_effGateProtectionBlock);
+   LogToggleMatrix("RunDecisionPipeline.ThreatHardBlock", true, INPUT_ENABLE_THREAT_HARD_BLOCK, g_effThreatHardBlock);
+   LogToggleMatrix("RunDecisionPipeline.ThreatExtremeZone", true, INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK, g_effThreatExtremeZoneBlock);
+   LogToggleMatrix("CheckRecoveryTimeouts", false, INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT, g_effCloseRecoveryTimeout);
+   LogToggleMatrix("CheckPositionAgeTimeout", INPUT_POSITION_AGE_HOURS > 0, INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT, g_effClosePositionAgeTimeout);
+   LogToggleMatrix("HandleHighSpreadOpenPositions", INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD, INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT, g_effCloseHighSpreadProfit);
+   LogToggleMatrix("Handle50PercentLotClose", INPUT_ENABLE_50PCT_CLOSE, INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE, g_effClose50PctDefensive);
+   LogToggleMatrix("ManagePartialClose", INPUT_ENABLE_PARTIAL_CLOSE, INPUT_ENABLE_CLOSE_PARTIAL_TP, g_effClosePartialTP);
+   LogToggleMatrix("HandleMultiLevelPartial", false, INPUT_ENABLE_CLOSE_MULTI_LEVEL_PARTIAL, g_effCloseMultiLevelPartial);
+   LogToggleMatrix("ManageTrailingStops", INPUT_ENABLE_TRAILING, INPUT_ENABLE_MODIFY_TRAILING_SL, g_effModifyTrailingSL);
+   LogToggleMatrix("ManageTrailingTP", INPUT_ENABLE_TRAILING_TP, INPUT_ENABLE_MODIFY_TRAILING_TP, g_effModifyTrailingTP);
+   LogToggleMatrix("MoveToBreakeven", INPUT_MOVE_BE_AFTER_PARTIAL, INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN, g_effModifyMoveToBE);
+   LogToggleMatrix("ShouldSkipStopAdjustmentsForTicket", INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD, INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD, g_effModifySkipLossOnHighSpread);
+
+   Print("CHECKLIST GUARD UpdateEAState=", (g_effExtremeByThreat || g_effExtremeByDrawdown || g_effDrawdownProtectState ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD OnTick extreme branch=", ((g_effExtremeOnTickHandler || g_effExtremeOnTickEarlyReturn) ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD HandleExtremeRisk=", (g_effExtremeCloseOldest ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD Equity floor block=", (g_effEquityFloorTrigger ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD CloseAllPositions=", (g_effCloseAllApi ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD CheckAllGates protection-state gate=", (g_effGateProtectionBlock ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD RunDecisionPipeline threat blocks=", ((g_effThreatHardBlock || g_effThreatExtremeZoneBlock || g_effThreatSoftLotShrink) ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD CheckRecoveryTimeouts=", (g_effCloseRecoveryTimeout ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD CheckPositionAgeTimeout=", (g_effClosePositionAgeTimeout ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD HandleHighSpreadOpenPositions=", (g_effCloseHighSpreadProfit ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD Handle50PercentLotClose=", (g_effClose50PctDefensive ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD ManagePartialClose=", (g_effClosePartialTP ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD HandleMultiLevelPartial=", (g_effCloseMultiLevelPartial ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD ManageTrailingStops=", (g_effModifyTrailingSL ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD ManageTrailingTP=", (g_effModifyTrailingTP ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD MoveToBreakeven=", (g_effModifyMoveToBE ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD ShouldSkipStopAdjustmentsForTicket=", (g_effModifySkipLossOnHighSpread ? "ON" : "OFF"));
 
    //--- Initialize daily stats
    g_startingBalance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -1182,9 +1366,10 @@ void OnTick()
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      HandleMultiLevelPartial(ticket);
+      if(g_effCloseMultiLevelPartial)
+         HandleMultiLevelPartial(ticket);
    }
-   if(INPUT_ENABLE_50PCT_CLOSE)
+   if(g_effClose50PctDefensive)
       Handle50PercentLotClose();
    if(INPUT_ENABLE_RECOVERY && !expired)
       MonitorRecoveryAveraging();
@@ -1194,13 +1379,28 @@ void OnTick()
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(equity > g_peakEquity) g_peakEquity = equity;
 
-   double equityFloor = g_startingBalance * (INPUT_EQUITY_FLOOR_PERCENT / 100.0);
-   if(equity < equityFloor)
+   if(g_effEquityFloorTrigger)
    {
-      Print("!!! EQUITY FLOOR BREACHED: ", equity, " < ", equityFloor, " - CLOSING ALL !!!");
-      g_eaState = STATE_EXTREME_RISK;
-      CloseAllPositions("EQUITY_FLOOR");
-      return;
+      double equityFloor = g_startingBalance * (INPUT_EQUITY_FLOOR_PERCENT / 100.0);
+      if(equity < equityFloor)
+      {
+         bool acted = false;
+         Print("EQUITY FLOOR BREACH DETECTED: ", equity, " < ", equityFloor);
+         if(g_effEquityFloorForceState)
+         {
+            g_eaState = STATE_EXTREME_RISK;
+            acted = true;
+         }
+         if(g_effEquityFloorCloseAll)
+         {
+            CloseAllPositions("EQUITY_FLOOR");
+            acted = true;
+         }
+         if(!acted && ShouldPrintOncePerWindow("equity_floor_actions_disabled", 60))
+            Print("EQUITY FLOOR WARNING: breach detected but all configured actions are disabled.");
+         if(g_effEquityFloorReturn)
+            return;
+      }
    }
 
    CheckDailyReset();
@@ -1217,8 +1417,15 @@ void OnTick()
 
    if(g_eaState == STATE_EXTREME_RISK)
    {
-      HandleExtremeRisk();
-      return;
+      if(g_effExtremeOnTickHandler)
+         HandleExtremeRisk();
+      else if(ShouldPrintOncePerWindow("extreme_handler_disabled", 60))
+         Print("EXTREME_ON_TICK: HandleExtremeRisk disabled (EXTREME_HANDLER_DISABLED)");
+
+      if(g_effExtremeOnTickEarlyReturn)
+         return;
+      if(ShouldPrintOncePerWindow("extreme_early_return_disabled", 60))
+         Print("EXTREME_ON_TICK: early return disabled (EXTREME_EARLY_RETURN_DISABLED)");
    }
 
    t0 = GetTickCount();
@@ -1267,18 +1474,40 @@ void UpdateEAState()
 {
    ENUM_EA_STATE previousState = g_eaState;
 
-   // FIXED: Get fresh count from broker, not cached value
    int mainCount = CountMainPositionsFromBroker();
    int totalCount = CountAllOurPositions();
    double threat = CalculateMarketThreat();
    double drawdownPct = CalculateDrawdownPercent();
 
-   bool enterExtreme = (threat > 80.0 || drawdownPct > 10.0);
-   bool canExitExtreme = (threat < 70.0 && drawdownPct < 7.0 && totalCount <= 1);
+   bool causeThreat = (g_effExtremeByThreat && threat > INPUT_EXTREME_ENTER_THREAT);
+   bool causeDrawdown = (g_effExtremeByDrawdown && drawdownPct > INPUT_EXTREME_ENTER_DRAWDOWN);
+   bool enterExtreme = (causeThreat || causeDrawdown);
 
-   if(previousState == STATE_EXTREME_RISK)
+   bool canExitExtreme = (threat < INPUT_EXTREME_EXIT_THREAT &&
+                          drawdownPct < INPUT_EXTREME_EXIT_DRAWDOWN &&
+                          totalCount <= INPUT_EXTREME_EXIT_MAX_TOTAL_POSITIONS);
+
+   if(g_effExtremeHysteresisExit)
    {
-      if(enterExtreme || !canExitExtreme)
+      if(previousState == STATE_EXTREME_RISK)
+      {
+         if(!canExitExtreme)
+         {
+            g_eaState = STATE_EXTREME_RISK;
+            g_prevEaState = previousState;
+            return;
+         }
+      }
+      else if(enterExtreme)
+      {
+         g_eaState = STATE_EXTREME_RISK;
+         g_prevEaState = previousState;
+         return;
+      }
+   }
+   else
+   {
+      if(enterExtreme)
       {
          g_eaState = STATE_EXTREME_RISK;
          g_prevEaState = previousState;
@@ -1286,9 +1515,7 @@ void UpdateEAState()
       }
    }
 
-   if(enterExtreme)
-      g_eaState = STATE_EXTREME_RISK;
-   else if(drawdownPct > 7.0)
+   if(g_effDrawdownProtectState && drawdownPct > INPUT_EXTREME_EXIT_DRAWDOWN)
       g_eaState = STATE_DRAWDOWN_PROTECT;
    else if(CountRecoveryPositions() > 0)
       g_eaState = STATE_RECOVERY_ACTIVE;
@@ -1304,41 +1531,82 @@ void UpdateEAState()
 //+------------------------------------------------------------------+
 void HandleExtremeRisk()
 {
-   // In extreme risk, close oldest positions one by one
    static datetime lastCloseAttempt = 0;
-   if(TimeCurrent() - lastCloseAttempt < 5) // One close per 5 seconds
+   if(!g_effExtremeCloseOldest)
+   {
+      if(ShouldPrintOncePerWindow("extreme_close_oldest_disabled", 60))
+         Print("EXTREME_RISK: no-op (EXTREME_CLOSE_OLDEST_DISABLED)");
       return;
+   }
+
+   if(g_effExtremeThrottle)
+   {
+      int intervalSec = MathMax(1, INPUT_EXTREME_CLOSE_INTERVAL_SECONDS);
+      if(TimeCurrent() - lastCloseAttempt < intervalSec)
+      {
+         if(ShouldPrintOncePerWindow("extreme_throttle_active", 60))
+            Print("EXTREME_RISK: throttle active (EXTREME_THROTTLE_ACTIVE)");
+         return;
+      }
+   }
+   else if(ShouldPrintOncePerWindow("extreme_throttle_disabled", 60))
+      Print("EXTREME_RISK: throttle disabled (EXTREME_THROTTLE_DISABLED)");
 
    lastCloseAttempt = TimeCurrent();
 
-   // Find oldest position
-   ulong oldestTicket = 0;
-   datetime oldestTime = TimeCurrent();
-
-   int total = PositionsTotal();
-   for(int i = 0; i < total; i++)
+   int maxCloses = MathMax(1, INPUT_EXTREME_MAX_CLOSES_PER_CALL);
+   int closedCount = 0;
+   for(int k = 0; k < maxCloses; k++)
    {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-      if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-      if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC))) continue;
+      ulong oldestTicket = 0;
+      datetime oldestTime = TimeCurrent();
 
-      datetime posTime = (datetime)PositionGetInteger(POSITION_TIME);
-      if(posTime < oldestTime)
+      int total = PositionsTotal();
+      for(int i = 0; i < total; i++)
       {
-         oldestTime = posTime;
-         oldestTicket = ticket;
+         ulong ticket = PositionGetTicket(i);
+         if(ticket == 0) continue;
+         if(!PositionSelectByTicket(ticket)) continue;
+
+         if(g_effExtremeFilterSymbol)
+         {
+            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
+         }
+         else if(ShouldPrintOncePerWindow("extreme_filter_symbol_disabled", 60))
+            Print("EXTREME_RISK: symbol filter disabled (EXTREME_FILTER_SYMBOL_DISABLED)");
+
+         if(g_effExtremeFilterMagic)
+         {
+            if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC))) continue;
+         }
+         else if(ShouldPrintOncePerWindow("extreme_filter_magic_disabled", 60))
+            Print("EXTREME_RISK: magic filter disabled (EXTREME_FILTER_MAGIC_DISABLED)");
+
+         datetime posTime = (datetime)PositionGetInteger(POSITION_TIME);
+         if(posTime < oldestTime)
+         {
+            oldestTime = posTime;
+            oldestTicket = ticket;
+         }
+      }
+
+      if(oldestTicket == 0)
+         break;
+
+      if(g_trade.PositionClose(oldestTicket))
+      {
+         closedCount++;
+         Print("EXTREME RISK: Closed oldest position ", oldestTicket, " (EXTREME_CLOSE_OLDEST)");
+      }
+      else
+      {
+         Print("EXTREME RISK: Close failed for ", oldestTicket, " (EXTREME_CLOSE_OLDEST_FAILED)");
+         break;
       }
    }
 
-   if(oldestTicket > 0)
-   {
-      if(g_trade.PositionClose(oldestTicket))
-         Print("EXTREME RISK: Closed oldest position ", oldestTicket);
-   }
-
-   // State transition out of extreme mode is centralized in UpdateEAState() to avoid ping-pong logs.
+   if(closedCount == 0 && ShouldPrintOncePerWindow("extreme_no_candidates", 60))
+      Print("EXTREME_RISK: no matching positions to close (EXTREME_NO_CANDIDATES)");
 }
 //+------------------------------------------------------------------+
 //| SECTION 10: POSITION COUNTING - FIXED!                           |
@@ -3381,7 +3649,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    ENUM_THREAT_ZONE threatZone = GetThreatZone(threat);
 
    // Soft gate near threshold, hard gate only when materially above threshold
-   if(threat > (INPUT_MAX_THREAT_ENTRY + 10.0))
+   if(g_effThreatHardBlock && threat > (INPUT_MAX_THREAT_ENTRY + 10.0))
    {
       g_gateDiagnostics.threatRejects++;
       if(INPUT_ENABLE_LOGGING)
@@ -3428,7 +3696,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    }
 
    //--- STEP 10: Decision matrix â€“ we now only block on extreme threat
-   if(threatZone == THREAT_EXTREME)
+   if(g_effThreatExtremeZoneBlock && threatZone == THREAT_EXTREME)
    {
       g_gateDiagnostics.threatRejects++;
       if(INPUT_ENABLE_LOGGING)
@@ -3456,7 +3724,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    double lotSize = CalculateLotSize(slPoints, confidence, threat, rlAction);
 
    // Soft threat gating before hard no-trade: shrink lot near threat threshold
-   if(threat > INPUT_MAX_THREAT_ENTRY)
+   if(g_effThreatSoftLotShrink && threat > INPUT_MAX_THREAT_ENTRY)
    {
       double over = threat - INPUT_MAX_THREAT_ENTRY;
       double threatSoftFactor = MathMax(0.25, 1.0 - (over / 10.0) * 0.5);
@@ -3608,7 +3876,7 @@ bool CheckAllGates(string &rejectReason)
    }
 
     // EA state check
-    if(g_eaState == STATE_EXTREME_RISK || g_eaState == STATE_DRAWDOWN_PROTECT)
+    if(g_effGateProtectionBlock && (g_eaState == STATE_EXTREME_RISK || g_eaState == STATE_DRAWDOWN_PROTECT))
     {
        rejectReason = "EA in protection mode";
        return false;
@@ -3828,6 +4096,17 @@ bool IsPositionProfitable(ulong ticket)
 //+------------------------------------------------------------------+
 void HandleHighSpreadOpenPositions()
 {
+   static bool loggedDisabled = false;
+   if(!g_effCloseHighSpreadProfit)
+   {
+      if(!loggedDisabled)
+      {
+         Print("HIGH SPREAD CLOSE disabled (INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT=OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
+
    if(!IsSpreadHigh())
       return;
          double closePercent = MathMax(1.0, MathMin(INPUT_HIGH_SPREAD_CLOSE_PERCENT, 100.0));
@@ -3839,7 +4118,7 @@ void HandleHighSpreadOpenPositions()
       if(!PositionSelectByTicket(ticket)) continue;
 
       double profit = PositionGetDouble(POSITION_PROFIT);
-      if(profit > 0.0 && INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD)
+      if(profit > 0.0)
       {
           double currentLots = PositionGetDouble(POSITION_VOLUME);
          double step = (g_lotStep > 0.0) ? g_lotStep : g_minLot;
@@ -3879,7 +4158,7 @@ bool ShouldSkipStopAdjustmentsForTicket(ulong ticket)
    if(!IsSpreadHigh())
       return false;
 
-   if(!INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD)
+   if(!g_effModifySkipLossOnHighSpread || !INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD)
       return false;
 
    if(!PositionSelectByTicket(ticket))
@@ -4458,6 +4737,16 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
 //+------------------------------------------------------------------+
 void Handle50PercentLotClose()
 {
+   static bool loggedDisabled = false;
+   if(!g_effClose50PctDefensive)
+   {
+      if(!loggedDisabled)
+      {
+         Print("50% defensive close disabled (INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE=OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
    for(int i = 0; i < g_positionCount; i++)
    {
       if(!g_positions[i].isActive) continue;
@@ -4538,7 +4827,16 @@ void Handle50PercentLotClose()
 //+------------------------------------------------------------------+
 void ManagePartialClose()
 {
-   if(!INPUT_ENABLE_PARTIAL_CLOSE) return;
+   static bool loggedDisabled = false;
+   if(!g_effClosePartialTP)
+   {
+      if(!loggedDisabled)
+      {
+         Print("PARTIAL CLOSE disabled (INPUT_ENABLE_CLOSE_PARTIAL_TP=OFF or legacy OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
 
    for(int i = 0; i < g_positionCount; i++)
    {
@@ -4594,7 +4892,7 @@ void ManagePartialClose()
                   " lots at ", profitPct, "% TP");
 
             // Move SL to breakeven if enabled
-            if(INPUT_MOVE_BE_AFTER_PARTIAL && !g_positions[i].movedToBreakeven)
+            if(g_effModifyMoveToBE && !g_positions[i].movedToBreakeven)
             {
                MoveToBreakeven(ticket, entryPrice, posType);
                g_positions[i].movedToBreakeven = true;
@@ -4606,6 +4904,17 @@ void ManagePartialClose()
 //+------------------------------------------------------------------+
 void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 {
+   static bool loggedDisabled = false;
+   if(!g_effModifyMoveToBE)
+   {
+      if(!loggedDisabled)
+      {
+         Print("BREAKEVEN modify disabled (INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN=OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
+
    if(ShouldSkipStopAdjustmentsForTicket(ticket)) return;
    if(!CanModifyPosition(ticket)) return;
 
@@ -4634,7 +4943,16 @@ void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 //+------------------------------------------------------------------+
 void ManageTrailingStops()
 {
-   if(!INPUT_ENABLE_TRAILING) return;
+   static bool loggedDisabled = false;
+   if(!g_effModifyTrailingSL)
+   {
+      if(!loggedDisabled)
+      {
+         Print("TRAILING SL modify disabled (INPUT_ENABLE_MODIFY_TRAILING_SL=OFF or legacy OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
 
    static datetime lastTrailCheck = 0;
    if(TimeCurrent() - lastTrailCheck < 5) return; // throttle to every 5?sec
@@ -4936,6 +5254,16 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
 //+------------------------------------------------------------------+
 void CheckRecoveryTimeouts()
 {
+   static bool loggedDisabled = false;
+   if(!g_effCloseRecoveryTimeout)
+   {
+      if(!loggedDisabled)
+      {
+         Print("RECOVERY TIMEOUT close disabled (INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT=OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
    int total = PositionsTotal();
    for(int i = total - 1; i >= 0; i--)
    {
@@ -6079,16 +6407,50 @@ void UpdateAverageSpread()
 //+------------------------------------------------------------------+
 void CloseAllPositions(string reason)
 {
+   if(!g_effCloseAllApi)
+   {
+      if(ShouldPrintOncePerWindow("close_all_api_disabled", 60))
+         Print("CLOSE ALL skipped (CLOSE_ALL_API_DISABLED) | reason=", reason);
+      return;
+   }
+
+   int attempted = 0;
+   int closed = 0;
+   int failed = 0;
    int total = PositionsTotal();
    for(int i = total - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
-      if(!IsOurPosition(ticket)) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
 
+      if(g_effCloseAllOnlyOur && !IsOurPosition(ticket))
+         continue;
+
+      if(g_effCloseAllSymbolFilter && INPUT_CLOSE_ALL_SYMBOL_SCOPE_CURRENT)
+      {
+         if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+            continue;
+      }
+
+      attempted++;
       if(g_trade.PositionClose(ticket))
+      {
+         closed++;
          Print("CLOSED: Ticket ", ticket, " | Reason: ", reason);
+      }
+      else
+      {
+         failed++;
+      }
    }
+
+   Print("CLOSE_ALL SUMMARY: reason=", reason,
+         " attempted=", attempted,
+         " closed=", closed,
+         " failed=", failed,
+         " onlyOur=", (g_effCloseAllOnlyOur ? "ON" : "OFF"),
+         " symbolFilter=", (g_effCloseAllSymbolFilter ? "ON" : "OFF"));
 }
 //+------------------------------------------------------------------+
 void ArchiveRecentlyClosedPositionContext(const PositionState &state)
@@ -7042,6 +7404,17 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode()
 //+------------------------------------------------------------------+
 void CheckPositionAgeTimeout()
 {
+   static bool loggedDisabled = false;
+   if(!g_effClosePositionAgeTimeout)
+   {
+      if(!loggedDisabled)
+      {
+         Print("POSITION AGE TIMEOUT close disabled (INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT=OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
+
    if(INPUT_POSITION_AGE_HOURS <= 0) return;
 
    datetime now = TimeCurrent();
@@ -7084,7 +7457,16 @@ void CheckPositionAgeTimeout()
 //+------------------------------------------------------------------+
 void ManageTrailingTP()
 {
-   if(!INPUT_ENABLE_TRAILING_TP) return;
+   static bool loggedDisabled = false;
+   if(!g_effModifyTrailingTP)
+   {
+      if(!loggedDisabled)
+      {
+         Print("TRAILING TP modify disabled (INPUT_ENABLE_MODIFY_TRAILING_TP=OFF or legacy OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
 
    datetime now = TimeCurrent();
    if(g_lastTrailingTPCheck > 0 && (now - g_lastTrailingTPCheck) < 5)
@@ -7159,6 +7541,17 @@ void ManageTrailingTP()
 //+------------------------------------------------------------------+
 void HandleMultiLevelPartial(ulong ticket)
 {
+   static bool loggedDisabled = false;
+   if(!g_effCloseMultiLevelPartial)
+   {
+      if(!loggedDisabled)
+      {
+         Print("MULTI LEVEL PARTIAL close disabled (INPUT_ENABLE_CLOSE_MULTI_LEVEL_PARTIAL=OFF)");
+         loggedDisabled = true;
+      }
+      return;
+   }
+
     if(ticket == 0) return;
    if(!PositionSelectByTicket(ticket)) return;
    if(!IsOurPosition(ticket)) return;
