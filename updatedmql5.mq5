@@ -233,6 +233,14 @@ input int      INPUT_HISTORY_SAFETY_MARGIN_SECONDS = 300; // History overlap to 
 input int      INPUT_STATE_CHECKPOINT_MINUTES = 5; // Periodic persistence checkpoint
 input int      INPUT_RL_PENDING_MAX_AGE_HOURS = 72; // Expire unmatched RL pending entries
 input int      INPUT_ON_TICK_BUDGET_MS = 30;      // Soft per-tick budget for non-critical work
+input double   INPUT_MIN_EFFECTIVE_RR_AFTER_SPREAD = 1.05; // Minimum net RR after spread for new entries
+input int      INPUT_SERVER_UTC_OFFSET_HOURS = 0; // Broker server UTC offset for DST-aware session mapping
+input bool     INPUT_ENABLE_META_POLICY = true; // Blend rule policy + RL using state confidence
+input int      INPUT_RL_MIN_STATE_VISITS = 8; // Minimum state visits before RL can override baseline
+input bool     INPUT_ENABLE_RISK_PARITY_CAP = true; // Volatility/session normalized lot cap
+input double   INPUT_RISK_PARITY_BASE_CAP_LOTS = 1.0; // Base lot cap for risk-parity normalizer
+input int      INPUT_DATA_WARNING_KILL_SWITCH = 25; // Halt entries when rolling integrity warnings exceed threshold
+input int      INPUT_DATA_WARNING_WINDOW_MINUTES = 30; // Rolling window length for anomaly kill-switch
 input int      INPUT_HEAVY_BASE_INTERVAL_SECONDS = 2; // Base throttle for expensive maintenance tasks
 //--- Indicator Settings
 input group    "=== Indicator Settings ==="
@@ -537,6 +545,8 @@ int      g_digits;
 double   g_contractSize;
 long     g_stopLevel;
 long     g_freezeLevel;
+int      g_dataIntegrityWarnings = 0;
+datetime g_dataWarningWindowStart = 0;
 
 //--- Persistence / validation schema
 #define FP_SCHEMA_VERSION         2
@@ -558,6 +568,42 @@ double PipsToPoints(const string symbol, double pips)
    if(point <= 0.0 || pipSize <= 0.0 || !MathIsValidNumber(pips))
       return 0.0;
    return pips * (pipSize / point);
+}
+
+void RegisterDataWarning(const string context)
+{
+   datetime now = TimeCurrent();
+   int windowSec = MathMax(60, INPUT_DATA_WARNING_WINDOW_MINUTES * 60);
+   if(g_dataWarningWindowStart == 0 || (now - g_dataWarningWindowStart) > windowSec)
+   {
+      g_dataWarningWindowStart = now;
+      g_dataIntegrityWarnings = 0;
+   }
+
+   g_dataIntegrityWarnings++;
+   Print("DATA WARNING: ", context, " | rollingWarnings=", g_dataIntegrityWarnings);
+}
+
+void RefreshSymbolTradeConstraints()
+{
+   long stopNow = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
+   long freezeNow = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
+   if(stopNow < 0) stopNow = 0;
+   if(freezeNow < 0) freezeNow = 0;
+
+   if(stopNow != g_stopLevel || freezeNow != g_freezeLevel)
+   {
+      if(INPUT_ENABLE_LOGGING)
+         Print("SYMBOL CONSTRAINT CHANGE: stopLevel ", g_stopLevel, "->", stopNow,
+               " | freezeLevel ", g_freezeLevel, "->", freezeNow);
+      g_stopLevel = stopNow;
+      g_freezeLevel = freezeNow;
+   }
+}
+
+bool IsFiniteInRange(double value, double minValue, double maxValue)
+{
+   return (MathIsValidNumber(value) && value >= minValue && value <= maxValue);
 }
 
 bool ReplaceFileAtomic(const string tmpName, const string finalName)
@@ -1094,6 +1140,7 @@ void OnTick()
 {
    ulong tickStartMs = GetTickCount();
    datetime now = TimeCurrent();
+   RefreshSymbolTradeConstraints();
 
    static bool expiryWarned = false;
    bool expired = IsEAExpired();
@@ -2749,6 +2796,16 @@ ENUM_RL_ACTION ApplyRLToDecision(double confidence, double threat,
 
    int state = DetermineRLState(confidence, threat, positions, drawdown,
                               g_consecutiveWins >= 2);
+
+   if(INPUT_ENABLE_META_POLICY)
+   {
+      int visits = 0;
+      for(int a = 0; a < Q_TABLE_ACTIONS; a++)
+         visits += MathMax(0, g_qVisits[state][a]);
+      if(visits < INPUT_RL_MIN_STATE_VISITS)
+         return RL_FULL_SIZE;
+   }
+
    return GetRLAction(state);
 }
 
@@ -2873,6 +2930,13 @@ double GetMarkovConfidenceAdjustment()
    const int minimumRowSamples = 3;
 
    if(!INPUT_ENABLE_MARKOV || g_markovQueueCount < minimumObservations)
+      return 0;
+
+   int totalSamples = 0;
+   for(int r = 0; r < MARKOV_STATES; r++)
+      totalSamples += GetMarkovRowTotal((ENUM_MARKOV_STATE)r);
+   double effectiveSampleSize = (double)totalSamples / (double)MathMax(1, MARKOV_STATES * MARKOV_STATES);
+   if(effectiveSampleSize < (double)minimumRowSamples)
       return 0;
 
    double adjustment = 0;
@@ -3329,6 +3393,12 @@ bool RunDecisionPipeline(DecisionResult &decision)
    double confidence = CalculateConfidence(signals, direction, mtfScore,
                                             fpId, signals.combinationString, threat);
 
+   if(!IsFiniteInRange(confidence, 0.0, 100.0) || !IsFiniteInRange(threat, 0.0, 100.0))
+   {
+      RegisterDataWarning("NaN/Inf model output in confidence/threat");
+      return false;
+   }
+
    // Apply adaptive minimum confidence
    double minConf = g_adaptive.minConfThreshold;
    if(confidence < minConf)
@@ -3375,6 +3445,13 @@ bool RunDecisionPipeline(DecisionResult &decision)
       return false;
    }
 
+   double expectedRR = (slPoints > 0.0) ? (tpPoints / slPoints) : 0.0;
+   if(!MathIsValidNumber(expectedRR) || expectedRR <= INPUT_MIN_EFFECTIVE_RR_AFTER_SPREAD)
+   {
+      RegisterDataWarning("Rejected by spread-adjusted RR gate");
+      return false;
+   }
+
    //--- STEP 12: Position sizing (threat + confidence + RL)
    double lotSize = CalculateLotSize(slPoints, confidence, threat, rlAction);
 
@@ -3390,6 +3467,16 @@ bool RunDecisionPipeline(DecisionResult &decision)
       double adxNow[];
       if(CopyBuffer(g_hADX_M1, 0, 0, 1, adxNow) == 1 && adxNow[0] >= INPUT_HIGH_ADX_THRESHOLD)
          lotSize *= INPUT_HIGH_ADX_LOT_MULTIPLIER;
+   }
+
+   if(INPUT_ENABLE_RISK_PARITY_CAP)
+   {
+      int sess = GetCurrentSession();
+      double volRatio = CalculateVolatilityRatio();
+      double sessionWeight = (sess == 1) ? 1.0 : ((sess == 2) ? 0.9 : 0.7);
+      double volNorm = MathMax(0.5, MathMin(2.0, volRatio));
+      double capLots = INPUT_RISK_PARITY_BASE_CAP_LOTS * sessionWeight / volNorm;
+      lotSize = MathMin(lotSize, MathMax(capLots, g_minLot));
    }
 
    if(lotSize <= 0)
@@ -3430,6 +3517,18 @@ bool CheckAllGates(string &rejectReason)
    {
       g_adaptive.maxPositions = INPUT_MAX_CONCURRENT_TRADES;
       Print("WARNING: maxPositions was 0 or negative! Reset to ", INPUT_MAX_CONCURRENT_TRADES);
+   }
+
+   int windowSec = MathMax(60, INPUT_DATA_WARNING_WINDOW_MINUTES * 60);
+   if(g_dataWarningWindowStart > 0 && (TimeCurrent() - g_dataWarningWindowStart) > windowSec)
+   {
+      g_dataWarningWindowStart = TimeCurrent();
+      g_dataIntegrityWarnings = 0;
+   }
+   if(g_dataIntegrityWarnings >= INPUT_DATA_WARNING_KILL_SWITCH)
+   {
+      rejectReason = "Anomaly kill-switch active";
+      return false;
    }
 
       bool isTesterMode = (MQLInfoInteger(MQL_TESTER) != 0);
@@ -3851,12 +3950,19 @@ bool IsAllowedSession()
    if(!IsValidHourValue(hour))
    {
       WarnInvalidSessionHour("current_server_hour", hour);
+      RegisterDataWarning("Invalid current session hour");
       return false;
    }
 
-   bool inAsian  = IsHourInWindow(hour, INPUT_ASIAN_START, INPUT_ASIAN_END);
-   bool inLondon = IsHourInWindow(hour, INPUT_LONDON_START, INPUT_LONDON_END);
-   bool inNY     = IsHourInWindow(hour, INPUT_NY_START, INPUT_NY_END);
+   int logicalHour = (hour - INPUT_SERVER_UTC_OFFSET_HOURS) % 24;
+   if(logicalHour < 0) logicalHour += 24;
+
+   bool inAsian  = IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END);
+   bool inLondon = IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END);
+   bool inNY     = IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END);
+
+   if((inAsian && inLondon) || (inAsian && inNY) || (inLondon && inNY))
+      RegisterDataWarning("Overlapping session windows detected");
 
    if(INPUT_TRADE_NEWYORK && inNY) return true;
    if(INPUT_TRADE_LONDON && inLondon) return true;
@@ -3864,6 +3970,7 @@ bool IsAllowedSession()
 
    return false;
 }
+//+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
 int GetCurrentSession()
 {
@@ -3878,10 +3985,13 @@ int GetCurrentSession()
       return -1;
    }
 
+   int logicalHour = (hour - INPUT_SERVER_UTC_OFFSET_HOURS) % 24;
+   if(logicalHour < 0) logicalHour += 24;
+
    // Priority: NY > London > Asian (for overlaps)
-   if(IsHourInWindow(hour, INPUT_NY_START, INPUT_NY_END)) return 2;
-   if(IsHourInWindow(hour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
-   if(IsHourInWindow(hour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
+   if(IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END)) return 2;
+   if(IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
+   if(IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
 
    return -1; // Off-hours
 }
@@ -5498,10 +5608,13 @@ int GetSessionFromTime(datetime ts)
       return -1;
    }
 
+   int logicalHour = (hour - INPUT_SERVER_UTC_OFFSET_HOURS) % 24;
+   if(logicalHour < 0) logicalHour += 24;
+
    // Priority: NY > London > Asian (for overlaps)
-   if(IsHourInWindow(hour, INPUT_NY_START, INPUT_NY_END)) return 2;
-   if(IsHourInWindow(hour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
-   if(IsHourInWindow(hour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
+   if(IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END)) return 2;
+   if(IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
+   if(IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
 
    return -1;
 }
@@ -6280,6 +6393,12 @@ void LoadFingerprintData()
 
    int handle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
+   if(FileSize(handle) <= 0)
+   {
+      RegisterDataWarning("Zero-length persistence file: " + filename);
+      FileClose(handle);
+      return;
+   }
 
    // Metadata line (schema + row count)
    string schemaKey = FileReadString(handle);
@@ -6382,6 +6501,12 @@ void LoadTrainingData()
 
    int handle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
+   if(FileSize(handle) <= 0)
+   {
+      RegisterDataWarning("Zero-length persistence file: " + filename);
+      FileClose(handle);
+      return;
+   }
 
    string schemaKey = FileReadString(handle);
    int schemaVer = (int)FileReadNumber(handle);
@@ -6685,8 +6810,16 @@ void LoadRuntimeState()
       checksum = FNV1aUpdateDouble(checksum, rec.lot);
       checksum = FNV1aUpdateDouble(checksum, rec.tickValue);
 
-      if(g_pendingRLCount < pendingCap)
+      bool validRec = (rec.state >= 0 && rec.state < Q_TABLE_STATES && rec.action >= 0 && rec.action < Q_TABLE_ACTIONS &&
+                       MathIsValidNumber(rec.entryPrice) && MathIsValidNumber(rec.slDistance) &&
+                       MathIsValidNumber(rec.lot) && MathIsValidNumber(rec.tickValue));
+      if(validRec && rec.orderTicket > 0 && rec.positionTicket == 0 && !OrderSelect(rec.orderTicket))
+         validRec = false;
+
+      if(validRec && g_pendingRLCount < pendingCap)
          g_pendingRL[g_pendingRLCount++] = rec;
+      else if(!validRec)
+         RegisterDataWarning("Runtime pending RL record dropped during load");
    }
 
    int fileChecksum = (version >= 5) ? FileReadInteger(handle) : (int)checksum;
@@ -6696,6 +6829,7 @@ void LoadRuntimeState()
    if(!checksumOk)
    {
       Print("WARNING: Runtime state checksum mismatch expected=", fileChecksum, " computed=", (int)checksum);
+      RegisterDataWarning("Runtime checksum mismatch");
       if(INPUT_STRICT_STATE_LOAD)
       {
          Print("STRICT LOAD: Discarding runtime RL pending state and resetting watermarks.");
