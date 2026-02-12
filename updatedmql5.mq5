@@ -146,6 +146,108 @@ input bool     INPUT_ENABLE_MODIFY_TRAILING_TP = false;
 input bool     INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD = false;
 input bool     INPUT_USE_LEGACY_BEHAVIOR_MAPPING = true;
 input bool     INPUT_FORCE_NEW_TOGGLES_ONLY = false;
+//--- V7.31 Migration Notes (Toggle Semantics)
+// New master/sub-feature toggles default to ON to preserve legacy runtime behavior.
+// Existing INPUT_ENABLE_* flags remain backward-compatible umbrella controls.
+input group    "=== Master Feature Toggles ==="
+input bool     INPUT_TOGGLE_PLACE_ORDERS = true;
+input bool     INPUT_TOGGLE_CLOSE_ORDERS = true;
+input bool     INPUT_TOGGLE_MODIFY_STOPS = true;
+input bool     INPUT_TOGGLE_MODIFY_TPS = true;
+input bool     INPUT_TOGGLE_PENDING_ORDERS = true;
+input bool     INPUT_TOGGLE_MARKET_ORDERS = true;
+input bool     INPUT_PENDING_EXPIRY_CLEANUP_ON = true;
+
+input group    "=== Gate Toggles (Entry / Risk) ==="
+input bool     INPUT_GATE_TERMINAL_CONNECTED_ON = true;
+input bool     INPUT_GATE_AUTOTRADING_ALLOWED_ON = true;
+input bool     INPUT_GATE_SESSION_ON = true;
+input bool     INPUT_GATE_SESSION_WINDOW_ON = true;
+input bool     INPUT_GATE_COOLDOWN_ON = true;
+input bool     INPUT_GATE_MAX_DAILY_TRADES_ON = true;
+input bool     INPUT_GATE_DAILY_LOSS_ON = true;
+input bool     INPUT_GATE_CONSECUTIVE_LOSS_ON = true;
+input bool     INPUT_GATE_SPREAD_ON = true;
+input bool     INPUT_GATE_MAX_POSITIONS_ON = true;
+input bool     INPUT_GATE_EA_PROTECTION_STATE_ON = true;
+input bool     INPUT_GATE_DATA_ANOMALY_KILLSWITCH_ON = true;
+input bool     INPUT_GATE_SIGNAL_DETECTION_ON = true;
+input bool     INPUT_GATE_MIN_SIGNALS_ON = true;
+input bool     INPUT_GATE_MTF_WEIGHTING_ON = true;
+input bool     INPUT_GATE_ADX_FILTER_ON = true;
+input bool     INPUT_GATE_SAME_DIRECTION_ON = true;
+input bool     INPUT_GATE_PROXIMITY_ON = true;
+input bool     INPUT_GATE_MTF_ALIGNMENT_ON = true;
+input bool     INPUT_GATE_THREAT_HARD_BLOCK_ON = true;
+input bool     INPUT_GATE_THREAT_EXTREME_BLOCK_ON = true;
+input bool     INPUT_GATE_CONFIDENCE_MIN_ON = true;
+input bool     INPUT_GATE_EFFECTIVE_RR_ON = true;
+
+input group    "=== Threat Factor Toggles ==="
+input bool     INPUT_THREAT_FACTOR_LOSING_COUNT_ON = true;
+input bool     INPUT_THREAT_FACTOR_MAJORITY_LOSING_ON = true;
+input bool     INPUT_THREAT_FACTOR_DRAWDOWN_ON = true;
+input bool     INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON = true;
+input bool     INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON = true;
+input bool     INPUT_THREAT_FACTOR_NEWS_WINDOW_ON = true;
+input bool     INPUT_THREAT_FACTOR_RECOVERY_POSITION_ON = true;
+input bool     INPUT_THREAT_FACTOR_WIN_STREAK_ON = true;
+input bool     INPUT_THREAT_FRIDAY_LATE_PENALTY_ON = true;
+input bool     INPUT_THREAT_END_OF_MONTH_PENALTY_ON = true;
+input bool     INPUT_THREAT_SOFT_LOT_SHRINK_ON = true;
+input bool     INPUT_THREAT_HARD_ENTRY_BLOCK_ON = true;
+
+input group    "=== Lot Sizing Toggles ==="
+input bool     INPUT_LOT_BASE_RISK_ON = true;
+input bool     INPUT_LOT_RL_SCALING_ON = true;
+input bool     INPUT_LOT_ADAPTIVE_MULTIPLIER_ON = true;
+input bool     INPUT_LOT_STREAK_BOOST_ON = true;
+input bool     INPUT_LOT_HIGH_ADX_BOOST_ON = true;
+input bool     INPUT_LOT_RISK_PARITY_CAP_ON = true;
+input bool     INPUT_LOT_MARGIN_DOWNSCALE_ON = true;
+
+input group    "=== Execution Path Toggles ==="
+input bool     INPUT_EXEC_MARKET_PATH_ON = true;
+input bool     INPUT_EXEC_PENDING_PATH_ON = true;
+input bool     INPUT_EXEC_PENDING_DUPLICATE_BLOCK_ON = true;
+input bool     INPUT_EXEC_PENDING_EXPIRY_ON = true;
+input bool     INPUT_EXEC_MARKET_RETRY_ON = true;
+input bool     INPUT_EXEC_RECORD_RL_ON_SUBMIT = true;
+
+input group    "=== Close Trigger Toggles ==="
+input bool     INPUT_CLOSE_EQUITY_FLOOR_ON = true;
+input bool     INPUT_CLOSE_HIGH_SPREAD_PROFIT_ON = true;
+input bool     INPUT_CLOSE_50PCT_DEFENSIVE_ON = true;
+input bool     INPUT_CLOSE_PARTIAL_TP_ON = true;
+input bool     INPUT_CLOSE_MULTI_LEVEL_PARTIAL_ON = true;
+input bool     INPUT_CLOSE_AGE_TIMEOUT_ON = true;
+input bool     INPUT_CLOSE_RECOVERY_TIMEOUT_ON = true;
+
+input group    "=== Modify SL/TP Toggles ==="
+input bool     INPUT_MODIFY_BREAKEVEN_ON = true;
+input bool     INPUT_MODIFY_TRAILING_SL_ON = true;
+input bool     INPUT_MODIFY_TRAILING_TP_ON = true;
+input bool     INPUT_MODIFY_SUPPRESS_ON_HIGH_SPREAD_LOSS_ON = true;
+input bool     INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON = true; // WARNING: disable only for diagnostics
+
+input group    "=== Session Sub-Toggles ==="
+input bool     INPUT_SESSION_ASIAN_ON = true;
+input bool     INPUT_SESSION_LONDON_ON = true;
+input bool     INPUT_SESSION_NY_ON = true;
+input bool     INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES = true;
+
+input group    "=== Learning / Inference Sub-Toggles ==="
+input bool     INPUT_RL_INFERENCE_ON = true;
+input bool     INPUT_RL_LEARNING_ON = true;
+input bool     INPUT_RL_RECORD_ON = true;
+input bool     INPUT_MARKOV_INFERENCE_ON = true;
+input bool     INPUT_MARKOV_UPDATE_ON = true;
+input bool     INPUT_ML_INFERENCE_ON = true;
+input bool     INPUT_ML_RECORD_ON = true;
+input bool     INPUT_COMBO_ADAPTIVE_INFERENCE_ON = true;
+input bool     INPUT_COMBO_ADAPTIVE_RECORD_ON = true;
+input bool     INPUT_AI_QUERY_ON = true;
+input bool     INPUT_AI_BLEND_ON = true;
 //--- Entry Conditions (FIXED: Relaxed thresholds)
 input group    "=== Entry Conditions ==="
 input int      INPUT_MIN_SIGNALS       = 3;       // Minimum signals required (FIXED: Raised to prevent false entries)
@@ -649,11 +751,28 @@ bool IsFiniteInRange(double value, double minValue, double maxValue)
    return (MathIsValidNumber(value) && value >= minValue && value <= maxValue);
 }
 
+void ResetAdaptiveParamsToDefaults();
+
+bool IsPlacementEnabled() { return INPUT_TOGGLE_PLACE_ORDERS; }
+bool IsCloseEnabled() { return INPUT_TOGGLE_CLOSE_ORDERS; }
+bool IsStopModifyEnabled() { return INPUT_TOGGLE_MODIFY_STOPS; }
+bool IsTpModifyEnabled() { return INPUT_TOGGLE_MODIFY_TPS; }
+
+bool IsFeatureEnabled(string featureId)
+{
+   if(featureId == "market_orders") return (IsPlacementEnabled() && INPUT_TOGGLE_MARKET_ORDERS && INPUT_EXEC_MARKET_PATH_ON);
+   if(featureId == "pending_orders") return (IsPlacementEnabled() && INPUT_TOGGLE_PENDING_ORDERS && INPUT_EXEC_PENDING_PATH_ON);
+   if(featureId == "close") return IsCloseEnabled();
+   if(featureId == "modify_sl") return IsStopModifyEnabled();
+   if(featureId == "modify_tp") return IsTpModifyEnabled();
+   return true;
+}
+
 bool ReplaceFileAtomic(const string tmpName, const string finalName)
 {
    if(FileIsExist(finalName))
       FileDelete(finalName);
-   return FileMove(tmpName, 0, finalName, 0, FILE_REWRITE);
+   return FileMove(tmpName, 0, finalName, 0);
 }
 //--- Risk
 RiskParams g_risk;
@@ -823,6 +942,20 @@ bool g_effModifyTrailingSL = false;
 bool g_effModifyTrailingTP = false;
 bool g_effModifySkipLossOnHighSpread = false;
 
+void ResetAdaptiveParamsToDefaults()
+{
+   g_adaptive.lotMultiplier = 1.0;
+   g_adaptive.slAdjustPoints = 0;
+   g_adaptive.tpAdjustPoints = 0;
+   g_adaptive.trailAdjustPoints = 0;
+   g_adaptive.threatMultiplier = 1.0;
+   g_adaptive.confMultiplierCap = 1.5;
+   g_adaptive.minConfThreshold = INPUT_MIN_CONFIDENCE;
+   g_adaptive.maxPositions = INPUT_MAX_CONCURRENT_TRADES;
+   g_adaptive.lastOptimization = 0;
+   g_adaptive.tradesAtLastOpt = 0;
+}
+
 bool ResolveRuntimeToggle(bool legacyFlag, bool newToggle)
 {
    if(INPUT_FORCE_NEW_TOGGLES_ONLY)
@@ -945,17 +1078,8 @@ int OnInit()
    g_risk.maxTotalRisk = INPUT_MAX_TOTAL_RISK_PERCENT;
 
    //--- Initialize adaptive parameters
-   g_adaptive.lotMultiplier = 1.0;
-   g_adaptive.slAdjustPoints = 0;
-   g_adaptive.tpAdjustPoints = 0;
-   g_adaptive.trailAdjustPoints = 0;
-   g_adaptive.threatMultiplier = 1.0;
-   g_adaptive.confMultiplierCap = 1.5;
-   g_adaptive.minConfThreshold = INPUT_MIN_CONFIDENCE;
-   g_adaptive.maxPositions = INPUT_MAX_CONCURRENT_TRADES;
-   g_adaptive.lastOptimization = 0;
-   g_adaptive.tradesAtLastOpt = 0;
-      ZeroMemory(g_gateDiagnostics);
+   ResetAdaptiveParamsToDefaults();
+   ZeroMemory(g_gateDiagnostics);
    //--- Setup trade object
    g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_MAIN));
    g_trade.SetDeviationInPoints(30);
@@ -1038,7 +1162,7 @@ int OnInit()
    }
    if(INPUT_ENABLE_RL)
       LoadQTable();
-   if(INPUT_ENABLE_MARKOV)
+   if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON)
       LoadMarkovData();
    if(INPUT_ENABLE_ADAPTIVE)
       LoadAdaptiveParams();
@@ -1120,6 +1244,26 @@ int OnInit()
    Print("CHECKLIST GUARD ManageTrailingTP=", (g_effModifyTrailingTP ? "ON" : "OFF"));
    Print("CHECKLIST GUARD MoveToBreakeven=", (g_effModifyMoveToBE ? "ON" : "OFF"));
    Print("CHECKLIST GUARD ShouldSkipStopAdjustmentsForTicket=", (g_effModifySkipLossOnHighSpread ? "ON" : "OFF"));
+
+   //--- Master toggle compatibility matrix
+   Print("FEATURE MATRIX [Placement]: place=", (INPUT_TOGGLE_PLACE_ORDERS?"ON":"OFF"),
+         " market=", (INPUT_TOGGLE_MARKET_ORDERS?"ON":"OFF"),
+         " pending=", (INPUT_TOGGLE_PENDING_ORDERS?"ON":"OFF"));
+   Print("FEATURE MATRIX [Close]: close=", (INPUT_TOGGLE_CLOSE_ORDERS?"ON":"OFF"),
+         " equityFloor=", (INPUT_CLOSE_EQUITY_FLOOR_ON?"ON":"OFF"),
+         " partialTP=", (INPUT_CLOSE_PARTIAL_TP_ON?"ON":"OFF"));
+   Print("FEATURE MATRIX [Modify]: SL=", (INPUT_TOGGLE_MODIFY_STOPS?"ON":"OFF"),
+         " TP=", (INPUT_TOGGLE_MODIFY_TPS?"ON":"OFF"),
+         " brokerGuard=", (INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON?"ON":"OFF"));
+   Print("FEATURE MATRIX [Learning]: RL=", (INPUT_ENABLE_RL && INPUT_RL_INFERENCE_ON?"ON":"OFF"),
+         " Markov=", (INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON?"ON":"OFF"),
+         " ML=", (INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON?"ON":"OFF"),
+         " AI=", (INPUT_AI_MODE != AI_OFF && INPUT_AI_QUERY_ON?"ON":"OFF"));
+
+   if(!INPUT_TOGGLE_PLACE_ORDERS && (INPUT_TOGGLE_MARKET_ORDERS || INPUT_TOGGLE_PENDING_ORDERS))
+      Print("WARNING: Placement master OFF overrides market/pending sub-toggles.");
+   if(!INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON)
+      Print("WARNING: Broker-distance modify guard is OFF (diagnostics only; unsafe live).");
 
    //--- Initialize daily stats
    g_startingBalance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -1243,7 +1387,7 @@ void OnDeinit(const int reason)
       SaveTrainingData();
    if(INPUT_ENABLE_RL)
       SaveQTable();
-   if(INPUT_ENABLE_MARKOV)
+   if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON)
       SaveMarkovData();
    if(INPUT_ENABLE_ADAPTIVE)
       SaveAdaptiveParams();
@@ -1353,7 +1497,7 @@ void OnTick()
 
    if(INPUT_ENABLE_ADAPTIVE)
       CheckAdaptiveOptimization();
-   if(INPUT_AI_MODE != AI_OFF && ShouldQueryAI())
+   if(INPUT_AI_MODE != AI_OFF && INPUT_AI_QUERY_ON && ShouldQueryAI())
       QueryDeepSeekAI();
 
    t0 = GetTickCount();
@@ -1379,7 +1523,7 @@ void OnTick()
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(equity > g_peakEquity) g_peakEquity = equity;
 
-   if(g_effEquityFloorTrigger)
+   if(INPUT_CLOSE_EQUITY_FLOOR_ON && g_effEquityFloorTrigger)
    {
       double equityFloor = g_startingBalance * (INPUT_EQUITY_FLOOR_PERCENT / 100.0);
       if(equity < equityFloor)
@@ -1701,6 +1845,8 @@ int CountPendingStopsByDirection(int direction)
 //--- Remove expired pending stop orders and log event
 void CleanupExpiredPendingStopOrders()
 {
+   if(!INPUT_PENDING_EXPIRY_CLEANUP_ON)
+      return;
    int total = OrdersTotal();
    datetime now = TimeCurrent();
    for(int i = total - 1; i >= 0; i--)
@@ -1858,43 +2004,44 @@ double CalculateMarketThreat()
       }
    }
    // V7.2 FIX (BUG 7): Reduced from 15 pts/position (max 75) to 8 pts (max 40)
-   threat += MathMin(losingCount * 8.0, 40.0);
+   if(INPUT_THREAT_FACTOR_LOSING_COUNT_ON)
+      threat += MathMin(losingCount * 8.0, 40.0);
 
    // V7.2 FIX (BUG 8): Only apply majority check with 3+ positions (1 losing out of 1 = 100% but meaningless)
    //--- FACTOR 2: Majority Losing (+25 if >50% positions losing, only with 3+ positions)
-   if(totalPositions >= 3 && (double)losingCount / totalPositions > 0.5)
+   if(INPUT_THREAT_FACTOR_MAJORITY_LOSING_ON && totalPositions >= 3 && (double)losingCount / totalPositions > 0.5)
       threat += 25.0;
 
    //--- FACTOR 3: Account Drawdown (graduated: 0-45 points)
    double drawdownPct = CalculateDrawdownPercent();
-   if(drawdownPct >= 10.0)     threat += 45.0;
-   else if(drawdownPct >= 7.0) threat += 30.0;
-   else if(drawdownPct >= 4.0) threat += 15.0;
-   else if(drawdownPct >= 2.0) threat += 5.0;
-   else if(drawdownPct >= 1.0) threat += 3.0;
+   if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 10.0)     threat += 45.0;
+   else if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 7.0) threat += 30.0;
+   else if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 4.0) threat += 15.0;
+   else if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 2.0) threat += 5.0;
+   else if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 1.0) threat += 3.0;
 
    //--- FACTOR 4: Consecutive Loss Streak (non-linear: 0-25 points)
-   if(g_consecutiveLosses >= 5)      threat += 20.0 + (g_consecutiveLosses - 5) * 2;
-   else if(g_consecutiveLosses >= 4) threat += 15.0;
-   else if(g_consecutiveLosses >= 3) threat += 8.0;
-   else if(g_consecutiveLosses >= 2) threat += 3.0;
+   if(INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= 5)      threat += 20.0 + (g_consecutiveLosses - 5) * 2;
+   else if(INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= 4) threat += 15.0;
+   else if(INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= 3) threat += 8.0;
+   else if(INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= 2) threat += 3.0;
 
    //--- FACTOR 5: Volatility Spike (ATR ratio: 0-30 points)
    double volRatio = CalculateVolatilityRatio();
-   if(volRatio >= 2.0)      threat += 30.0;
-   else if(volRatio >= 1.6) threat += 20.0;
-   else if(volRatio >= 1.4) threat += 12.0;
-   else if(volRatio >= 1.2) threat += 5.0;
+   if(INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON && volRatio >= 2.0)      threat += 30.0;
+   else if(INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON && volRatio >= 1.6) threat += 20.0;
+   else if(INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON && volRatio >= 1.4) threat += 12.0;
+   else if(INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON && volRatio >= 1.2) threat += 5.0;
 
    //--- FACTOR 6: News Event Proximity (0-25 points)
    // Simplified: Use time?based heuristic for major news windows
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
    // NFP first Friday of month around 13:30 UTC
-   if(dt.day_of_week == 5 && dt.day <= 7 && dt.hour >= 13 && dt.hour <= 15)
+   if(INPUT_THREAT_FACTOR_NEWS_WINDOW_ON && dt.day_of_week == 5 && dt.day <= 7 && dt.hour >= 13 && dt.hour <= 15)
       threat += 20.0;
    // ECB/Fed typical announcement times
-   if(dt.hour >= 12 && dt.hour <= 14 && (dt.day_of_week == 3 || dt.day_of_week == 4))
+   if(INPUT_THREAT_FACTOR_NEWS_WINDOW_ON && dt.hour >= 12 && dt.hour <= 14 && (dt.day_of_week == 3 || dt.day_of_week == 4))
       threat += 8.0;
 
    //--- FACTOR 7: Calendar Liquidity Effects (0-15 points)
@@ -1903,21 +2050,21 @@ double CalculateMarketThreat()
    //   which can over-penalize valid setups.
    // - Friday penalty is now limited to late UTC hours when liquidity often deteriorates and spreads widen.
    // - End-of-month penalty remains configurable with a lower default to reduce over-filtering.
-   if(dt.day_of_week == 5 && dt.hour >= INPUT_FRIDAY_LATE_HOUR_UTC)
+   if(INPUT_THREAT_FRIDAY_LATE_PENALTY_ON && dt.day_of_week == 5 && dt.hour >= INPUT_FRIDAY_LATE_HOUR_UTC)
       threat += INPUT_FRIDAY_LATE_PENALTY;
 
-   if(INPUT_ENABLE_END_OF_MONTH_PENALTY && dt.day >= INPUT_END_OF_MONTH_START_DAY)
+   if(INPUT_ENABLE_END_OF_MONTH_PENALTY && INPUT_THREAT_END_OF_MONTH_PENALTY_ON && dt.day >= INPUT_END_OF_MONTH_START_DAY)
       threat += INPUT_END_OF_MONTH_PENALTY;
 
    //--- FACTOR 8: Recovery Order Presence (capped to avoid outsized impact)
    int recoveryCount = CountRecoveryPositions();
-   if(recoveryCount > 0)
+   if(INPUT_THREAT_FACTOR_RECOVERY_POSITION_ON && recoveryCount > 0)
       threat += MathMin(recoveryCount * 4.0 + 2.0, 15.0);
 
    //--- FACTOR 9: Win Streak Complacency
-   if(g_consecutiveWins >= 5)
+   if(INPUT_THREAT_FACTOR_WIN_STREAK_ON && g_consecutiveWins >= 5)
       threat += 5.0;  // Complacency warning
-   else if(g_consecutiveWins >= 2)
+   else if(INPUT_THREAT_FACTOR_WIN_STREAK_ON && g_consecutiveWins >= 2)
       threat -= 2.0;  // Slight confidence boost
 
    //--- Apply adaptive multiplier
@@ -2021,7 +2168,7 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
    double appliedComboMultiplier = 1.0;
 
    //--- Apply ML multiplier from signal combination stats (only if enabled)
-   if(INPUT_ENABLE_ML && g_trainingDataCount >= INPUT_MIN_TRADES_FOR_ML)
+   if(INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON && g_trainingDataCount >= INPUT_MIN_TRADES_FOR_ML)
    {
       double mlMultiplier = GetMLConfidenceMultiplier(combination);
       mlMultiplier = MathMin(mlMultiplier, g_adaptive.confMultiplierCap);
@@ -2039,7 +2186,7 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
    }
 
    //--- Apply AI adjustment (only if enabled)
-   if(INPUT_AI_MODE != AI_OFF && g_aiResponse.lastUpdate > 0)
+   if(INPUT_AI_MODE != AI_OFF && INPUT_AI_BLEND_ON && g_aiResponse.lastUpdate > 0)
    {
       double aiAdjustment = (g_aiResponse.confidenceScore - 50.0) * INPUT_AI_WEIGHT;
       conf += aiAdjustment;
@@ -2050,14 +2197,14 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
    }
 
    //--- Apply Markov streak adjustment (only if enabled)
-   if(INPUT_ENABLE_MARKOV)
+   if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON)
    {
       double markovAdj = GetMarkovConfidenceAdjustment();
       conf += markovAdj;
    }
 
    //--- Priority 1: High ADX risk mode (optional)
-   if(INPUT_ENABLE_HIGH_ADX_RISK_MODE)
+   if(INPUT_LOT_HIGH_ADX_BOOST_ON && INPUT_ENABLE_HIGH_ADX_RISK_MODE)
    {
       double adxNow[];
       if(CopyBuffer(g_hADX_M1, 0, 0, 1, adxNow) == 1 && adxNow[0] >= INPUT_HIGH_ADX_THRESHOLD)
@@ -2066,7 +2213,7 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
 
    //--- Priority 2: Combination-adaptive confidence (optional)
    bool allowComboAdaptive = (!mlNonNeutral);
-   if(INPUT_ENABLE_COMBINATION_ADAPTIVE && allowComboAdaptive)
+   if(INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_INFERENCE_ON && allowComboAdaptive)
    {
       for(int i = 0; i < g_combinationStatsCount; i++)
       {
@@ -3538,15 +3685,24 @@ bool RunDecisionPipeline(DecisionResult &decision)
 
    //--- STEP 2: Signal detection
    SignalResult signals;
-   if(!DetectSignals(signals))
+   ZeroMemory(signals);
+   bool signalsDetected = DetectSignals(signals);
+   if(INPUT_GATE_SIGNAL_DETECTION_ON && !signalsDetected)
    {
       g_gateDiagnostics.signalsRejects++;
       if(INPUT_ENABLE_LOGGING)
          LogWithRestartGuard("Signal detection failed");
       return false;
    }
+   if(!signalsDetected)
+   {
+      signals.totalSignals = INPUT_MIN_SIGNALS;
+      signals.bullVotes = 1;
+      signals.bearVotes = 0;
+      signals.combinationString = "SIGNAL_GATE_BYPASS";
+   }
 
-   if(signals.totalSignals < INPUT_MIN_SIGNALS)
+   if(INPUT_GATE_MIN_SIGNALS_ON && signals.totalSignals < INPUT_MIN_SIGNALS)
    {
       g_gateDiagnostics.signalsRejects++;
       if(INPUT_ENABLE_LOGGING)
@@ -3560,9 +3716,9 @@ bool RunDecisionPipeline(DecisionResult &decision)
 
    int mtfConsensusStrength = 0;
    int mtfConsensusDirection = GetTimeframeDirectionConsensus(mtfConsensusStrength);
-   if(mtfConsensusDirection == 1)
+   if(INPUT_GATE_MTF_WEIGHTING_ON && mtfConsensusDirection == 1)
       weightedBullVotes += (int)MathRound(INPUT_MTF_CONSENSUS_VOTE_WEIGHT);
-   else if(mtfConsensusDirection == -1)
+   else if(INPUT_GATE_MTF_WEIGHTING_ON && mtfConsensusDirection == -1)
       weightedBearVotes += (int)MathRound(INPUT_MTF_CONSENSUS_VOTE_WEIGHT);
 
    int direction = 0;
@@ -3596,7 +3752,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
             " consensusFrames=", mtfConsensusStrength);
 
    //--- STEP 4: ADX filter (optional)
-   if(INPUT_USE_ADX_FILTER)
+   if(INPUT_GATE_ADX_FILTER_ON && INPUT_USE_ADX_FILTER)
    {
       double adx[];
       if(CopyBuffer(g_hADX_M1, 0, 0, 1, adx) == 1)
@@ -3612,7 +3768,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
 
     //--- STEP 4b: Same-direction limit check
     string dirReject = "";
-    if(!CheckSameDirectionLimit(direction, dirReject))
+    if(INPUT_GATE_SAME_DIRECTION_ON && !CheckSameDirectionLimit(direction, dirReject))
     {
        if(INPUT_ENABLE_LOGGING)
           LogWithRestartGuard("Same-direction limit: " + dirReject);
@@ -3621,7 +3777,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
 
     //--- STEP 4c: Proximity check
     string proxReject = "";
-    if(!CheckProximity(direction, proxReject))
+    if(INPUT_GATE_PROXIMITY_ON && !CheckProximity(direction, proxReject))
     {
        if(INPUT_ENABLE_LOGGING)
           LogWithRestartGuard("Proximity reject: " + proxReject);
@@ -3630,7 +3786,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
 
     //--- STEP 5: MTF alignment (optional)
     int mtfScore = CalculateMTFAlignment(direction);
-    if(INPUT_MIN_MTF_SCORE > 0 && mtfScore < INPUT_MIN_MTF_SCORE)
+    if(INPUT_GATE_MTF_ALIGNMENT_ON && INPUT_MIN_MTF_SCORE > 0 && mtfScore < INPUT_MIN_MTF_SCORE)
     {
        g_gateDiagnostics.mtfRejects++;
        if(INPUT_ENABLE_LOGGING)
@@ -3649,7 +3805,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    ENUM_THREAT_ZONE threatZone = GetThreatZone(threat);
 
    // Soft gate near threshold, hard gate only when materially above threshold
-   if(g_effThreatHardBlock && threat > (INPUT_MAX_THREAT_ENTRY + 10.0))
+   if(INPUT_GATE_THREAT_HARD_BLOCK_ON && INPUT_THREAT_HARD_ENTRY_BLOCK_ON && g_effThreatHardBlock && threat > (INPUT_MAX_THREAT_ENTRY + 10.0))
    {
       g_gateDiagnostics.threatRejects++;
       if(INPUT_ENABLE_LOGGING)
@@ -3669,7 +3825,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
 
    // Apply adaptive minimum confidence
    double minConf = g_adaptive.minConfThreshold;
-   if(confidence < minConf)
+   if(INPUT_GATE_CONFIDENCE_MIN_ON && confidence < minConf)
    {
       g_gateDiagnostics.confidenceRejects++;
       if(INPUT_ENABLE_LOGGING)
@@ -3684,7 +3840,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
                                                positions, drawdown);
 
    // Honor RL skip decision
-   if(INPUT_ENABLE_RL && rlAction == RL_SKIP_TRADE && g_rlTradesCompleted >= INPUT_RL_MIN_TRADES)
+   if(INPUT_ENABLE_RL && INPUT_RL_INFERENCE_ON && rlAction == RL_SKIP_TRADE && g_rlTradesCompleted >= INPUT_RL_MIN_TRADES)
    {
       // Randomised skip based on RL weight (default weight = 0.3)
       if((double)MathRand() / 32767.0 < INPUT_RL_WEIGHT)
@@ -3696,7 +3852,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    }
 
    //--- STEP 10: Decision matrix â€“ we now only block on extreme threat
-   if(g_effThreatExtremeZoneBlock && threatZone == THREAT_EXTREME)
+   if(INPUT_GATE_THREAT_EXTREME_BLOCK_ON && g_effThreatExtremeZoneBlock && threatZone == THREAT_EXTREME)
    {
       g_gateDiagnostics.threatRejects++;
       if(INPUT_ENABLE_LOGGING)
@@ -3714,7 +3870,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    }
 
    double expectedRR = (slPoints > 0.0) ? (tpPoints / slPoints) : 0.0;
-   if(!MathIsValidNumber(expectedRR) || expectedRR <= INPUT_MIN_EFFECTIVE_RR_AFTER_SPREAD)
+   if(INPUT_GATE_EFFECTIVE_RR_ON && (!MathIsValidNumber(expectedRR) || expectedRR <= INPUT_MIN_EFFECTIVE_RR_AFTER_SPREAD))
    {
       RegisterDataWarning("Rejected by spread-adjusted RR gate");
       return false;
@@ -3724,20 +3880,20 @@ bool RunDecisionPipeline(DecisionResult &decision)
    double lotSize = CalculateLotSize(slPoints, confidence, threat, rlAction);
 
    // Soft threat gating before hard no-trade: shrink lot near threat threshold
-   if(g_effThreatSoftLotShrink && threat > INPUT_MAX_THREAT_ENTRY)
+   if(INPUT_THREAT_SOFT_LOT_SHRINK_ON && g_effThreatSoftLotShrink && threat > INPUT_MAX_THREAT_ENTRY)
    {
       double over = threat - INPUT_MAX_THREAT_ENTRY;
       double threatSoftFactor = MathMax(0.25, 1.0 - (over / 10.0) * 0.5);
       lotSize *= threatSoftFactor;
    }
-   if(INPUT_ENABLE_HIGH_ADX_RISK_MODE)
+   if(INPUT_LOT_HIGH_ADX_BOOST_ON && INPUT_ENABLE_HIGH_ADX_RISK_MODE)
    {
       double adxNow[];
       if(CopyBuffer(g_hADX_M1, 0, 0, 1, adxNow) == 1 && adxNow[0] >= INPUT_HIGH_ADX_THRESHOLD)
          lotSize *= INPUT_HIGH_ADX_LOT_MULTIPLIER;
    }
 
-   if(INPUT_ENABLE_RISK_PARITY_CAP)
+   if(INPUT_LOT_RISK_PARITY_CAP_ON && INPUT_ENABLE_RISK_PARITY_CAP)
    {
       int sess = GetCurrentSession();
       double volRatio = CalculateVolatilityRatio();
@@ -3793,51 +3949,40 @@ bool CheckAllGates(string &rejectReason)
       g_dataWarningWindowStart = TimeCurrent();
       g_dataIntegrityWarnings = 0;
    }
-   if(g_dataIntegrityWarnings >= INPUT_DATA_WARNING_KILL_SWITCH)
+   if(INPUT_GATE_DATA_ANOMALY_KILLSWITCH_ON && g_dataIntegrityWarnings >= INPUT_DATA_WARNING_KILL_SWITCH)
    {
       rejectReason = "Anomaly kill-switch active";
       return false;
    }
 
-      bool isTesterMode = (MQLInfoInteger(MQL_TESTER) != 0);
-   if(isTesterMode)
+   bool isTesterMode = (MQLInfoInteger(MQL_TESTER) != 0);
+   if(INPUT_GATE_TERMINAL_CONNECTED_ON && !isTesterMode && !TerminalInfoInteger(TERMINAL_CONNECTED))
    {
-      if(INPUT_ENABLE_LOGGING)
-         Print("GATE CHECK: TERMINAL_CONNECTED skipped (tester mode)");
-   }
-   else
-   {
-      if(INPUT_ENABLE_LOGGING)
-         Print("GATE CHECK: TERMINAL_CONNECTED evaluated (live mode)");
-
-      if(!TerminalInfoInteger(TERMINAL_CONNECTED))
-      {
-         rejectReason = "Terminal disconnected";
-         return false;
-      }
+      rejectReason = "Terminal disconnected";
+      return false;
    }
 
-   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+   if(INPUT_GATE_AUTOTRADING_ALLOWED_ON && !MQLInfoInteger(MQL_TRADE_ALLOWED))
    {
       rejectReason = "AutoTrading disabled";
       return false;
    }
 
-      if(!IsAllowedSession())
+   if(INPUT_GATE_SESSION_ON && !IsAllowedSession())
    {
       g_gateDiagnostics.sessionRejects++;
       rejectReason = "Outside trading session";
       return false;
    }
 
-   if(TimeCurrent() - g_lastOrderTime < INPUT_ORDER_COOLDOWN_SECONDS)
+   if(INPUT_GATE_COOLDOWN_ON && (TimeCurrent() - g_lastOrderTime < INPUT_ORDER_COOLDOWN_SECONDS))
    {
       g_gateDiagnostics.cooldownRejects++;
       rejectReason = "Order cooldown active";
       return false;
    }
 
-   if(g_daily.tradesPlaced >= INPUT_MAX_DAILY_TRADES)
+   if(INPUT_GATE_MAX_DAILY_TRADES_ON && g_daily.tradesPlaced >= INPUT_MAX_DAILY_TRADES)
    {
       rejectReason = "Daily trade limit reached";
       return false;
@@ -3845,28 +3990,27 @@ bool CheckAllGates(string &rejectReason)
 
    double dayLoss = g_daily.lossToday;
    double maxDayLoss = g_daily.dayStartBalance * (INPUT_DAILY_LOSS_LIMIT_PERCENT / 100.0);
-   if(dayLoss >= maxDayLoss)
+   if(INPUT_GATE_DAILY_LOSS_ON && dayLoss >= maxDayLoss)
    {
       rejectReason = "Daily loss limit reached";
       return false;
    }
 
-   if(g_consecutiveLosses >= INPUT_MAX_CONSECUTIVE_LOSSES)
+   if(INPUT_GATE_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= INPUT_MAX_CONSECUTIVE_LOSSES)
    {
       rejectReason = "Consecutive loss limit reached";
       return false;
    }
 
-   if(IsSpreadHigh())
+   if(INPUT_GATE_SPREAD_ON && IsSpreadHigh())
    {
       rejectReason = "Spread too high";
       return false;
    }
 
-   // Position limit check (main positions only)
    int currentMainPositions = CountMainPositionsFromBroker();
    int currentTotalPositions = CountAllOurPositions();
-   if(currentMainPositions >= g_adaptive.maxPositions)
+   if(INPUT_GATE_MAX_POSITIONS_ON && currentMainPositions >= g_adaptive.maxPositions)
    {
       g_gateDiagnostics.maxPositionsRejects++;
       rejectReason = "Max positions reached (main=" + IntegerToString(currentMainPositions) +
@@ -3875,16 +4019,15 @@ bool CheckAllGates(string &rejectReason)
       return false;
    }
 
-    // EA state check
-    if(g_effGateProtectionBlock && (g_eaState == STATE_EXTREME_RISK || g_eaState == STATE_DRAWDOWN_PROTECT))
-    {
-       rejectReason = "EA in protection mode";
-       return false;
-    }
+   if(INPUT_GATE_EA_PROTECTION_STATE_ON && g_effGateProtectionBlock && (g_eaState == STATE_EXTREME_RISK || g_eaState == STATE_DRAWDOWN_PROTECT))
+   {
+      rejectReason = "EA in protection mode";
+      return false;
+   }
 
-    return true;
- }
- //+------------------------------------------------------------------+
+   return true;
+}
+//+------------------------------------------------------------------+
  // Same-direction limit: prevent all positions being in one direction
  bool CheckSameDirectionLimit(int direction, string &rejectReason)
  {
@@ -3905,16 +4048,16 @@ bool CheckAllGates(string &rejectReason)
        if(posDir == direction)
           sameCount++;
     }
-        if(INPUT_EXECUTION_MODE == PENDING_STOP)
-       sameCount += CountPendingStopsByDirection(direction);
 
+    if(INPUT_EXECUTION_MODE == PENDING_STOP && IsFeatureEnabled("pending_orders"))
+       sameCount += CountPendingStopsByDirection(direction);
 
     if(sameCount >= INPUT_MAX_SAME_DIRECTION)
     {
-               rejectReason = "Same-direction limit reached (" + IntegerToString(sameCount) +
+       rejectReason = "Same-direction limit reached (" + IntegerToString(sameCount) +
                       " " + (direction == 1 ? "BUY" : "SELL") +
                       (INPUT_EXECUTION_MODE == PENDING_STOP ? " positions+pending" : " positions") + ")";
-    if(INPUT_ENABLE_LOGGING)
+       if(INPUT_ENABLE_LOGGING)
           Print("CHECK SAME DIRECTION: REJECT | direction=", (direction == 1 ? "BUY" : "SELL"),
                 " | sameCount=", sameCount, " | limit=", INPUT_MAX_SAME_DIRECTION);
        return false;
@@ -4055,7 +4198,7 @@ bool ShouldPrintOncePerWindow(string key, int secondsWindow)
 //+------------------------------------------------------------------+
 double GetStreakLotMultiplier()
 {
-   if(!INPUT_ENABLE_STREAK_LOT_MULTIPLIER) return 1.0;
+   if(!INPUT_ENABLE_STREAK_LOT_MULTIPLIER || !INPUT_LOT_STREAK_BOOST_ON) return 1.0;
    if(g_streakMultiplierOrdersRemaining <= 0) return 1.0;
    if(INPUT_STREAK_LOT_MULTIPLIER <= 0) return 1.0;
    return INPUT_STREAK_LOT_MULTIPLIER;
@@ -4063,7 +4206,7 @@ double GetStreakLotMultiplier()
 //+------------------------------------------------------------------+
 void ConsumeStreakMultiplierOrder()
 {
-   if(!INPUT_ENABLE_STREAK_LOT_MULTIPLIER) return;
+   if(!INPUT_ENABLE_STREAK_LOT_MULTIPLIER || !INPUT_LOT_STREAK_BOOST_ON) return;
    if(g_streakMultiplierOrdersRemaining <= 0) return;
 
    g_streakMultiplierOrdersRemaining--;
@@ -4096,6 +4239,8 @@ bool IsPositionProfitable(ulong ticket)
 //+------------------------------------------------------------------+
 void HandleHighSpreadOpenPositions()
 {
+   if(!IsCloseEnabled() || !INPUT_CLOSE_HIGH_SPREAD_PROFIT_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effCloseHighSpreadProfit)
    {
@@ -4155,6 +4300,8 @@ void HandleHighSpreadOpenPositions()
 //+------------------------------------------------------------------+
 bool ShouldSkipStopAdjustmentsForTicket(ulong ticket)
 {
+   if(!INPUT_MODIFY_SUPPRESS_ON_HIGH_SPREAD_LOSS_ON)
+      return false;
    if(!IsSpreadHigh())
       return false;
 
@@ -4221,6 +4368,9 @@ bool CanAttemptTPModify(ulong ticket)
 //+------------------------------------------------------------------+
 bool IsAllowedSession()
 {
+   if(!INPUT_GATE_SESSION_WINDOW_ON)
+      return true;
+
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
    int hour = dt.hour;
@@ -4243,9 +4393,16 @@ bool IsAllowedSession()
    if((inAsian && inLondon) || (inAsian && inNY) || (inLondon && inNY))
       RegisterDataWarning("Overlapping session windows detected");
 
-   if(INPUT_TRADE_NEWYORK && inNY) return true;
-   if(INPUT_TRADE_LONDON && inLondon) return true;
-   if(INPUT_TRADE_ASIAN && inAsian) return true;
+   bool asianOn = (INPUT_TRADE_ASIAN && INPUT_SESSION_ASIAN_ON);
+   bool londonOn = (INPUT_TRADE_LONDON && INPUT_SESSION_LONDON_ON);
+   bool nyOn = (INPUT_TRADE_NEWYORK && INPUT_SESSION_NY_ON);
+
+   if(!asianOn && !londonOn && !nyOn)
+      return !INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES;
+
+   if(nyOn && inNY) return true;
+   if(londonOn && inLondon) return true;
+   if(asianOn && inAsian) return true;
 
    return false;
 }
@@ -4268,9 +4425,9 @@ int GetCurrentSession()
    if(logicalHour < 0) logicalHour += 24;
 
    // Priority: NY > London > Asian (for overlaps)
-   if(IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END)) return 2;
-   if(IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
-   if(IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
+   if(INPUT_SESSION_NY_ON && IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END)) return 2;
+   if(INPUT_SESSION_LONDON_ON && IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
+   if(INPUT_SESSION_ASIAN_ON && IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
 
    return -1; // Off-hours
 }
@@ -4364,6 +4521,8 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
 
    double balance = AccountInfoDouble(ACCOUNT_BALANCE);
    double riskMoney = balance * (g_risk.riskPercent / 100.0);
+   if(!INPUT_LOT_BASE_RISK_ON)
+      riskMoney = balance * (INPUT_MIN_LOT_SIZE / MathMax(0.01, balance));
 
    // Base lot size from risk (using OrderCalcProfit)
    double slValue = slPoints * g_point;
@@ -4394,7 +4553,7 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
    lotSize *= confFactor;
 
    // RL scaling
-   if(INPUT_ENABLE_RL)
+   if(INPUT_LOT_RL_SCALING_ON && INPUT_ENABLE_RL)
    {
       switch(rlAction)
       {
@@ -4406,10 +4565,12 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
    }
 
    // Adaptive multiplier
-   lotSize *= g_adaptive.lotMultiplier;
+   if(INPUT_LOT_ADAPTIVE_MULTIPLIER_ON)
+      lotSize *= g_adaptive.lotMultiplier;
 
    // Consecutive-win lot boost (optional)
-   lotSize *= GetStreakLotMultiplier();
+   if(INPUT_LOT_STREAK_BOOST_ON)
+      lotSize *= GetStreakLotMultiplier();
 
    // Round to lot step and clamp to limits
    lotSize = MathFloor(lotSize / g_lotStep) * g_lotStep;
@@ -4424,7 +4585,7 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
       return 0;
 
    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
-   if(marginRequired > freeMargin * 0.8)
+   if(INPUT_LOT_MARGIN_DOWNSCALE_ON && marginRequired > freeMargin * 0.8)
    {
       lotSize = (freeMargin * 0.5) / (marginRequired / lotSize);
       lotSize = MathFloor(lotSize / g_lotStep) * g_lotStep;
@@ -4441,7 +4602,7 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
    placedOrderTicket = 0;
 
    int pendingSameDirection = CountPendingStopsByDirection(decision.direction);
-   if(pendingSameDirection > 0)
+   if(INPUT_EXEC_PENDING_DUPLICATE_BLOCK_ON && pendingSameDirection > 0)
    {
       Print("PENDING STOP SKIPPED (DUPLICATE): Symbol=", _Symbol,
             " | Magic=", INPUT_MAGIC_NUMBER,
@@ -4464,8 +4625,16 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
    request.volume = decision.lotSize;
    request.deviation = 30;
    request.comment = comment;
-   request.type_time = ORDER_TIME_SPECIFIED;
-   request.expiration = TimeCurrent() + (INPUT_PENDING_EXPIRY_MINUTES * 60);
+   if(INPUT_EXEC_PENDING_EXPIRY_ON)
+   {
+      request.type_time = ORDER_TIME_SPECIFIED;
+      request.expiration = TimeCurrent() + (INPUT_PENDING_EXPIRY_MINUTES * 60);
+   }
+   else
+   {
+      request.type_time = ORDER_TIME_GTC;
+      request.expiration = 0;
+   }
 
    if(decision.direction == 1)
    {
@@ -4540,6 +4709,8 @@ ulong ResolveOpenedPositionId(ulong orderTicket, string comment)
 }
 bool ExecuteOrder(const DecisionResult &decision)
 {
+   if(!IsPlacementEnabled())
+      return false;
    double price, sl, tp;
    ENUM_ORDER_TYPE orderType;
 
@@ -4565,6 +4736,9 @@ bool ExecuteOrder(const DecisionResult &decision)
    string comment = COMMENT_MAIN_PREFIX + IntegerToString(TimeCurrent());
    if(INPUT_EXECUTION_MODE == PENDING_STOP)
    {
+      if(!IsFeatureEnabled("pending_orders"))
+         return false;
+
       ulong pendingOrderTicket = 0;
       if(!PlacePendingStopOrder(decision, comment, pendingOrderTicket))
       {
@@ -4580,7 +4754,7 @@ bool ExecuteOrder(const DecisionResult &decision)
             " | Zone: ", EnumToString(decision.threatZone),
             " | Signals: ", decision.signalCombination);
 
-      if(INPUT_ENABLE_RL)
+      if(INPUT_ENABLE_RL && INPUT_EXEC_RECORD_RL_ON_SUBMIT && INPUT_RL_RECORD_ON)
       {
          int state = DetermineRLState(decision.confidence,
                                       decision.threatLevel,
@@ -4603,8 +4777,11 @@ bool ExecuteOrder(const DecisionResult &decision)
       return true;
    }
 
-   // 3 retry attempts
-   for(int attempt = 0; attempt < 3; attempt++)
+   if(!IsFeatureEnabled("market_orders"))
+      return false;
+
+   int maxAttempts = INPUT_EXEC_MARKET_RETRY_ON ? 3 : 1;
+   for(int attempt = 0; attempt < maxAttempts; attempt++)
    {
       g_trade.SetTypeFilling(GetFillingMode());
 
@@ -4632,7 +4809,7 @@ bool ExecuteOrder(const DecisionResult &decision)
          // Track position in internal array
    TrackNewPosition(positionId, decision, comment);
          // Record RL state?action (if RL active)
-         if(INPUT_ENABLE_RL)
+         if(INPUT_ENABLE_RL && INPUT_EXEC_RECORD_RL_ON_SUBMIT && INPUT_RL_RECORD_ON)
          {
           int state = DetermineRLState(decision.confidence,
                                           decision.threatLevel,
@@ -4737,6 +4914,8 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
 //+------------------------------------------------------------------+
 void Handle50PercentLotClose()
 {
+   if(!IsCloseEnabled() || !INPUT_CLOSE_50PCT_DEFENSIVE_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effClose50PctDefensive)
    {
@@ -4827,6 +5006,8 @@ void Handle50PercentLotClose()
 //+------------------------------------------------------------------+
 void ManagePartialClose()
 {
+   if(!IsCloseEnabled() || !INPUT_CLOSE_PARTIAL_TP_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effClosePartialTP)
    {
@@ -4904,6 +5085,8 @@ void ManagePartialClose()
 //+------------------------------------------------------------------+
 void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 {
+   if(!IsStopModifyEnabled() || !INPUT_MODIFY_BREAKEVEN_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effModifyMoveToBE)
    {
@@ -4926,14 +5109,14 @@ void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
    double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
    double minDist = g_stopLevel * g_point;
 
-   if(posType == POSITION_TYPE_BUY)
+   if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY)
    {
       if(currentPrice - newSL < minDist)
          newSL = currentPrice - minDist;
    }
    else
    {
-      if(newSL - currentPrice < minDist)
+      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && newSL - currentPrice < minDist)
          newSL = currentPrice + minDist;
    }
 
@@ -4943,6 +5126,8 @@ void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 //+------------------------------------------------------------------+
 void ManageTrailingStops()
 {
+   if(!IsStopModifyEnabled() || !INPUT_MODIFY_TRAILING_SL_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effModifyTrailingSL)
    {
@@ -4995,9 +5180,9 @@ void ManageTrailingStops()
       newSL = NormalizeDouble(newSL, g_digits);
 
       double minDist = g_stopLevel * g_point;
-      if(posType == POSITION_TYPE_BUY && currentPrice - newSL < minDist)
+      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY && currentPrice - newSL < minDist)
          continue;
-      if(posType == POSITION_TYPE_SELL && newSL - currentPrice < minDist)
+      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_SELL && newSL - currentPrice < minDist)
          continue;
 
       bool shouldMove = false;
@@ -5014,6 +5199,7 @@ void ManageTrailingStops()
 bool CanModifyPosition(ulong ticket)
 {
    if(!PositionSelectByTicket(ticket)) return false;
+   if(!INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON) return true; // diagnostics bypass
 
    double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
    double currentSL = PositionGetDouble(POSITION_SL);
@@ -5254,6 +5440,8 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
 //+------------------------------------------------------------------+
 void CheckRecoveryTimeouts()
 {
+   if(!IsCloseEnabled() || !INPUT_CLOSE_RECOVERY_TIMEOUT_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effCloseRecoveryTimeout)
    {
@@ -5669,11 +5857,12 @@ void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetim
    double entryPrice = 0.0, slDistance = 0.0, lot = 0.0, tickValue = 0.0, riskBasis = 0.0, normalizedReward = finalNetProfit;
    ComputeNormalizedRLReward(positionId, finalNetProfit, normalizedReward, entryPrice, slDistance, lot, tickValue, riskBasis);
 
-   if(INPUT_ENABLE_MARKOV)
+   if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON)
       UpdateMarkovTransition(g_lastMarkovState, ClassifyMarkovStateFromR(normalizedReward));
 
    if(INPUT_ENABLE_RL)
-      UpdateRLFromTrade(positionId, INPUT_RL_USE_RAW_REWARD ? finalNetProfit : normalizedReward);
+      if(INPUT_RL_LEARNING_ON)
+         UpdateRLFromTrade(positionId, INPUT_RL_USE_RAW_REWARD ? finalNetProfit : normalizedReward);
 
    if(INPUT_ENABLE_ML || INPUT_ENABLE_COMBINATION_ADAPTIVE)
       RecordTrainingData(positionId, dealTicket, finalNetProfit, isWin);
@@ -5940,9 +6129,9 @@ int GetSessionFromTime(datetime ts)
    if(logicalHour < 0) logicalHour += 24;
 
    // Priority: NY > London > Asian (for overlaps)
-   if(IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END)) return 2;
-   if(IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
-   if(IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
+   if(INPUT_SESSION_NY_ON && IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END)) return 2;
+   if(INPUT_SESSION_LONDON_ON && IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
+   if(INPUT_SESSION_ASIAN_ON && IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
 
    return -1;
 }
@@ -6345,7 +6534,8 @@ bool ParseAIResponse(const string &response)
       return false;
    }
 
-   string normalizedBias = StringToLower(bias);
+   string normalizedBias = bias;
+   StringToLower(normalizedBias);
    if(normalizedBias != "bullish" && normalizedBias != "bearish" && normalizedBias != "neutral")
       normalizedBias = "neutral";
 
@@ -6407,6 +6597,8 @@ void UpdateAverageSpread()
 //+------------------------------------------------------------------+
 void CloseAllPositions(string reason)
 {
+   if(!IsCloseEnabled())
+      return;
    if(!g_effCloseAllApi)
    {
       if(ShouldPrintOncePerWindow("close_all_api_disabled", 60))
@@ -6963,7 +7155,7 @@ void LoadAdaptiveParams()
    {
       Print("WARNING: Adaptive params schema unsupported: ", version, " - using defaults");
       FileClose(handle);
-      InitializeAdaptiveParams();
+      ResetAdaptiveParamsToDefaults();
       return;
    }
 
@@ -7277,6 +7469,13 @@ void DrawStatsPanel()
                x + 10, y, txtColor, 9);
    y += 18;
 
+   CreateLabel(prefix + "master_toggles", "Toggles P/C/M: " +
+               (INPUT_TOGGLE_PLACE_ORDERS ? "ON" : "OFF") + "/" +
+               (INPUT_TOGGLE_CLOSE_ORDERS ? "ON" : "OFF") + "/" +
+               ((INPUT_TOGGLE_MODIFY_STOPS || INPUT_TOGGLE_MODIFY_TPS) ? "ON" : "OFF"),
+               x + 10, y, txtColor, 9);
+   y += 18;
+
    // Daily stats
    CreateLabel(prefix + "daily", "Today: Filled " + IntegerToString(g_daily.tradesPlaced) +
                " | Pending Placed " + IntegerToString(g_daily.pendingOrdersPlaced) +
@@ -7404,6 +7603,8 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode()
 //+------------------------------------------------------------------+
 void CheckPositionAgeTimeout()
 {
+   if(!IsCloseEnabled() || !INPUT_CLOSE_AGE_TIMEOUT_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effClosePositionAgeTimeout)
    {
@@ -7457,6 +7658,8 @@ void CheckPositionAgeTimeout()
 //+------------------------------------------------------------------+
 void ManageTrailingTP()
 {
+   if(!IsTpModifyEnabled() || !INPUT_MODIFY_TRAILING_TP_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effModifyTrailingTP)
    {
@@ -7541,6 +7744,8 @@ void ManageTrailingTP()
 //+------------------------------------------------------------------+
 void HandleMultiLevelPartial(ulong ticket)
 {
+   if(!IsCloseEnabled() || !INPUT_CLOSE_MULTI_LEVEL_PARTIAL_ON)
+      return;
    static bool loggedDisabled = false;
    if(!g_effCloseMultiLevelPartial)
    {
