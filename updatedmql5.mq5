@@ -146,6 +146,14 @@ input bool     INPUT_ENABLE_MODIFY_TRAILING_TP = false;
 input bool     INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD = false;
 input bool     INPUT_USE_LEGACY_BEHAVIOR_MAPPING = true;
 input bool     INPUT_FORCE_NEW_TOGGLES_ONLY = false;
+enum ENUM_TOGGLE_RESOLUTION_MODE
+{
+   TOGGLE_RESOLUTION_MIGRATION = 0, // legacy OR new
+   TOGGLE_RESOLUTION_NEW_AUTH  = 1, // new is authoritative
+   TOGGLE_RESOLUTION_STRICT_NEW = 2 // legacy mapping ignored + strict mismatch warnings
+};
+input ENUM_TOGGLE_RESOLUTION_MODE INPUT_TOGGLE_RESOLUTION_MODE = TOGGLE_RESOLUTION_NEW_AUTH;
+input bool     INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION = false;
 //--- V7.31 Migration Notes (Toggle Semantics)
 // New master/sub-feature toggles default to ON to preserve legacy runtime behavior.
 // Existing INPUT_ENABLE_* flags remain backward-compatible umbrella controls.
@@ -942,6 +950,24 @@ bool g_effModifyTrailingSL = false;
 bool g_effModifyTrailingTP = false;
 bool g_effModifySkipLossOnHighSpread = false;
 
+struct EffectiveConfig
+{
+   bool entry;
+   bool close;
+   bool modifySL;
+   bool modifyTP;
+   bool extremeRisk;
+   bool markovInfer;
+   bool markovUpdate;
+   bool rlRecord;
+   bool rlLearn;
+   bool rlInfer;
+   bool mlRecord;
+   bool mlInfer;
+};
+
+EffectiveConfig g_effectiveConfig;
+
 void ResetAdaptiveParamsToDefaults()
 {
    g_adaptive.lotMultiplier = 1.0;
@@ -958,11 +984,67 @@ void ResetAdaptiveParamsToDefaults()
 
 bool ResolveRuntimeToggle(bool legacyFlag, bool newToggle)
 {
+   if(INPUT_TOGGLE_RESOLUTION_MODE == TOGGLE_RESOLUTION_MIGRATION)
+   {
+      if(INPUT_USE_LEGACY_BEHAVIOR_MAPPING && legacyFlag && !newToggle)
+         Print("MIGRATION TOGGLE OVERRIDE: legacy=ON forces effective ON while new=OFF.");
+      return (INPUT_USE_LEGACY_BEHAVIOR_MAPPING ? (legacyFlag || newToggle) : newToggle);
+   }
+
+   if(INPUT_TOGGLE_RESOLUTION_MODE == TOGGLE_RESOLUTION_STRICT_NEW && legacyFlag != newToggle)
+      Print("STRICT TOGGLE MISMATCH: legacy=", (legacyFlag ? "ON" : "OFF"), " new=", (newToggle ? "ON" : "OFF"), " effective uses NEW toggle.");
+
    if(INPUT_FORCE_NEW_TOGGLES_ONLY)
       return newToggle;
-   if(INPUT_USE_LEGACY_BEHAVIOR_MAPPING)
-      return (legacyFlag || newToggle);
    return newToggle;
+}
+
+void BuildEffectiveConfig()
+{
+   g_effectiveConfig.entry = INPUT_TOGGLE_PLACE_ORDERS && (INPUT_TOGGLE_MARKET_ORDERS || INPUT_TOGGLE_PENDING_ORDERS);
+   g_effectiveConfig.close = INPUT_TOGGLE_CLOSE_ORDERS;
+   g_effectiveConfig.modifySL = INPUT_TOGGLE_MODIFY_STOPS;
+   g_effectiveConfig.modifyTP = INPUT_TOGGLE_MODIFY_TPS;
+   g_effectiveConfig.extremeRisk = (g_effExtremeByThreat || g_effExtremeByDrawdown || g_effDrawdownProtectState || g_effExtremeCloseOldest);
+   g_effectiveConfig.markovInfer = (INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON);
+   g_effectiveConfig.markovUpdate = (INPUT_ENABLE_MARKOV && INPUT_MARKOV_UPDATE_ON);
+   g_effectiveConfig.rlRecord = (INPUT_ENABLE_RL && INPUT_EXEC_RECORD_RL_ON_SUBMIT);
+   g_effectiveConfig.rlLearn = (INPUT_ENABLE_RL && INPUT_RL_LEARNING_ON);
+   g_effectiveConfig.rlInfer = (INPUT_ENABLE_RL && INPUT_RL_INFERENCE_ON);
+   g_effectiveConfig.mlRecord = ((INPUT_ENABLE_ML && INPUT_ML_RECORD_ON) ||
+                                (INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_RECORD_ON));
+   g_effectiveConfig.mlInfer = ((INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON) ||
+                               (INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_INFERENCE_ON));
+}
+
+bool ValidateAndReportEffectiveConfig()
+{
+   BuildEffectiveConfig();
+   Print("EFFECTIVE MATRIX: entry=", (g_effectiveConfig.entry?"ON":"OFF"),
+         " close=", (g_effectiveConfig.close?"ON":"OFF"),
+         " modSL=", (g_effectiveConfig.modifySL?"ON":"OFF"),
+         " modTP=", (g_effectiveConfig.modifyTP?"ON":"OFF"),
+         " extreme=", (g_effectiveConfig.extremeRisk?"ON":"OFF"),
+         " markov[infer/update]=", (g_effectiveConfig.markovInfer?"ON":"OFF"), "/", (g_effectiveConfig.markovUpdate?"ON":"OFF"),
+         " rl[record/learn/infer]=", (g_effectiveConfig.rlRecord?"ON":"OFF"), "/", (g_effectiveConfig.rlLearn?"ON":"OFF"), "/", (g_effectiveConfig.rlInfer?"ON":"OFF"),
+         " ml[record/infer]=", (g_effectiveConfig.mlRecord?"ON":"OFF"), "/", (g_effectiveConfig.mlInfer?"ON":"OFF"));
+
+   bool contradiction = false;
+   if(!INPUT_TOGGLE_PLACE_ORDERS && (INPUT_TOGGLE_MARKET_ORDERS || INPUT_TOGGLE_PENDING_ORDERS)) contradiction = true;
+   if(!INPUT_ENABLE_MARKOV && (INPUT_MARKOV_INFERENCE_ON || INPUT_MARKOV_UPDATE_ON)) contradiction = true;
+   if(!INPUT_ENABLE_ML && INPUT_ML_RECORD_ON) contradiction = true;
+   if(!INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON) contradiction = true;
+   if(!INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_RECORD_ON || INPUT_COMBO_ADAPTIVE_INFERENCE_ON)) contradiction = true;
+
+   if(contradiction)
+      Print("WARNING: Effective configuration contradictions detected (master OFF with sub-feature ON).");
+
+   if(INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION && contradiction)
+   {
+      Print("STRICT VALIDATION: rejecting init due to contradictory effective config.");
+      return false;
+   }
+   return true;
 }
 
 void LogToggleMatrix(const string feature, bool legacyFlag, bool newToggle, bool effective)
@@ -1137,10 +1219,13 @@ int OnInit()
    ArrayResize(g_positionCloseAccumulators, 0);
    g_positionCloseAccumulatorCount = 0;
 
-   //--- Load persisted learning data (only if features enabled)
+   //--- Load persisted learning data (only if effective feature paths need it)
    if(INPUT_ENABLE_FINGERPRINT)
       LoadFingerprintData();
-   if(INPUT_ENABLE_ML || INPUT_ENABLE_COMBINATION_ADAPTIVE)
+
+   bool needTrainingData = ((INPUT_ENABLE_ML && (INPUT_ML_INFERENCE_ON || INPUT_ML_RECORD_ON)) ||
+                            (INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_INFERENCE_ON || INPUT_COMBO_ADAPTIVE_RECORD_ON)));
+   if(needTrainingData)
    {
       LoadTrainingData();
       // Migration/reset note:
@@ -1160,10 +1245,14 @@ int OnInit()
       }
       RecalculateCombinationStats();
    }
+
    if(INPUT_ENABLE_RL)
       LoadQTable();
-   if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON)
+
+   bool markovLoadSaveEnabled = (INPUT_ENABLE_MARKOV && (INPUT_MARKOV_INFERENCE_ON || INPUT_MARKOV_UPDATE_ON));
+   if(markovLoadSaveEnabled)
       LoadMarkovData();
+
    if(INPUT_ENABLE_ADAPTIVE)
       LoadAdaptiveParams();
 
@@ -1172,27 +1261,27 @@ int OnInit()
 
    LoadRuntimeState();
 
-   g_effExtremeByThreat = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_BY_THREAT);␊
-   g_effExtremeByDrawdown = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_BY_DRAWDOWN);␊
-   g_effExtremeHysteresisExit = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT);␊
-   g_effDrawdownProtectState = ResolveRuntimeToggle(false, INPUT_ENABLE_DRAWDOWN_PROTECT_STATE);␊
-   g_effExtremeOnTickHandler = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_ON_TICK_HANDLER);␊
-   g_effExtremeOnTickEarlyReturn = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN);␊
-   g_effExtremeCloseOldest = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_CLOSE_OLDEST);␊
-   g_effExtremeFilterSymbol = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_FILTER_SYMBOL);␊
-   g_effExtremeFilterMagic = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_FILTER_MAGIC);␊
-   g_effExtremeThrottle = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_THROTTLE);␊
-   g_effEquityFloorTrigger = ResolveRuntimeToggle(false, INPUT_ENABLE_EQUITY_FLOOR_TRIGGER);␊
-   g_effEquityFloorForceState = ResolveRuntimeToggle(false, INPUT_ENABLE_EQUITY_FLOOR_FORCE_EXTREME_STATE);␊
-   g_effEquityFloorCloseAll = ResolveRuntimeToggle(false, INPUT_ENABLE_EQUITY_FLOOR_CLOSE_ALL);␊
-   g_effEquityFloorReturn = ResolveRuntimeToggle(false, INPUT_ENABLE_EQUITY_FLOOR_RETURN_AFTER_ACTION);␊
-   g_effCloseAllApi = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_ALL_POSITIONS_API);␊
-   g_effCloseAllOnlyOur = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_ALL_ONLY_OUR_POSITIONS);␊
-   g_effCloseAllSymbolFilter = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_ALL_SYMBOL_FILTER);␊
-   g_effGateProtectionBlock = ResolveRuntimeToggle(false, INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE);␊
-   g_effThreatHardBlock = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_HARD_BLOCK);␊
-   g_effThreatExtremeZoneBlock = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK);␊
-   g_effThreatSoftLotShrink = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK);␊
+   g_effExtremeByThreat = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_BY_THREAT);
+   g_effExtremeByDrawdown = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_BY_DRAWDOWN);
+   g_effExtremeHysteresisExit = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT);
+   g_effDrawdownProtectState = ResolveRuntimeToggle(false, INPUT_ENABLE_DRAWDOWN_PROTECT_STATE);
+   g_effExtremeOnTickHandler = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_ON_TICK_HANDLER);
+   g_effExtremeOnTickEarlyReturn = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN);
+   g_effExtremeCloseOldest = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_CLOSE_OLDEST);
+   g_effExtremeFilterSymbol = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_FILTER_SYMBOL);
+   g_effExtremeFilterMagic = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_FILTER_MAGIC);
+   g_effExtremeThrottle = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_THROTTLE);
+   g_effEquityFloorTrigger = ResolveRuntimeToggle(false, INPUT_ENABLE_EQUITY_FLOOR_TRIGGER);
+   g_effEquityFloorForceState = ResolveRuntimeToggle(false, INPUT_ENABLE_EQUITY_FLOOR_FORCE_EXTREME_STATE);
+   g_effEquityFloorCloseAll = ResolveRuntimeToggle(false, INPUT_ENABLE_EQUITY_FLOOR_CLOSE_ALL);
+   g_effEquityFloorReturn = ResolveRuntimeToggle(false, INPUT_ENABLE_EQUITY_FLOOR_RETURN_AFTER_ACTION);
+   g_effCloseAllApi = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_ALL_POSITIONS_API);
+   g_effCloseAllOnlyOur = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_ALL_ONLY_OUR_POSITIONS);
+   g_effCloseAllSymbolFilter = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_ALL_SYMBOL_FILTER);
+   g_effGateProtectionBlock = ResolveRuntimeToggle(false, INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE);
+   g_effThreatHardBlock = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_HARD_BLOCK);
+   g_effThreatExtremeZoneBlock = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK);
+   g_effThreatSoftLotShrink = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK);
    g_effCloseRecoveryTimeout = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT);
    g_effClosePositionAgeTimeout = ResolveRuntimeToggle(INPUT_POSITION_AGE_HOURS > 0, INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT);
    g_effCloseHighSpreadProfit = ResolveRuntimeToggle(INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD, INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT);
@@ -1204,18 +1293,18 @@ int OnInit()
    g_effModifyTrailingTP = ResolveRuntimeToggle(INPUT_ENABLE_TRAILING_TP, INPUT_ENABLE_MODIFY_TRAILING_TP);
    g_effModifySkipLossOnHighSpread = ResolveRuntimeToggle(INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD, INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD);
 
-   LogToggleMatrix("UpdateEAState.ExtremeByThreat", false, INPUT_ENABLE_EXTREME_BY_THREAT, g_effExtremeByThreat);␊
-   LogToggleMatrix("UpdateEAState.ExtremeByDrawdown", false, INPUT_ENABLE_EXTREME_BY_DRAWDOWN, g_effExtremeByDrawdown);␊
-   LogToggleMatrix("UpdateEAState.HysteresisExit", false, INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT, g_effExtremeHysteresisExit);␊
-   LogToggleMatrix("UpdateEAState.DrawdownProtectState", false, INPUT_ENABLE_DRAWDOWN_PROTECT_STATE, g_effDrawdownProtectState);␊
-   LogToggleMatrix("OnTick.ExtremeHandler", false, INPUT_ENABLE_EXTREME_ON_TICK_HANDLER, g_effExtremeOnTickHandler);␊
-   LogToggleMatrix("OnTick.ExtremeEarlyReturn", false, INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN, g_effExtremeOnTickEarlyReturn);␊
-   LogToggleMatrix("HandleExtremeRisk.CloseOldest", false, INPUT_ENABLE_EXTREME_CLOSE_OLDEST, g_effExtremeCloseOldest);␊
-   LogToggleMatrix("EquityFloor.Trigger", false, INPUT_ENABLE_EQUITY_FLOOR_TRIGGER, g_effEquityFloorTrigger);␊
-   LogToggleMatrix("CloseAllPositions.API", false, INPUT_ENABLE_CLOSE_ALL_POSITIONS_API, g_effCloseAllApi);␊
-   LogToggleMatrix("CheckAllGates.ProtectionState", false, INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE, g_effGateProtectionBlock);␊
-   LogToggleMatrix("RunDecisionPipeline.ThreatHardBlock", false, INPUT_ENABLE_THREAT_HARD_BLOCK, g_effThreatHardBlock);␊
-   LogToggleMatrix("RunDecisionPipeline.ThreatExtremeZone", false, INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK, g_effThreatExtremeZoneBlock);␊
+   LogToggleMatrix("UpdateEAState.ExtremeByThreat", false, INPUT_ENABLE_EXTREME_BY_THREAT, g_effExtremeByThreat);
+   LogToggleMatrix("UpdateEAState.ExtremeByDrawdown", false, INPUT_ENABLE_EXTREME_BY_DRAWDOWN, g_effExtremeByDrawdown);
+   LogToggleMatrix("UpdateEAState.HysteresisExit", false, INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT, g_effExtremeHysteresisExit);
+   LogToggleMatrix("UpdateEAState.DrawdownProtectState", false, INPUT_ENABLE_DRAWDOWN_PROTECT_STATE, g_effDrawdownProtectState);
+   LogToggleMatrix("OnTick.ExtremeHandler", false, INPUT_ENABLE_EXTREME_ON_TICK_HANDLER, g_effExtremeOnTickHandler);
+   LogToggleMatrix("OnTick.ExtremeEarlyReturn", false, INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN, g_effExtremeOnTickEarlyReturn);
+   LogToggleMatrix("HandleExtremeRisk.CloseOldest", false, INPUT_ENABLE_EXTREME_CLOSE_OLDEST, g_effExtremeCloseOldest);
+   LogToggleMatrix("EquityFloor.Trigger", false, INPUT_ENABLE_EQUITY_FLOOR_TRIGGER, g_effEquityFloorTrigger);
+   LogToggleMatrix("CloseAllPositions.API", false, INPUT_ENABLE_CLOSE_ALL_POSITIONS_API, g_effCloseAllApi);
+   LogToggleMatrix("CheckAllGates.ProtectionState", false, INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE, g_effGateProtectionBlock);
+   LogToggleMatrix("RunDecisionPipeline.ThreatHardBlock", false, INPUT_ENABLE_THREAT_HARD_BLOCK, g_effThreatHardBlock);
+   LogToggleMatrix("RunDecisionPipeline.ThreatExtremeZone", false, INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK, g_effThreatExtremeZoneBlock);
    LogToggleMatrix("CheckRecoveryTimeouts", false, INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT, g_effCloseRecoveryTimeout);
    LogToggleMatrix("CheckPositionAgeTimeout", INPUT_POSITION_AGE_HOURS > 0, INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT, g_effClosePositionAgeTimeout);
    LogToggleMatrix("HandleHighSpreadOpenPositions", INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD, INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT, g_effCloseHighSpreadProfit);
@@ -1226,6 +1315,24 @@ int OnInit()
    LogToggleMatrix("ManageTrailingTP", INPUT_ENABLE_TRAILING_TP, INPUT_ENABLE_MODIFY_TRAILING_TP, g_effModifyTrailingTP);
    LogToggleMatrix("MoveToBreakeven", INPUT_MOVE_BE_AFTER_PARTIAL, INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN, g_effModifyMoveToBE);
    LogToggleMatrix("ShouldSkipStopAdjustmentsForTicket", INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD, INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD, g_effModifySkipLossOnHighSpread);
+
+   if(INPUT_USE_LEGACY_BEHAVIOR_MAPPING && INPUT_TOGGLE_RESOLUTION_MODE == TOGGLE_RESOLUTION_MIGRATION)
+   {
+      bool legacyOverrideFound = false;
+      if((INPUT_POSITION_AGE_HOURS > 0) && !INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT) legacyOverrideFound = true;
+      if(INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD && !INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT) legacyOverrideFound = true;
+      if(INPUT_ENABLE_50PCT_CLOSE && !INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE) legacyOverrideFound = true;
+      if(INPUT_ENABLE_PARTIAL_CLOSE && !INPUT_ENABLE_CLOSE_PARTIAL_TP) legacyOverrideFound = true;
+      if(INPUT_MOVE_BE_AFTER_PARTIAL && !INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN) legacyOverrideFound = true;
+      if(INPUT_ENABLE_TRAILING && !INPUT_ENABLE_MODIFY_TRAILING_SL) legacyOverrideFound = true;
+      if(INPUT_ENABLE_TRAILING_TP && !INPUT_ENABLE_MODIFY_TRAILING_TP) legacyOverrideFound = true;
+      if(INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD && !INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD) legacyOverrideFound = true;
+      if(legacyOverrideFound)
+         Print("WARNING: Legacy mapping override active (legacy=true + new=false found). Consider TOGGLE_RESOLUTION_NEW_AUTH.");
+   }
+
+   if(!ValidateAndReportEffectiveConfig())
+      return INIT_FAILED;
 
    Print("CHECKLIST GUARD UpdateEAState=", (g_effExtremeByThreat || g_effExtremeByDrawdown || g_effDrawdownProtectState ? "ON" : "OFF"));
    Print("CHECKLIST GUARD OnTick extreme branch=", ((g_effExtremeOnTickHandler || g_effExtremeOnTickEarlyReturn) ? "ON" : "OFF"));
@@ -1255,9 +1362,10 @@ int OnInit()
    Print("FEATURE MATRIX [Modify]: SL=", (INPUT_TOGGLE_MODIFY_STOPS?"ON":"OFF"),
          " TP=", (INPUT_TOGGLE_MODIFY_TPS?"ON":"OFF"),
          " brokerGuard=", (INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON?"ON":"OFF"));
-   Print("FEATURE MATRIX [Learning]: RL=", (INPUT_ENABLE_RL && INPUT_RL_INFERENCE_ON?"ON":"OFF"),
-         " Markov=", (INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON?"ON":"OFF"),
-         " ML=", (INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON?"ON":"OFF"),
+   Print("FEATURE MATRIX [Learning]: RL[infer/learn]=", (INPUT_ENABLE_RL && INPUT_RL_INFERENCE_ON?"ON":"OFF"), "/", (INPUT_ENABLE_RL && INPUT_RL_LEARNING_ON?"ON":"OFF"),
+         " Markov[infer/update]=", (INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON?"ON":"OFF"), "/", (INPUT_ENABLE_MARKOV && INPUT_MARKOV_UPDATE_ON?"ON":"OFF"),
+         " ML[infer/record]=", (INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON?"ON":"OFF"), "/", (INPUT_ENABLE_ML && INPUT_ML_RECORD_ON?"ON":"OFF"),
+         " Combo[infer/record]=", (INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_INFERENCE_ON?"ON":"OFF"), "/", (INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_RECORD_ON?"ON":"OFF"),
          " AI=", (INPUT_AI_MODE != AI_OFF && INPUT_AI_QUERY_ON?"ON":"OFF"));
 
    if(!INPUT_TOGGLE_PLACE_ORDERS && (INPUT_TOGGLE_MARKET_ORDERS || INPUT_TOGGLE_PENDING_ORDERS))
@@ -1383,11 +1491,13 @@ void OnDeinit(const int reason)
    //--- Save all learning data
    if(INPUT_ENABLE_FINGERPRINT)
       SaveFingerprintData();
-   if(INPUT_ENABLE_ML || INPUT_ENABLE_COMBINATION_ADAPTIVE)
+   bool needTrainingDataPersist = ((INPUT_ENABLE_ML && (INPUT_ML_INFERENCE_ON || INPUT_ML_RECORD_ON)) ||
+                                   (INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_INFERENCE_ON || INPUT_COMBO_ADAPTIVE_RECORD_ON)));
+   if(needTrainingDataPersist)
       SaveTrainingData();
    if(INPUT_ENABLE_RL)
       SaveQTable();
-   if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON)
+   if(INPUT_ENABLE_MARKOV && (INPUT_MARKOV_INFERENCE_ON || INPUT_MARKOV_UPDATE_ON))
       SaveMarkovData();
    if(INPUT_ENABLE_ADAPTIVE)
       SaveAdaptiveParams();
@@ -2261,7 +2371,7 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
    return conf;
 }
 //+------------------------------------------------------------------+
-// (trend, momentum, SR, volatility, time, divergence components â€“ unchanged)
+// (trend, momentum, SR, volatility, time, divergence components - unchanged)
 //+------------------------------------------------------------------+
 double CalculateTrendStrengthComponent(int direction)
 {
@@ -2438,7 +2548,7 @@ double CalculateVolatilityComponent()
    else if(volRatio >= 1.2 && volRatio < 1.5) component -= 1.0; // FIXED: Reduced from -3
    else if(volRatio >= 1.5) component -= 5.0; // FIXED: Reduced from -10
 
-   // (BB width check removed â€“ was causing too many rejections)
+   // (BB width check removed - was causing too many rejections)
 
    return MathMax(component, -5.0); // FIXED: Limit downside
 }
@@ -2585,7 +2695,7 @@ bool DetectSignals(SignalResult &signals)
       signals.bearVotes++;
       signals.totalSignals++;
    }
-   // V7.2 FIX (BUG 10): REMOVED fallback EMA alignment â€“ it used to fire every bar.
+   // V7.2 FIX (BUG 10): REMOVED fallback EMA alignment - it used to fire every bar.
 
    //--- Signal 2: RSI Oversold/Overbought (tightened zones)
    if(rsi[b] < 35) // FIXED: Changed from 30
@@ -2959,7 +3069,7 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong orderTicket, ulon
                        double entryPrice, double slDistance, double lot, double tickValue,
                        double confidenceSnapshot, int mtfScoreSnapshot, double comboStrengthSnapshot)
 {
-   const int pendingCap = MathMax(1, INPUT_RL_PENDING_HARD_CAP);
+   const int pendingCap = MathMax(0, INPUT_RL_PENDING_HARD_CAP);
 
    if(orderTicket == 0 && positionId == 0)
    {
@@ -3851,7 +3961,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
       }
    }
 
-   //--- STEP 10: Decision matrix â€“ we now only block on extreme threat
+   //--- STEP 10: Decision matrix - we now only block on extreme threat
    if(INPUT_GATE_THREAT_EXTREME_BLOCK_ON && g_effThreatExtremeZoneBlock && threatZone == THREAT_EXTREME)
    {
       g_gateDiagnostics.threatRejects++;
@@ -3936,7 +4046,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
 //+------------------------------------------------------------------+
 bool CheckAllGates(string &rejectReason)
 {
-   // V7.2 FIX (BUG 3): Emergency zero?guard â€“ if maxPositions somehow reaches 0, reset to input default
+   // V7.2 FIX (BUG 3): Emergency zero-guard - if maxPositions somehow reaches 0, reset to input default
    if(g_adaptive.maxPositions <= 0)
    {
       g_adaptive.maxPositions = INPUT_MAX_CONCURRENT_TRADES;
@@ -4543,12 +4653,12 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
    if(!MathIsValidNumber(lotSize) || lotSize <= 0)
       return 0;
 
-   // Threat factor (never below 25?%)
+   // Threat factor (never below 25%)
    double threatFactor = 1.0 - (threat / 200.0);
    threatFactor = MathMax(threatFactor, 0.25);
    lotSize *= threatFactor;
 
-   // Confidence factor â€“ less aggressive now (0.5?1.0 instead of 0?1)
+   // Confidence factor - less aggressive now (0.5?1.0 instead of 0?1)
    double confFactor = 0.5 + (confidence / 200.0);
    lotSize *= confFactor;
 
@@ -5857,14 +5967,16 @@ void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetim
    double entryPrice = 0.0, slDistance = 0.0, lot = 0.0, tickValue = 0.0, riskBasis = 0.0, normalizedReward = finalNetProfit;
    ComputeNormalizedRLReward(positionId, finalNetProfit, normalizedReward, entryPrice, slDistance, lot, tickValue, riskBasis);
 
-   if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON)
+   if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_UPDATE_ON)
       UpdateMarkovTransition(g_lastMarkovState, ClassifyMarkovStateFromR(normalizedReward));
 
    if(INPUT_ENABLE_RL)
       if(INPUT_RL_LEARNING_ON)
          UpdateRLFromTrade(positionId, INPUT_RL_USE_RAW_REWARD ? finalNetProfit : normalizedReward);
 
-   if(INPUT_ENABLE_ML || INPUT_ENABLE_COMBINATION_ADAPTIVE)
+   bool allowMLRecord = INPUT_ENABLE_ML && INPUT_ML_RECORD_ON;
+   bool allowComboRecord = INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_RECORD_ON;
+   if(allowMLRecord || allowComboRecord)
       RecordTrainingData(positionId, dealTicket, finalNetProfit, isWin);
 
    UpdateFingerprintOnClose(positionId, finalNetProfit, isWin, closeTime);
@@ -7226,7 +7338,14 @@ void SaveRuntimeState()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_runtime.bin";
    int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
-   if(handle == INVALID_HANDLE) return;
+   if(handle == INVALID_HANDLE)
+   {
+      Print("WARNING: SaveRuntimeState failed to open ", filename);
+      return;
+   }
+
+   if(INPUT_RL_PENDING_HARD_CAP < 0)
+      Print("WARNING: INPUT_RL_PENDING_HARD_CAP is negative (", INPUT_RL_PENDING_HARD_CAP, ") - clamped to 0 for serialization.");
 
    FileWriteInteger(handle, RUNTIME_SCHEMA_VERSION);
    FileWriteLong(handle, (long)g_lastProcessedDealTicket);
@@ -7237,7 +7356,7 @@ void SaveRuntimeState()
    FileWriteInteger(handle, g_rlUnmatchedCloses);
    FileWriteInteger(handle, g_closedDealsProcessedTotal);
 
-   int pendingToWrite = MathMin(g_pendingRLCount, MathMax(1, INPUT_RL_PENDING_HARD_CAP));
+   int pendingToWrite = MathMin(g_pendingRLCount, MathMax(0, INPUT_RL_PENDING_HARD_CAP));
    FileWriteInteger(handle, pendingToWrite);
 
    uint checksum = FNV1aStart();
@@ -7322,6 +7441,8 @@ void LoadRuntimeState()
 
    int pendingRead = (version >= 2) ? FileReadInteger(handle) : 0;
    if(pendingRead < 0) pendingRead = 0;
+   if(INPUT_RL_PENDING_HARD_CAP < 0)
+      Print("WARNING: INPUT_RL_PENDING_HARD_CAP is negative (", INPUT_RL_PENDING_HARD_CAP, ") - clamped to 0 during load.");
 
    uint checksum = FNV1aStart();
    checksum = FNV1aUpdateInt(checksum, RUNTIME_HASH_SENTINEL);
@@ -7336,7 +7457,7 @@ void LoadRuntimeState()
    checksum = FNV1aUpdateInt(checksum, pendingRead);
 
    g_pendingRLCount = 0;
-   int pendingCap = MathMax(1, INPUT_RL_PENDING_HARD_CAP);
+   int pendingCap = MathMax(0, INPUT_RL_PENDING_HARD_CAP);
    if(ArraySize(g_pendingRL) < pendingCap) ArrayResize(g_pendingRL, pendingCap);
 
    for(int i = 0; i < pendingRead; i++)
