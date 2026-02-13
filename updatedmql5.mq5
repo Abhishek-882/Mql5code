@@ -486,6 +486,11 @@ enum ENUM_POSITION_SUBTYPE
    SUBTYPE_AVERAGING = 2,
    SUBTYPE_AUX       = 3
 };
+
+const long MAGIC_SUBTYPE_MULTIPLIER = 100000000;
+const long MAGIC_BASE_MIN = 1;
+const long MAGIC_BASE_MAX = MAGIC_SUBTYPE_MULTIPLIER - 1;
+const int  AI_TIMER_SECONDS = 1;
 //+------------------------------------------------------------------+
 //| SECTION 4: STRUCTURES                                            |
 //+------------------------------------------------------------------+
@@ -917,10 +922,16 @@ ulong    g_tickMsPanel = 0;
 ulong    g_tickMsPersistence = 0;
 datetime g_lastHeavyHistoryRun = 0;
 datetime g_lastPanelRun = 0;
+ulong    g_tickMsAIRequest = 0;
+ulong    g_tickMsAILastDuration = 0;
 //--- AI Integration
 AIResponse g_aiResponse;
 datetime g_lastAIQuery = 0;
 AIResponse g_lastValidAIResponse;
+datetime g_aiBackoffUntil = 0;
+int      g_aiConsecutiveTransportFailures = 0;
+int      g_aiSkippedByBackoff = 0;
+bool     g_rngSeeded = false;
 PositionCloseAccumulator g_positionCloseAccumulators[];
 int      g_positionCloseAccumulatorCount = 0;
 //--- History tracking
@@ -1113,15 +1124,28 @@ void SaveCombinationStatsSnapshot();
 bool ValidateInputsStrict(string &err)
 {
    int totalSignals = MathMin(INPUT_TOTAL_SIGNALS, INPUT_TOTAL_SIGNAL_FACTORS);
+   if(INPUT_MAGIC_NUMBER < (int)MAGIC_BASE_MIN || INPUT_MAGIC_NUMBER > (int)MAGIC_BASE_MAX) { err = "INPUT_MAGIC_NUMBER must be within 1..99999999 because EA magic encodes subtype as base + subtype*100000000"; return false; }
    if(INPUT_MAX_CONCURRENT_TRADES < 1) { err = "INPUT_MAX_CONCURRENT_TRADES must be >= 1"; return false; }
    if(INPUT_MAX_SAME_DIRECTION < 1) { err = "INPUT_MAX_SAME_DIRECTION must be >= 1"; return false; }
    if(INPUT_ORDER_COOLDOWN_SECONDS < 0) { err = "INPUT_ORDER_COOLDOWN_SECONDS must be >= 0"; return false; }
    if(INPUT_MAX_DAILY_TRADES < 1) { err = "INPUT_MAX_DAILY_TRADES must be >= 1"; return false; }
+   if(INPUT_MAX_CONSECUTIVE_LOSSES < 1) { err = "INPUT_MAX_CONSECUTIVE_LOSSES must be >= 1 when consecutive-loss gate is enabled"; return false; }
    if(!(INPUT_DAILY_LOSS_LIMIT_PERCENT > 0.0 && INPUT_DAILY_LOSS_LIMIT_PERCENT <= 100.0)) { err = "INPUT_DAILY_LOSS_LIMIT_PERCENT must be > 0 and <= 100"; return false; }
    if(!(INPUT_RISK_PERCENT == 0.0 || (INPUT_RISK_PERCENT > 0.0 && INPUT_RISK_PERCENT <= 100.0))) { err = "INPUT_RISK_PERCENT must be 0 or in (0,100]"; return false; }
+   if(!(INPUT_RL_WEIGHT >= 0.0 && INPUT_RL_WEIGHT <= 1.0)) { err = "INPUT_RL_WEIGHT must be within [0,1]"; return false; }
+   if(!(INPUT_HIGH_SPREAD_CLOSE_PERCENT >= 1.0 && INPUT_HIGH_SPREAD_CLOSE_PERCENT <= 100.0)) { err = "INPUT_HIGH_SPREAD_CLOSE_PERCENT must be within [1,100]"; return false; }
+   if(INPUT_SERVER_UTC_OFFSET_HOURS < -14 || INPUT_SERVER_UTC_OFFSET_HOURS > 14) { err = "INPUT_SERVER_UTC_OFFSET_HOURS must be within -14..14"; return false; }
    if(INPUT_MIN_LOT_SIZE <= 0.0) { err = "INPUT_MIN_LOT_SIZE must be > 0"; return false; }
    if(INPUT_MAX_LOT_SIZE < INPUT_MIN_LOT_SIZE) { err = "INPUT_MAX_LOT_SIZE must be >= INPUT_MIN_LOT_SIZE"; return false; }
    if(INPUT_MAX_TOTAL_RISK_PERCENT <= 0.0) { err = "INPUT_MAX_TOTAL_RISK_PERCENT must be > 0"; return false; }
+   if(INPUT_PARTIAL_TP_PERCENT < 1.0 || INPUT_PARTIAL_TP_PERCENT > 100.0) { err = "INPUT_PARTIAL_TP_PERCENT must be within 1..100"; return false; }
+   if(INPUT_PARTIAL_CLOSE_RATIO <= 0.0 || INPUT_PARTIAL_CLOSE_RATIO > 1.0) { err = "INPUT_PARTIAL_CLOSE_RATIO must be within (0,1]"; return false; }
+   if(INPUT_50PCT_TRIGGER_LOW < 0.0 || INPUT_50PCT_TRIGGER_LOW > 100.0) { err = "INPUT_50PCT_TRIGGER_LOW must be within 0..100"; return false; }
+   if(INPUT_50PCT_TRIGGER_HIGH < 0.0 || INPUT_50PCT_TRIGGER_HIGH > 100.0) { err = "INPUT_50PCT_TRIGGER_HIGH must be within 0..100"; return false; }
+   if(INPUT_50PCT_TRIGGER_LOW > INPUT_50PCT_TRIGGER_HIGH) { err = "INPUT_50PCT_TRIGGER_LOW must be <= INPUT_50PCT_TRIGGER_HIGH"; return false; }
+   if(INPUT_TRAIL_ATR_MULTIPLIER <= 0.0) { err = "INPUT_TRAIL_ATR_MULTIPLIER must be > 0"; return false; }
+   if(INPUT_TRAIL_STEP_POINTS <= 0.0) { err = "INPUT_TRAIL_STEP_POINTS must be > 0"; return false; }
+   if(INPUT_TRAIL_ACTIVATION_POINTS < 0.0) { err = "INPUT_TRAIL_ACTIVATION_POINTS must be >= 0"; return false; }
    if(INPUT_EXECUTION_MODE == PENDING_STOP)
    {
       if(INPUT_PENDING_STOP_OFFSET_POINTS <= 0) { err = "INPUT_PENDING_STOP_OFFSET_POINTS must be > 0 when pending mode is enabled"; return false; }
@@ -1136,6 +1160,17 @@ bool ValidateInputsStrict(string &err)
    if(INPUT_GRID_STEP_POINTS <= 0) { err = "INPUT_GRID_STEP_POINTS must be > 0"; return false; }
    if(INPUT_RECOVERY_MODE == RECOVERY_MARTINGALE && INPUT_MARTINGALE_MULTIPLIER <= 1.0) { err = "INPUT_MARTINGALE_MULTIPLIER must be > 1 in martingale mode"; return false; }
    if(INPUT_RECOVERY_MODE == RECOVERY_HEDGING && INPUT_HEDGE_TRIGGER_OFFSET_POINTS <= 0) { err = "INPUT_HEDGE_TRIGGER_OFFSET_POINTS must be > 0 in hedging mode"; return false; }
+   if(INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION)
+   {
+      if(!IsValidHourValue(INPUT_ASIAN_START) || !IsValidHourValue(INPUT_ASIAN_END) ||
+         !IsValidHourValue(INPUT_LONDON_START) || !IsValidHourValue(INPUT_LONDON_END) ||
+         !IsValidHourValue(INPUT_NY_START) || !IsValidHourValue(INPUT_NY_END))
+      {
+         err = "Session start/end inputs must be valid hours (0..23) when INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION=true";
+         return false;
+      }
+   }
+   totalSignals = MathMin(INPUT_TOTAL_SIGNALS, INPUT_TOTAL_SIGNAL_FACTORS);
    if(totalSignals < 1 || totalSignals > 8) { err = "INPUT_TOTAL_SIGNALS/INPUT_TOTAL_SIGNAL_FACTORS must resolve to 1..8"; return false; }
    if(INPUT_MIN_SIGNALS < 1 || INPUT_MIN_SIGNALS > totalSignals) { err = "INPUT_MIN_SIGNALS must be within 1..total_signals"; return false; }
    return true;
@@ -1171,7 +1206,32 @@ int OnInit()
       Print("ERROR: INPUT_MIN_CONFIDENCE must be 0-100");
       return INIT_PARAMETERS_INCORRECT;
    }
-   ValidateSessionHourInputs();
+
+   if(!g_rngSeeded)
+   {
+      int seed = (int)(TimeLocal() ^ (datetime)GetTickCount());
+      MathSrand(seed);
+      g_rngSeeded = true;
+      if(INPUT_ENABLE_RL)
+         Print("RNG SEEDED: RL random generator initialized once at startup | seed=", seed);
+   }
+
+   if(INPUT_GATE_SESSION_WINDOW_ON)
+   {
+      string sessionErr = "";
+      if(!ValidateSessionHourConfig(sessionErr))
+      {
+         if(INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION)
+         {
+            Print("ERROR: ", sessionErr, " | strict session validation enabled.");
+            return INIT_PARAMETERS_INCORRECT;
+         }
+
+         ValidateSessionHourInputs();
+         Print("WARNING: Invalid session window configuration detected: ", sessionErr,
+               " | Non-strict fallback enabled; runtime session gate may block all entries.");
+      }
+   }
 
    if(INPUT_AI_MODE != AI_OFF && StringLen(INPUT_AI_API_KEY) < 3)
    {
@@ -1498,6 +1558,7 @@ int OnInit()
          " TrailSL=", (INPUT_ENABLE_TRAILING?"ON":"OFF"),
          " TrailTP=", (INPUT_ENABLE_TRAILING_TP?"ON":"OFF"));
 
+   EventSetTimer(AI_TIMER_SECONDS);
    return INIT_SUCCEEDED;
 }
 //+------------------------------------------------------------------+
@@ -1582,6 +1643,8 @@ bool InitializeIndicators()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
+
    //--- Save all learning data
    if(INPUT_ENABLE_FINGERPRINT)
       SaveFingerprintData();
@@ -1702,8 +1765,6 @@ void OnTick()
 
    if(INPUT_ENABLE_ADAPTIVE)
       CheckAdaptiveOptimization();
-   if(INPUT_AI_MODE != AI_OFF && INPUT_AI_QUERY_ON && ShouldQueryAI())
-      QueryDeepSeekAI();
 
    t0 = GetTickCount();
    ManageTrailingTP();
@@ -1821,6 +1882,15 @@ void OnTick()
    g_tickMsPersistence = GetTickCount() - t0;
 }
 
+void OnTimer()
+{
+   if(INPUT_AI_MODE == AI_OFF || !INPUT_AI_QUERY_ON)
+      return;
+
+   ulong timerStart = GetTickCount();
+   QueryDeepSeekAI();
+   g_tickMsAIRequest = GetTickCount() - timerStart;
+}
 //+------------------------------------------------------------------+
 //| SECTION 9: EA STATE MANAGEMENT                                   |
 //+------------------------------------------------------------------+
@@ -1987,13 +2057,36 @@ uint FNV1aUpdateDouble(uint hash, double value)
 
 int BuildMagicForSubtype(ENUM_POSITION_SUBTYPE subtype)
 {
-   return INPUT_MAGIC_NUMBER + ((int)subtype * 100000000);
+   long subtypeValue = (long)((int)subtype);
+   if(subtypeValue < 0 || subtypeValue > 9)
+   {
+      Print("MAGIC ERROR: invalid subtype value=", subtypeValue, " | fallback to base magic");
+      return (int)INPUT_MAGIC_NUMBER;
+   }
+
+   long composed = (long)INPUT_MAGIC_NUMBER + (subtypeValue * MAGIC_SUBTYPE_MULTIPLIER);
+   if(composed <= 0 || composed > 2147483647)
+   {
+      Print("MAGIC ERROR: overflow composing magic from base=", INPUT_MAGIC_NUMBER,
+            " subtype=", subtypeValue, " | fallback to base magic");
+      return (int)INPUT_MAGIC_NUMBER;
+   }
+   return (int)composed;
 }
 bool IsOurMagic(const long magic)
 {
-   int base=(int)(magic % 100000000);
-   if(base<0) base+=100000000;
-   return base==INPUT_MAGIC_NUMBER;
+   if(magic <= 0)
+      return false;
+
+   long subtype = magic / MAGIC_SUBTYPE_MULTIPLIER;
+   if(subtype < 0 || subtype > 9)
+      return false;
+
+   long base = magic - (subtype * MAGIC_SUBTYPE_MULTIPLIER);
+   if(base < MAGIC_BASE_MIN || base > MAGIC_BASE_MAX)
+      return false;
+
+   return (base == (long)INPUT_MAGIC_NUMBER);
 }
 ENUM_POSITION_SUBTYPE InferSubtypeFromComment(const string &comment)
 {
@@ -2003,7 +2096,10 @@ ENUM_POSITION_SUBTYPE InferSubtypeFromComment(const string &comment)
 }
 bool IsAuxSubtypeByMagic(long magic)
 {
-   int subtype=(int)(magic/100000000);
+   if(!IsOurMagic(magic))
+      return false;
+
+   long subtype=(magic/MAGIC_SUBTYPE_MULTIPLIER);
    return (subtype==SUBTYPE_RECOVERY || subtype==SUBTYPE_AVERAGING || subtype==SUBTYPE_AUX);
 }
 
@@ -3123,6 +3219,14 @@ ENUM_RL_ACTION GetRLAction(int state)
    if(!INPUT_ENABLE_RL || g_rlTradesCompleted < INPUT_RL_MIN_TRADES)
       return RL_FULL_SIZE; // Default before learning
 
+   if(!g_rngSeeded)
+   {
+      int seed = (int)(TimeLocal() ^ (datetime)GetTickCount());
+      MathSrand(seed);
+      g_rngSeeded = true;
+      Print("RNG SEEDED LATE: applied defensive seed in GetRLAction | seed=", seed);
+   }
+
    // Epsilon?greedy: explore with probability epsilon
    double rand = (double)MathRand() / 32767.0;
 
@@ -4149,6 +4253,14 @@ bool RunDecisionPipeline(DecisionResult &decision)
    // Honor RL skip decision
    if(INPUT_ENABLE_RL && INPUT_RL_INFERENCE_ON && rlAction == RL_SKIP_TRADE && g_rlTradesCompleted >= INPUT_RL_MIN_TRADES)
    {
+      if(!g_rngSeeded)
+      {
+         int seed = (int)(TimeLocal() ^ (datetime)GetTickCount());
+         MathSrand(seed);
+         g_rngSeeded = true;
+         Print("RNG SEEDED LATE: applied defensive seed in RunDecisionPipeline | seed=", seed);
+      }
+
       // Randomised skip based on RL weight (default weight = 0.3)
       if((double)MathRand() / 32767.0 < INPUT_RL_WEIGHT)
       {
@@ -4447,6 +4559,17 @@ void ValidateSessionHourInputs()
    if(!IsValidHourValue(INPUT_NY_END)) WarnInvalidSessionHour("INPUT_NY_END", INPUT_NY_END);
 }
 //+------------------------------------------------------------------+
+bool ValidateSessionHourConfig(string &err)
+{
+   if(!IsValidHourValue(INPUT_ASIAN_START)) { err = "INPUT_ASIAN_START must be in 0..23"; return false; }
+   if(!IsValidHourValue(INPUT_ASIAN_END)) { err = "INPUT_ASIAN_END must be in 0..23"; return false; }
+   if(!IsValidHourValue(INPUT_LONDON_START)) { err = "INPUT_LONDON_START must be in 0..23"; return false; }
+   if(!IsValidHourValue(INPUT_LONDON_END)) { err = "INPUT_LONDON_END must be in 0..23"; return false; }
+   if(!IsValidHourValue(INPUT_NY_START)) { err = "INPUT_NY_START must be in 0..23"; return false; }
+   if(!IsValidHourValue(INPUT_NY_END)) { err = "INPUT_NY_END must be in 0..23"; return false; }
+   return true;
+}
+//+------------------------------------------------------------------+
 void LogWithRestartGuard(const string message)
 {
    Print(message);
@@ -4682,7 +4805,6 @@ bool IsAllowedSession()
    TimeToStruct(TimeCurrent(), dt);
    int hour = dt.hour;
 
-   ValidateSessionHourInputs();
    if(!IsValidHourValue(hour))
    {
       WarnInvalidSessionHour("current_server_hour", hour);
@@ -4721,7 +4843,6 @@ int GetCurrentSession()
    TimeToStruct(TimeCurrent(), dt);
    int hour = dt.hour;
 
-   ValidateSessionHourInputs();
    if(!IsValidHourValue(hour))
    {
       WarnInvalidSessionHour("current_server_hour", hour);
@@ -6465,7 +6586,6 @@ int GetSessionFromTime(datetime ts)
    TimeToStruct(ts, dt);
    int hour = dt.hour;
 
-   ValidateSessionHourInputs();
    if(!IsValidHourValue(hour))
    {
       WarnInvalidSessionHour("timestamp_hour", hour);
@@ -6811,6 +6931,7 @@ bool ExtractJsonFieldBool(const string &json, const string &key, bool &outValue)
 bool ShouldQueryAI()
 {
    if(g_aiResponse.consecutiveErrors >= 5) return false;
+   if(g_aiBackoffUntil > TimeCurrent()) return false;
    if(g_lastAIQuery > 0 && TimeCurrent() - g_lastAIQuery < INPUT_AI_INTERVAL_MINUTES * 60) return false;
    return true;
 }
@@ -6818,6 +6939,14 @@ bool ShouldQueryAI()
 void QueryDeepSeekAI()
 {
    if(StringLen(INPUT_AI_API_KEY) < 3) return;
+   if(!ShouldQueryAI())
+   {
+      if(g_aiBackoffUntil > TimeCurrent())
+         g_aiSkippedByBackoff++;
+      return;
+   }
+
+   ulong requestStartMs = GetTickCount();
    g_lastAIQuery = TimeCurrent();
 
    double rsi[], adx[];
@@ -6840,7 +6969,9 @@ void QueryDeepSeekAI()
    char result[];
    string resultHeaders;
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + INPUT_AI_API_KEY;
-   int res = WebRequest("POST", INPUT_AI_URL, headers, 10000, post, result, resultHeaders);
+   int res = WebRequest("POST", INPUT_AI_URL, headers, 3000, post, result, resultHeaders);
+
+   g_tickMsAILastDuration = GetTickCount() - requestStartMs;
 
    if(res == 200)
    {
@@ -6849,19 +6980,27 @@ void QueryDeepSeekAI()
       {
          g_aiResponse.lastUpdate = TimeCurrent();
          g_aiResponse.consecutiveErrors = 0;
+         g_aiConsecutiveTransportFailures = 0;
+         g_aiBackoffUntil = 0;
          g_lastValidAIResponse = g_aiResponse;
       }
       else
       {
          g_aiResponse.consecutiveErrors++;
          g_aiResponse = g_lastValidAIResponse;
-         Print("AI WARNING: Parse failed, fallback to last valid snapshot.");
+         Print("AI WARNING: Parse failed, fallback to last valid snapshot. durationMs=", g_tickMsAILastDuration);
       }
    }
    else
    {
       g_aiResponse.consecutiveErrors++;
-      Print("AI Query failed: HTTP ", res);
+      g_aiConsecutiveTransportFailures++;
+      int backoffSeconds = (int)MathMin(300.0, MathPow(2.0, (double)MathMin(g_aiConsecutiveTransportFailures, 8)));
+      g_aiBackoffUntil = TimeCurrent() + backoffSeconds;
+      Print("AI Query failed: HTTP ", res,
+            " | durationMs=", g_tickMsAILastDuration,
+            " | backoffSec=", backoffSeconds,
+            " | consecutiveTransportFailures=", g_aiConsecutiveTransportFailures);
    }
 }
 //+------------------------------------------------------------------+
