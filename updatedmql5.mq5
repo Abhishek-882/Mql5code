@@ -262,7 +262,7 @@ input bool     INPUT_SESSION_ASIAN_ON = true;
 input bool     INPUT_SESSION_LONDON_ON = true;
 input bool     INPUT_SESSION_NY_ON = true;
 input bool     INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES = true;
-input bool     INPUT_SESSION_FAIL_OPEN_ON_INVALID_HOUR = true; // Prevent total entry lock when broker/server hour is
+input bool     INPUT_SESSION_FAIL_OPEN_ON_INVALID_HOUR = true; // Prevent total entry lock when broker/server hour is malformed
 
 input group    "=== Learning / Inference Sub-Toggles ==="
 input bool     INPUT_RL_INFERENCE_ON = true;
@@ -428,6 +428,9 @@ input int      INPUT_TREE_MAX_SELECTED_FEATURES = 5; // Max features selected by
 input int      INPUT_TREE_MIN_SELECTED_MATCH = 1; // Minimum selected-feature matches for entry gate
 input double   INPUT_TREE_MIN_IG = 0.0001; // Minimum IG to keep feature
 input double   INPUT_TREE_CONFIDENCE_WEIGHT = 0.15; // Confidence adjustment weight from selected features
+input bool     INPUT_TREE_BOOTSTRAP_FROM_HISTORY_ON = true; // Backfill tree/ML rows from account history when persistence is empty
+input int      INPUT_TREE_BOOTSTRAP_MIN_ROWS = 25; // Target minimum rows to seed when no persisted training rows exist
+input string   INPUT_TREE_BOOTSTRAP_DEFAULT_COMBO = "EMA_RSI_WPR"; // Fallback combo label when deal comment lacks combo signature
 input bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include recovery/aux positions in age-timeout close
 input int      INPUT_POSITION_AGE_CHECK_SECONDS = 5; // Throttle stale-position timeout checks
 input int      INPUT_HISTORY_PROCESS_INTERVAL_SECONDS = 2; // Throttle closed-deal history scan
@@ -1221,6 +1224,7 @@ int BuildCanonicalComboSubsets(const string rawCombination, int k, string &subse
 void RebuildDecisionTreeFeatureModule();
 int CountSelectedTreeFeatureMatches(const string rawCombination);
 double GetTreeConfidenceAdjustment(const string rawCombination);
+void BootstrapTrainingDataFromHistory();
 
 bool IsLeapYearValue(const int year)
 {
@@ -1591,6 +1595,12 @@ int OnInit()
       {
          Print("MIGRATION NOTE: If your training set was generated before close-time session/day fix, enable INPUT_RESET_LEGACY_SESSION_DATA once to rebuild statistics.");
       }
+
+      if(INPUT_TREE_BOOTSTRAP_FROM_HISTORY_ON && g_trainingDataCount <= 0)
+      {
+         BootstrapTrainingDataFromHistory();
+      }
+
       RecalculateCombinationStats();
       if(INPUT_ENABLE_TREE_FEATURE_MODULE)
          RebuildDecisionTreeFeatureModule();
@@ -5198,6 +5208,7 @@ bool IsCountableForEntryGating(const string comment)
 
 
 
+ //+------------------------------------------------------------------+
 bool IsValidHourValue(int hour)
 {
    return (hour >= 0 && hour <= 23);
@@ -5228,9 +5239,19 @@ int GetCurrentServerHourRaw()
    if(TimeToStruct(TimeCurrent(), dt) && IsValidHourValue(dt.hour))
       return dt.hour;
 
-   // Fallback for environments where TimeToStruct can fail sporadically.
-   int fallbackHour = TimeHour(TimeCurrent());
-   return fallbackHour;
+   // Fallback for environments where TimeCurrent() struct decode can fail sporadically.
+   datetime ts = TimeTradeServer();
+   MqlDateTime srv;
+   ZeroMemory(srv);
+   if(TimeToStruct(ts, srv) && IsValidHourValue(srv.hour))
+      return srv.hour;
+
+   MqlDateTime loc;
+   ZeroMemory(loc);
+   if(TimeToStruct(TimeLocal(), loc) && IsValidHourValue(loc.hour))
+      return loc.hour;
+
+   return -1;
 }
 //+------------------------------------------------------------------+
 void WarnInvalidSessionHour(const string label, int value)
@@ -8732,6 +8753,103 @@ void LoadTrainingData()
    if(schemaVer < TRAINING_SCHEMA_VERSION)
       Print("Training migration applied from schema ", schemaVer, " -> ", TRAINING_SCHEMA_VERSION);
    Print("Training data loaded: ", g_trainingDataCount, " records | badRows=", badRows, " | declaredRows=", rowCount);
+}
+//+------------------------------------------------------------------+
+void BootstrapTrainingDataFromHistory()
+{
+   if(g_trainingDataCount > 0)
+      return;
+
+   int targetRows = MathMax(1, INPUT_TREE_BOOTSTRAP_MIN_ROWS);
+   datetime fromTime = TimeCurrent() - (datetime)(MathMax(1, INPUT_HISTORY_BOOTSTRAP_DAYS) * 86400);
+   datetime toTime = TimeCurrent();
+
+   if(!HistorySelect(fromTime, toTime))
+   {
+      Print("TREE BOOTSTRAP: HistorySelect failed for range ", TimeToString(fromTime), " -> ", TimeToString(toTime));
+      return;
+   }
+
+   int deals = HistoryDealsTotal();
+   if(deals <= 0)
+   {
+      Print("TREE BOOTSTRAP: no historical deals available in bootstrap window.");
+      return;
+   }
+
+   string defaultCombo = INPUT_TREE_BOOTSTRAP_DEFAULT_COMBO;
+   if(StringLen(defaultCombo) == 0)
+      defaultCombo = "EMA_RSI_WPR";
+
+   int added = 0;
+   for(int i = deals - 1; i >= 0 && g_trainingDataCount < INPUT_MAX_TRAINING_DATA && added < targetRows; i--)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0)
+         continue;
+
+      string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+      if(symbol != _Symbol)
+         continue;
+
+      long magic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
+      if((int)magic != INPUT_MAGIC_NUMBER)
+         continue;
+
+      long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(entryType != DEAL_ENTRY_OUT)
+         continue;
+
+      double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT) +
+                      HistoryDealGetDouble(dealTicket, DEAL_SWAP) +
+                      HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+
+      if(!MathIsValidNumber(profit))
+         continue;
+
+      datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      ulong positionId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+      if(positionId == 0)
+         positionId = dealTicket;
+
+      int idx = g_trainingDataCount;
+      g_trainingDataCount++;
+      ZeroMemory(g_trainingData[idx]);
+
+      g_trainingData[idx].ticket = positionId;
+      g_trainingData[idx].entryTime = closeTime;
+      g_trainingData[idx].closeTime = closeTime;
+      g_trainingData[idx].signalCombination = defaultCombo;
+      g_trainingData[idx].profitLoss = profit;
+      g_trainingData[idx].isWin = (profit > 0.0);
+      g_trainingData[idx].confidenceAtEntry = 50.0;
+      g_trainingData[idx].threatAtEntry = 50.0;
+      g_trainingData[idx].mtfScore = 0;
+      g_trainingData[idx].volatilityRatio = 1.0;
+      g_trainingData[idx].entrySession = GetSessionFromTime(closeTime);
+      g_trainingData[idx].closeSession = g_trainingData[idx].entrySession;
+
+      MqlDateTime dt;
+      TimeToStruct(closeTime, dt);
+      g_trainingData[idx].entryDayOfWeek = dt.day_of_week;
+      g_trainingData[idx].closeDayOfWeek = dt.day_of_week;
+      g_trainingData[idx].entryRegime = REGIME_UNKNOWN;
+      g_trainingData[idx].closeRegime = REGIME_UNKNOWN;
+      g_trainingData[idx].fingerprintId = "HIST_BOOTSTRAP";
+
+      added++;
+   }
+
+   if(added > 0)
+   {
+      Print("TREE BOOTSTRAP: added ", added,
+            " synthetic rows from account history so tree/ML can start without zero-data deadlock.");
+      SaveTrainingData();
+   }
+   else
+   {
+      Print("TREE BOOTSTRAP: no eligible deals matched symbol+magic in bootstrap window.");
+   }
 }
 //+------------------------------------------------------------------+
 void SaveAdaptiveParams()
