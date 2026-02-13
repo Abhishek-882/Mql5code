@@ -262,6 +262,7 @@ input bool     INPUT_SESSION_ASIAN_ON = true;
 input bool     INPUT_SESSION_LONDON_ON = true;
 input bool     INPUT_SESSION_NY_ON = true;
 input bool     INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES = true;
+input bool     INPUT_SESSION_FAIL_OPEN_ON_INVALID_HOUR = true; // Prevent total entry lock when broker/server hour is
 
 input group    "=== Learning / Inference Sub-Toggles ==="
 input bool     INPUT_RL_INFERENCE_ON = true;
@@ -5197,10 +5198,39 @@ bool IsCountableForEntryGating(const string comment)
 
 
 
- //+------------------------------------------------------------------+
 bool IsValidHourValue(int hour)
 {
    return (hour >= 0 && hour <= 23);
+}
+//+------------------------------------------------------------------+
+int NormalizeSessionHour(int value)
+{
+   if(IsValidHourValue(value))
+      return value;
+
+   // Some broker feeds/log adapters surface HHMM as "hour" (e.g. 602 for 06:02).
+   // Accept common malformed forms and normalize to plain hour.
+   if(value >= 0 && value <= 2359)
+   {
+      int hh = value / 100;
+      if(IsValidHourValue(hh))
+         return hh;
+   }
+
+   return -1;
+}
+//+------------------------------------------------------------------+
+int GetCurrentServerHourRaw()
+{
+   MqlDateTime dt;
+   ZeroMemory(dt);
+
+   if(TimeToStruct(TimeCurrent(), dt) && IsValidHourValue(dt.hour))
+      return dt.hour;
+
+   // Fallback for environments where TimeToStruct can fail sporadically.
+   int fallbackHour = TimeHour(TimeCurrent());
+   return fallbackHour;
 }
 //+------------------------------------------------------------------+
 void WarnInvalidSessionHour(const string label, int value)
@@ -5475,14 +5505,18 @@ bool IsAllowedSession()
    if(!INPUT_GATE_SESSION_WINDOW_ON)
       return true;
 
-   MqlDateTime dt;
-   TimeToStruct(TimeCurrent(), dt);
-   int hour = dt.hour;
+   int rawHour = GetCurrentServerHourRaw();
+   int hour = NormalizeSessionHour(rawHour);
 
    if(!IsValidHourValue(hour))
    {
-      WarnInvalidSessionHour("current_server_hour", hour);
+      WarnInvalidSessionHour("current_server_hour", rawHour);
       RegisterDataWarning("Invalid current session hour");
+
+      // Fail-open option prevents hard deadlock in entry gating when clock source is malformed.
+      if(INPUT_SESSION_FAIL_OPEN_ON_INVALID_HOUR)
+         return true;
+
       return false;
    }
 
@@ -5513,13 +5547,12 @@ bool IsAllowedSession()
 //+------------------------------------------------------------------+
 int GetCurrentSession()
 {
-   MqlDateTime dt;
-   TimeToStruct(TimeCurrent(), dt);
-   int hour = dt.hour;
+   int rawHour = GetCurrentServerHourRaw();
+   int hour = NormalizeSessionHour(rawHour);
 
    if(!IsValidHourValue(hour))
    {
-      WarnInvalidSessionHour("current_server_hour", hour);
+      WarnInvalidSessionHour("current_server_hour", rawHour);
       return -1;
    }
 
