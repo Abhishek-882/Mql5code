@@ -31,6 +31,20 @@ enum ENUM_EXECUTION_MODE
    MARKET       = 0,   // Immediate market order
    PENDING_STOP = 1    // Place stop pending order
 };
+enum ENUM_RECOVERY_MODE
+{
+   RECOVERY_OFF        = 0,
+   RECOVERY_AVERAGING  = 1,
+   RECOVERY_HEDGING    = 2,
+   RECOVERY_GRID       = 3,
+   RECOVERY_MARTINGALE = 4
+};
+enum ENUM_COMBO_RANK_MODE
+{
+   COMBO_RANK_HEURISTIC = 0,
+   COMBO_RANK_ENTROPY_IG = 1,
+   COMBO_RANK_HYBRID = 2
+};
 enum ENUM_MARKET_REGIME
 {
    REGIME_UNKNOWN    = 0,   // Unknown
@@ -306,9 +320,16 @@ input bool     INPUT_ENABLE_STREAK_LOT_MULTIPLIER = true; // Enable temporary lo
 input int      INPUT_STREAK_TRIGGER_WINS = 2; // Consecutive wins needed to arm streak multiplier
 input double   INPUT_STREAK_LOT_MULTIPLIER = 1.5; // Lot multiplier during armed streak window
 input int      INPUT_STREAK_MULTIPLIER_ORDERS = 3; // Number of successful orders that use streak multiplier
+input bool     INPUT_ENABLE_CONSEC_WIN_CONF_BOOST = false;
+input int      INPUT_CONSEC_WIN_CONF_TRIGGER = 3;
+input double   INPUT_CONSEC_WIN_CONF_BOOST_PER_WIN = 1.5;
+input double   INPUT_CONSEC_WIN_CONF_BOOST_CAP = 8.0;
+input bool     INPUT_ENABLE_CONSEC_WIN_CONF_DECAY = true;
+input int      INPUT_CONSEC_WIN_CONF_DECAY_AFTER_TRADES = 3;
 //--- Recovery Averaging System
 input group    "=== Recovery Averaging System ==="
-input bool     INPUT_ENABLE_RECOVERY         = false; // Enable recovery averaging (FIXED: Disabled by default)
+input bool     INPUT_ENABLE_RECOVERY         = false; // Master recovery gate
+input ENUM_RECOVERY_MODE INPUT_RECOVERY_MODE = RECOVERY_AVERAGING; // Recovery mode selector
 input int      INPUT_RECOVERY_THREAT_MIN     = 60;   // Minimum threat to trigger recovery
 input int      INPUT_MAX_RECOVERY_PER_POS    = 2;    // Max recovery orders per position
 input double   INPUT_RECOVERY_LOT_RATIO_SAFE = 0.33; // Lot ratio when threat < 50
@@ -318,6 +339,17 @@ input int      INPUT_RECOVERY_TIMEOUT_MINUTES = 120; // Recovery order timeout (
 input double   INPUT_RECOVERY_TRIGGER_DEPTH  = 40.0; // Trigger at X% of SL distance
 input double   INPUT_RECOVERY_TP_BUFFER_POINTS = 60.0; // Add this many points beyond combined break-even for recovery TP
 input double   INPUT_RECOVERY_TP_TARGET_MULTIPLIER = 1.0; // Optional target model multiplier on (combined BE-to-SL) distance
+input int      INPUT_RECOVERY_COOLDOWN_SECONDS = 30; // Cooldown between recovery attempts
+input int      INPUT_RECOVERY_MAX_LAYERS = 3; // Safety cap for recovery layering
+input double   INPUT_RECOVERY_EMERGENCY_STOP_PERCENT = 20.0; // Halt recovery when drawdown exceeds this
+input double   INPUT_GRID_STEP_POINTS = 150.0; // Grid mode spacing
+input int      INPUT_GRID_MAX_ORDERS = 3; // Grid max recovery orders
+input double   INPUT_GRID_LOT_SCALING = 1.0; // Grid lot scaling
+input double   INPUT_HEDGE_TRIGGER_OFFSET_POINTS = 120.0; // Hedge trigger offset in points
+input double   INPUT_HEDGE_LOT_SCALING = 1.0; // Hedge lot scaling
+input int      INPUT_HEDGE_MAX_ORDERS = 2; // Hedge max recovery orders
+input double   INPUT_MARTINGALE_MULTIPLIER = 1.6; // Martingale lot multiplier
+input int      INPUT_MARTINGALE_MAX_ORDERS = 2; // Martingale max recovery orders
 //--- Session Filters
 input group    "=== Session Filters ==="
 input bool     INPUT_TRADE_ASIAN    = true;       // Trade Asian session
@@ -374,8 +406,12 @@ input int      INPUT_ADAPT_INTERVAL     = 50;     // Optimize every N trades
 input double   INPUT_ADAPT_UNDERPERF_LOT_REDUCE = 0.1; // Reduce lots by X when underperforming
 input double   INPUT_ADAPT_OVERPERF_TRAIL_ADD   = 2.0; // Add X pips to trail when outperforming
 input bool     INPUT_ENABLE_COMBINATION_ADAPTIVE = true; // Priority 2: learn per-signal-combination behavior
+input bool     INPUT_ENABLE_FULL_COMBO_UNIVERSE = true; // Pre-seed deterministic nCk universe
+input int      INPUT_TOTAL_SIGNALS = 8;           // Total available signal factors (n)
+input int      INPUT_TOTAL_SIGNAL_FACTORS = 8;    // Alias for total factors (n)
 input int      INPUT_COMBO_MIN_TRADES   = 10;     // Minimum trades required per combination for analysis
 input double   INPUT_COMBO_CONFIDENCE_WEIGHT = 0.3; // How strongly combo strength affects confidence
+input ENUM_COMBO_RANK_MODE INPUT_COMBO_RANK_MODE = COMBO_RANK_HEURISTIC;
 input bool     INPUT_LOG_COMBINATION_INSIGHTS = true; // Print best/worst combination insights
 input int      INPUT_COMBO_INSIGHT_TOP_N = 1;     // Number of best/worst combos to log per refresh
 input bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include recovery/aux positions in age-timeout close
@@ -548,6 +584,10 @@ struct SignalFingerprint
    double   profitFactor;
    double   avgProfit;
    double   avgLoss;
+   double   expectancy;
+   double   entropy;
+   double   infoGain;
+   double   rankScore;
    double   strengthScore;      // 0-100
    double   confidenceMultiplier; // 0.5-1.5
    double   decayWeight;
@@ -584,6 +624,8 @@ struct TrainingData
 struct CombinationStats
 {
    string   combination;
+   string   comboId;
+   bool     seen;
    int      totalTrades;
    int      wins;
    int      losses;
@@ -593,6 +635,10 @@ struct CombinationStats
    double   profitFactor;
    double   avgProfit;
    double   avgLoss;
+   double   expectancy;
+   double   entropy;
+   double   infoGain;
+   double   rankScore;
    double   strengthScore;      // 0-100
    double   confidenceMultiplier; // 0.5-1.5
    // Session breakdown
@@ -837,6 +883,12 @@ TrainingData g_trainingData[];
 int      g_trainingDataCount = 0;
 CombinationStats g_combinationStats[];
 int      g_combinationStatsCount = 0;
+string   g_comboUniverse[];
+int      g_comboUniverseCount = 0;
+int      g_comboObservedCount = 0;
+int      g_consecWinBoostTrades = 0;
+string   g_activeRecoveryPrefix = COMMENT_AVG_PREFIX;
+ENUM_POSITION_SUBTYPE g_activeRecoverySubtype = SUBTYPE_AVERAGING;
 //--- Q-Learning System (108 states x 4 actions)
 double   g_qTable[Q_TABLE_STATES][Q_TABLE_ACTIONS];
 int      g_qVisits[Q_TABLE_STATES][Q_TABLE_ACTIONS];
@@ -1054,6 +1106,41 @@ void LogToggleMatrix(const string feature, bool legacyFlag, bool newToggle, bool
          " | new=", (newToggle ? "ON" : "OFF"),
          " | effective=", (effective ? "ON" : "OFF"));
 }
+
+void BuildDeterministicComboUniverse();
+void SaveCombinationStatsSnapshot();
+
+bool ValidateInputsStrict(string &err)
+{
+   int totalSignals = MathMin(INPUT_TOTAL_SIGNALS, INPUT_TOTAL_SIGNAL_FACTORS);
+   if(INPUT_MAX_CONCURRENT_TRADES < 1) { err = "INPUT_MAX_CONCURRENT_TRADES must be >= 1"; return false; }
+   if(INPUT_MAX_SAME_DIRECTION < 1) { err = "INPUT_MAX_SAME_DIRECTION must be >= 1"; return false; }
+   if(INPUT_ORDER_COOLDOWN_SECONDS < 0) { err = "INPUT_ORDER_COOLDOWN_SECONDS must be >= 0"; return false; }
+   if(INPUT_MAX_DAILY_TRADES < 1) { err = "INPUT_MAX_DAILY_TRADES must be >= 1"; return false; }
+   if(!(INPUT_DAILY_LOSS_LIMIT_PERCENT > 0.0 && INPUT_DAILY_LOSS_LIMIT_PERCENT <= 100.0)) { err = "INPUT_DAILY_LOSS_LIMIT_PERCENT must be > 0 and <= 100"; return false; }
+   if(!(INPUT_RISK_PERCENT == 0.0 || (INPUT_RISK_PERCENT > 0.0 && INPUT_RISK_PERCENT <= 100.0))) { err = "INPUT_RISK_PERCENT must be 0 or in (0,100]"; return false; }
+   if(INPUT_MIN_LOT_SIZE <= 0.0) { err = "INPUT_MIN_LOT_SIZE must be > 0"; return false; }
+   if(INPUT_MAX_LOT_SIZE < INPUT_MIN_LOT_SIZE) { err = "INPUT_MAX_LOT_SIZE must be >= INPUT_MIN_LOT_SIZE"; return false; }
+   if(INPUT_MAX_TOTAL_RISK_PERCENT <= 0.0) { err = "INPUT_MAX_TOTAL_RISK_PERCENT must be > 0"; return false; }
+   if(INPUT_EXECUTION_MODE == PENDING_STOP)
+   {
+      if(INPUT_PENDING_STOP_OFFSET_POINTS <= 0) { err = "INPUT_PENDING_STOP_OFFSET_POINTS must be > 0 when pending mode is enabled"; return false; }
+      if(INPUT_PENDING_EXPIRY_MINUTES <= 0) { err = "INPUT_PENDING_EXPIRY_MINUTES must be > 0 when pending mode is enabled"; return false; }
+   }
+   if(INPUT_POSITION_AGE_HOURS < 0) { err = "INPUT_POSITION_AGE_HOURS must be >= 0"; return false; }
+   if(INPUT_MAX_RECOVERY_PER_POS < 0) { err = "INPUT_MAX_RECOVERY_PER_POS must be >= 0"; return false; }
+   if(INPUT_RECOVERY_TIMEOUT_MINUTES <= 0) { err = "INPUT_RECOVERY_TIMEOUT_MINUTES must be > 0"; return false; }
+   if(INPUT_RECOVERY_TRIGGER_DEPTH < 1.0 || INPUT_RECOVERY_TRIGGER_DEPTH > 95.0) { err = "INPUT_RECOVERY_TRIGGER_DEPTH must be within 1..95"; return false; }
+   if(INPUT_RECOVERY_LOT_RATIO_SAFE <= 0 || INPUT_RECOVERY_LOT_RATIO_MOD <= 0 || INPUT_RECOVERY_LOT_RATIO_HIGH <= 0) { err = "All recovery lot ratios must be > 0"; return false; }
+   if(INPUT_RECOVERY_LOT_RATIO_SAFE > 10 || INPUT_RECOVERY_LOT_RATIO_MOD > 10 || INPUT_RECOVERY_LOT_RATIO_HIGH > 10) { err = "Recovery lot ratios exceed policy bound (10x)"; return false; }
+   if(INPUT_GRID_STEP_POINTS <= 0) { err = "INPUT_GRID_STEP_POINTS must be > 0"; return false; }
+   if(INPUT_RECOVERY_MODE == RECOVERY_MARTINGALE && INPUT_MARTINGALE_MULTIPLIER <= 1.0) { err = "INPUT_MARTINGALE_MULTIPLIER must be > 1 in martingale mode"; return false; }
+   if(INPUT_RECOVERY_MODE == RECOVERY_HEDGING && INPUT_HEDGE_TRIGGER_OFFSET_POINTS <= 0) { err = "INPUT_HEDGE_TRIGGER_OFFSET_POINTS must be > 0 in hedging mode"; return false; }
+   if(totalSignals < 1 || totalSignals > 8) { err = "INPUT_TOTAL_SIGNALS/INPUT_TOTAL_SIGNAL_FACTORS must resolve to 1..8"; return false; }
+   if(INPUT_MIN_SIGNALS < 1 || INPUT_MIN_SIGNALS > totalSignals) { err = "INPUT_MIN_SIGNALS must be within 1..total_signals"; return false; }
+   return true;
+}
+
 //+------------------------------------------------------------------+
 //| SECTION 6: INITIALIZATION                                        |
 //+------------------------------------------------------------------+
@@ -1068,6 +1155,12 @@ int OnInit()
    }
 
    //--- Validate inputs
+   string strictErr = "";
+   if(!ValidateInputsStrict(strictErr))
+   {
+      Print("ERROR: ", strictErr);
+      return INIT_PARAMETERS_INCORRECT;
+   }
    if(INPUT_MIN_SIGNALS < 1 || INPUT_MIN_SIGNALS > 8)
    {
       Print("ERROR: INPUT_MIN_SIGNALS must be 1-8");
@@ -1184,6 +1277,7 @@ int OnInit()
    g_trainingDataCount = 0;
    ArrayResize(g_combinationStats, MAX_COMBINATION_STATS);
    g_combinationStatsCount = 0;
+   BuildDeterministicComboUniverse();
    ArrayResize(g_pendingRL, 100);
    g_pendingRLCount = 0;
    ArrayResize(g_recentlyClosedContext, 256);
@@ -1495,6 +1589,7 @@ void OnDeinit(const int reason)
                                    (INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_INFERENCE_ON || INPUT_COMBO_ADAPTIVE_RECORD_ON)));
    if(needTrainingDataPersist)
       SaveTrainingData();
+   SaveCombinationStatsSnapshot();
    if(INPUT_ENABLE_RL)
       SaveQTable();
    if(INPUT_ENABLE_MARKOV && (INPUT_MARKOV_INFERENCE_ON || INPUT_MARKOV_UPDATE_ON))
@@ -1625,8 +1720,13 @@ void OnTick()
    }
    if(g_effClose50PctDefensive)
       Handle50PercentLotClose();
-   if(INPUT_ENABLE_RECOVERY && !expired)
-      MonitorRecoveryAveraging();
+   if(INPUT_ENABLE_RECOVERY && !expired && INPUT_RECOVERY_MODE != RECOVERY_OFF)
+   {
+      if(INPUT_RECOVERY_MODE == RECOVERY_AVERAGING) MonitorRecoveryAveragingMode();
+      else if(INPUT_RECOVERY_MODE == RECOVERY_HEDGING) MonitorRecoveryHedgingMode();
+      else if(INPUT_RECOVERY_MODE == RECOVERY_GRID) MonitorRecoveryGridMode();
+      else if(INPUT_RECOVERY_MODE == RECOVERY_MARTINGALE) MonitorRecoveryMartingaleMode();
+   }
    CheckRecoveryTimeouts();
    g_tickMsManagePositions = GetTickCount() - t0;
 
@@ -2329,7 +2429,7 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
       {
          if(g_combinationStats[i].combination == combination && g_combinationStats[i].totalTrades >= INPUT_COMBO_MIN_TRADES)
          {
-            double edge = (g_combinationStats[i].strengthScore - 50.0) / 50.0; // -1..+1
+            double edge = (g_combinationStats[i].rankScore - 50.0) / 50.0; // -1..+1
             double comboMultiplier = (1.0 + edge * INPUT_COMBO_CONFIDENCE_WEIGHT);
             conf *= comboMultiplier;
             comboApplied = true;
@@ -2338,6 +2438,17 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
             break;
          }
       }
+   }
+
+   double consecBoostApplied = 0.0;
+   if(INPUT_ENABLE_CONSEC_WIN_CONF_BOOST && g_consecutiveWins >= INPUT_CONSEC_WIN_CONF_TRIGGER)
+   {
+      int boostWins = g_consecutiveWins - INPUT_CONSEC_WIN_CONF_TRIGGER + 1;
+      consecBoostApplied = boostWins * INPUT_CONSEC_WIN_CONF_BOOST_PER_WIN;
+      consecBoostApplied = MathMin(consecBoostApplied, INPUT_CONSEC_WIN_CONF_BOOST_CAP);
+      if(INPUT_ENABLE_CONSEC_WIN_CONF_DECAY && g_consecWinBoostTrades >= INPUT_CONSEC_WIN_CONF_DECAY_AFTER_TRADES)
+         consecBoostApplied *= 0.5;
+      conf += consecBoostApplied;
    }
 
    if(INPUT_ENABLE_LOGGING)
@@ -2357,7 +2468,8 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
             " | comboAllowed=", (allowComboAdaptive ? "true" : "false"),
             " comboApplied=", (comboApplied ? "true" : "false"),
             " comboMul=", DoubleToString(appliedComboMultiplier, 3),
-            " comboNon1=", (comboNonNeutral ? "true" : "false"));
+            " comboNon1=", (comboNonNeutral ? "true" : "false"),
+            " consecBoost=", DoubleToString(consecBoostApplied, 2));
    }
 
    //--- Canonical threat penalty budget: keep a single confidence penalty path
@@ -3553,6 +3665,92 @@ string GenerateFingerprint(const SignalResult &signals, int session, int dayOfWe
 }
 //+------------------------------------------------------------------+
 
+
+string BuildComboFromMask(int mask, const string &names[], int n)
+{
+   string combo = "";
+   for(int i = 0; i < n; i++)
+   {
+      if((mask & (1 << i)) == 0) continue;
+      if(StringLen(combo) > 0) combo += "_";
+      combo += names[i];
+   }
+   return combo;
+}
+
+void BuildDeterministicComboUniverse()
+{
+   ArrayResize(g_comboUniverse, 0);
+   g_comboUniverseCount = 0;
+   g_comboObservedCount = 0;
+
+   if(!INPUT_ENABLE_FULL_COMBO_UNIVERSE)
+      return;
+
+   int totalSignals = MathMin(INPUT_TOTAL_SIGNALS, INPUT_TOTAL_SIGNAL_FACTORS);
+   int k = INPUT_MIN_SIGNALS;
+   string factorNames[8] = {"EMA","RSI","STOCH","ENGULF","BREAK","VOL","MACD","WPR"};
+
+   for(int mask = 1; mask < (1 << totalSignals); mask++)
+   {
+      int bits = 0;
+      for(int b = 0; b < totalSignals; b++) if((mask & (1 << b)) != 0) bits++;
+      if(bits != k) continue;
+      string combo = BuildComboFromMask(mask, factorNames, totalSignals);
+      int idx = ArraySize(g_comboUniverse);
+      ArrayResize(g_comboUniverse, idx + 1);
+      g_comboUniverse[idx] = combo;
+   }
+
+   g_comboUniverseCount = ArraySize(g_comboUniverse);
+   if(INPUT_ENABLE_LOGGING)
+      Print("COMBO UNIVERSE INIT: totalSignals=", totalSignals, " k=", k, " totalCombos=", g_comboUniverseCount);
+}
+
+int FindCombinationIndex(const string combo)
+{
+   for(int i = 0; i < g_combinationStatsCount; i++)
+      if(g_combinationStats[i].combination == combo) return i;
+   return -1;
+}
+
+double ComputeEntropyFromCounts(int wins, int losses)
+{
+   int total = wins + losses;
+   if(total <= 0 || wins <= 0 || losses <= 0) return 0.0;
+   double pW = (double)wins / total;
+   double pL = (double)losses / total;
+   return -(pW * MathLog(pW) / MathLog(2.0) + pL * MathLog(pL) / MathLog(2.0));
+}
+
+void SaveCombinationStatsSnapshot()
+{
+   string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_combo_stats.csv";
+   string tmpName = filename + ".tmp";
+   int handle = FileOpen(tmpName, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+   if(handle == INVALID_HANDLE) return;
+
+   FileWrite(handle, "ComboID", "Combination", "Seen", "ObservedTrades", "Wins", "Losses", "PF", "Expectancy", "Strength", "Entropy", "InfoGain", "RankScore");
+   for(int i = 0; i < g_combinationStatsCount; i++)
+   {
+      FileWrite(handle,
+                g_combinationStats[i].comboId,
+                g_combinationStats[i].combination,
+                g_combinationStats[i].seen ? 1 : 0,
+                g_combinationStats[i].totalTrades,
+                g_combinationStats[i].wins,
+                g_combinationStats[i].losses,
+                g_combinationStats[i].profitFactor,
+                g_combinationStats[i].expectancy,
+                g_combinationStats[i].strengthScore,
+                g_combinationStats[i].entropy,
+                g_combinationStats[i].infoGain,
+                g_combinationStats[i].rankScore);
+   }
+   FileClose(handle);
+   ReplaceFileAtomic(tmpName, filename);
+}
+
 void RecomputeCombinationDerivedMetrics(int idx)
 {
    if(idx < 0 || idx >= g_combinationStatsCount) return;
@@ -3566,13 +3764,30 @@ void RecomputeCombinationDerivedMetrics(int idx)
       g_combinationStats[idx].totalProfit / g_combinationStats[idx].wins : 0.0;
    g_combinationStats[idx].avgLoss = (g_combinationStats[idx].losses > 0) ?
       g_combinationStats[idx].totalLoss / g_combinationStats[idx].losses : 0.0;
+   g_combinationStats[idx].expectancy = (g_combinationStats[idx].totalTrades > 0) ?
+      ((g_combinationStats[idx].totalProfit - g_combinationStats[idx].totalLoss) / g_combinationStats[idx].totalTrades) : 0.0;
 
    double score = 50.0;
    double wrComponent = MathMax(MathMin((g_combinationStats[idx].winRate - 0.5) * 100.0, 30.0), -30.0);
    double pfComponent = MathMax(MathMin((g_combinationStats[idx].profitFactor - 1.0) * 20.0, 25.0), -25.0);
    score = MathMax(MathMin(score + wrComponent + pfComponent, 100.0), 0.0);
    g_combinationStats[idx].strengthScore = score;
-   g_combinationStats[idx].confidenceMultiplier = MathMax(MathMin(1.0 + (score - 50.0) / 200.0, 1.5), 0.5);
+
+   double baselineEntropy = 1.0;
+   g_combinationStats[idx].entropy = ComputeEntropyFromCounts(g_combinationStats[idx].wins, g_combinationStats[idx].losses);
+   g_combinationStats[idx].infoGain = MathMax(0.0, baselineEntropy - g_combinationStats[idx].entropy);
+   double igNormalized = MathMax(0.0, MathMin(g_combinationStats[idx].infoGain / baselineEntropy, 1.0));
+   if(g_combinationStats[idx].totalTrades < INPUT_COMBO_MIN_TRADES)
+      igNormalized *= ((double)g_combinationStats[idx].totalTrades / MathMax(1, INPUT_COMBO_MIN_TRADES));
+
+   if(INPUT_COMBO_RANK_MODE == COMBO_RANK_ENTROPY_IG)
+      g_combinationStats[idx].rankScore = igNormalized * 100.0;
+   else if(INPUT_COMBO_RANK_MODE == COMBO_RANK_HYBRID)
+      g_combinationStats[idx].rankScore = (score * 0.6) + (igNormalized * 100.0 * 0.4);
+   else
+      g_combinationStats[idx].rankScore = score;
+
+   g_combinationStats[idx].confidenceMultiplier = MathMax(MathMin(1.0 + (g_combinationStats[idx].rankScore - 50.0) / 200.0, 1.5), 0.5);
 }
 
 void UpdateCombinationStatsIncremental(const TrainingData &row)
@@ -3586,9 +3801,11 @@ void UpdateCombinationStatsIncremental(const TrainingData &row)
       idx = g_combinationStatsCount++;
       ZeroMemory(g_combinationStats[idx]);
       g_combinationStats[idx].combination = row.signalCombination;
+      g_combinationStats[idx].comboId = "OBS_" + IntegerToString(idx + 1);
    }
    if(idx < 0) return;
 
+   g_combinationStats[idx].seen = true;
    g_combinationStats[idx].totalTrades++;
    if(row.isWin) { g_combinationStats[idx].wins++; g_combinationStats[idx].totalProfit += row.profitLoss; }
    else { g_combinationStats[idx].losses++; g_combinationStats[idx].totalLoss += MathAbs(row.profitLoss); }
@@ -3607,6 +3824,18 @@ void RecalculateCombinationStats()
    // Reset stats
    g_combinationStatsCount = 0;
 
+   if(INPUT_ENABLE_FULL_COMBO_UNIVERSE)
+   {
+      for(int u = 0; u < g_comboUniverseCount && g_combinationStatsCount < MAX_COMBINATION_STATS; u++)
+      {
+         int idx = g_combinationStatsCount++;
+         ZeroMemory(g_combinationStats[idx]);
+         g_combinationStats[idx].combination = g_comboUniverse[u];
+         g_combinationStats[idx].comboId = "C" + IntegerToString(u + 1);
+         g_combinationStats[idx].seen = false;
+      }
+   }
+
    // Group trades by combination
    for(int i = 0; i < g_trainingDataCount; i++)
    {
@@ -3621,10 +3850,12 @@ void RecalculateCombinationStats()
          g_combinationStatsCount++;
          ZeroMemory(g_combinationStats[idx]);
          g_combinationStats[idx].combination = combo;
+         g_combinationStats[idx].comboId = "OBS_" + IntegerToString(idx + 1);
       }
 
       if(idx >= 0)
       {
+         g_combinationStats[idx].seen = true;
          g_combinationStats[idx].totalTrades++;
          if(g_trainingData[i].isWin)
          {
@@ -3669,48 +3900,11 @@ void RecalculateCombinationStats()
    }
 
    // Derive metrics
+   g_comboObservedCount = 0;
    for(int i = 0; i < g_combinationStatsCount; i++)
    {
-      if(g_combinationStats[i].totalTrades > 0)
-      {
-         g_combinationStats[i].winRate = (double)g_combinationStats[i].wins /
-                                         g_combinationStats[i].totalTrades;
-
-         if(g_combinationStats[i].totalLoss > 0)
-            g_combinationStats[i].profitFactor = g_combinationStats[i].totalProfit /
-                                                g_combinationStats[i].totalLoss;
-         else
-            g_combinationStats[i].profitFactor = g_combinationStats[i].totalProfit > 0 ? 10.0 : 0;
-
-         if(g_combinationStats[i].wins > 0)
-            g_combinationStats[i].avgProfit = g_combinationStats[i].totalProfit /
-                                              g_combinationStats[i].wins;
-
-         if(g_combinationStats[i].losses > 0)
-            g_combinationStats[i].avgLoss = g_combinationStats[i].totalLoss /
-                                            g_combinationStats[i].losses;
-
-         // Strength score (0?100)
-         double score = 50.0;
-
-         // Win?rate component (+/-30)
-         double wrComponent = (g_combinationStats[i].winRate - 0.5) * 100.0;
-         wrComponent = MathMax(MathMin(wrComponent, 30.0), -30.0);
-         score += wrComponent;
-
-         // Profit?factor component (+/-25)
-         double pfComponent = (g_combinationStats[i].profitFactor - 1.0) * 20.0;
-         pfComponent = MathMax(MathMin(pfComponent, 25.0), -25.0);
-         score += pfComponent;
-
-         score = MathMax(MathMin(score, 100.0), 0.0);
-         g_combinationStats[i].strengthScore = score;
-
-         // Confidence multiplier (0.5?1.5)
-         g_combinationStats[i].confidenceMultiplier = 1.0 + (score - 50.0) / 200.0;
-         g_combinationStats[i].confidenceMultiplier = MathMax(
-            MathMin(g_combinationStats[i].confidenceMultiplier, 1.5), 0.5);
-      }
+      if(g_combinationStats[i].totalTrades > 0) g_comboObservedCount++;
+      RecomputeCombinationDerivedMetrics(i);
    }
 
    if(INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_LOG_COMBINATION_INSIGHTS)
@@ -3721,9 +3915,9 @@ void RecalculateCombinationStats()
       for(int i = 0; i < g_combinationStatsCount; i++)
       {
          if(g_combinationStats[i].totalTrades < INPUT_COMBO_MIN_TRADES) continue;
-         if(bestIdx < 0 || g_combinationStats[i].strengthScore > g_combinationStats[bestIdx].strengthScore)
+         if(bestIdx < 0 || g_combinationStats[i].rankScore > g_combinationStats[bestIdx].rankScore)
             bestIdx = i;
-         if(worstIdx < 0 || g_combinationStats[i].strengthScore < g_combinationStats[worstIdx].strengthScore)
+         if(worstIdx < 0 || g_combinationStats[i].rankScore < g_combinationStats[worstIdx].rankScore)
             worstIdx = i;
       }
 
@@ -3731,7 +3925,7 @@ void RecalculateCombinationStats()
       {
          Print("COMBO STRENGTH: Best=", g_combinationStats[bestIdx].combination,
                " | Trades=", g_combinationStats[bestIdx].totalTrades,
-               " | Strength=", DoubleToString(g_combinationStats[bestIdx].strengthScore, 1),
+               " | Rank=", DoubleToString(g_combinationStats[bestIdx].rankScore, 1),
                " | WR=", DoubleToString(g_combinationStats[bestIdx].winRate * 100.0, 1), "%",
                " | PF=", DoubleToString(g_combinationStats[bestIdx].profitFactor, 2));
       }
@@ -3740,11 +3934,14 @@ void RecalculateCombinationStats()
       {
          Print("COMBO WEAKNESS: Worst=", g_combinationStats[worstIdx].combination,
                " | Trades=", g_combinationStats[worstIdx].totalTrades,
-               " | Strength=", DoubleToString(g_combinationStats[worstIdx].strengthScore, 1),
+               " | Rank=", DoubleToString(g_combinationStats[worstIdx].rankScore, 1),
                " | WR=", DoubleToString(g_combinationStats[worstIdx].winRate * 100.0, 1), "%",
                " | PF=", DoubleToString(g_combinationStats[worstIdx].profitFactor, 2));
       }
    }
+
+   Print("COMBO COVERAGE: observed=", g_comboObservedCount, " / total=", MathMax(g_combinationStatsCount, 1));
+   SaveCombinationStatsSnapshot();
 }
 //+------------------------------------------------------------------+
 //| SECTION 18: MARKET REGIME DETECTION                              |
@@ -5324,7 +5521,38 @@ bool CanModifyPosition(ulong ticket)
    }
    return true;
 }
+bool HasEnoughMargin(double lots, double price)
+{
+   double marginRequired = 0.0;
+   if(!OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lots, price, marginRequired))
+      return false;
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   return (marginRequired <= freeMargin * 0.95);
+}
+
 //+------------------------------------------------------------------+
+//| SECTION 25: RECOVERY MODE DISPATCHER (Part 9)                    |
+//+------------------------------------------------------------------+
+void MonitorRecoveryAveragingMode() { g_activeRecoveryPrefix = COMMENT_AVG_PREFIX; g_activeRecoverySubtype = SUBTYPE_AVERAGING; MonitorRecoveryAveraging(); }
+void MonitorRecoveryHedgingMode()
+{
+   g_activeRecoveryPrefix = COMMENT_HEDGE_PREFIX;
+   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
+   MonitorRecoveryAveraging();
+}
+void MonitorRecoveryGridMode()
+{
+   g_activeRecoveryPrefix = COMMENT_GRID_PREFIX;
+   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
+   MonitorRecoveryAveraging();
+}
+void MonitorRecoveryMartingaleMode()
+{
+   g_activeRecoveryPrefix = COMMENT_RECOVERY_PREFIX;
+   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
+   MonitorRecoveryAveraging();
+}
+
 //| SECTION 25: RECOVERY AVERAGING SYSTEM (Part 9)                   |
 //+------------------------------------------------------------------+
 void MonitorRecoveryAveraging()
@@ -5357,7 +5585,7 @@ void MonitorRecoveryAveraging()
       if(threat < INPUT_RECOVERY_THREAT_MIN) continue;
 
       if(g_positions[i].lastRecoveryTime > 0 &&
-         TimeCurrent() - g_positions[i].lastRecoveryTime < 30 * PeriodSeconds(PERIOD_M1))
+         TimeCurrent() - g_positions[i].lastRecoveryTime < INPUT_RECOVERY_COOLDOWN_SECONDS)
          continue;
 
       ulong ticket = g_positions[i].ticket;
@@ -5526,10 +5754,14 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
       return;
    }
 
-   string comment = COMMENT_AVG_PREFIX + IntegerToString((int)parentTicket);
+   if(g_positionCount >= INPUT_MAX_CONCURRENT_TRADES) return;
+   if(GetCurrentDailyLossPercent() >= INPUT_DAILY_LOSS_LIMIT_PERCENT) return;
+   if(!HasEnoughMargin(lots, price)) return;
+
+   string comment = g_activeRecoveryPrefix + IntegerToString((int)parentTicket);
 
    g_trade.SetTypeFilling(GetFillingMode());
-   g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_AVERAGING));
+   g_trade.SetExpertMagicNumber(BuildMagicForSubtype(g_activeRecoverySubtype));
 
    if(g_trade.PositionOpen(_Symbol, orderType, lots, price, sl, tp, comment))
    {
@@ -5942,6 +6174,8 @@ void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetim
    if(isWin)
    {
       g_consecutiveWins++;
+      if(INPUT_ENABLE_CONSEC_WIN_CONF_BOOST && g_consecutiveWins >= INPUT_CONSEC_WIN_CONF_TRIGGER)
+         g_consecWinBoostTrades++;
       g_consecutiveLosses = 0;
       g_daily.winsToday++;
       g_daily.strategyWinsToday++;
@@ -5957,6 +6191,7 @@ void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetim
    {
       g_consecutiveLosses++;
       g_consecutiveWins = 0;
+      g_consecWinBoostTrades = 0;
       g_streakMultiplierOrdersRemaining = 0;
       g_daily.lossesToday++;
       g_daily.strategyLossesToday++;
@@ -7679,6 +7914,8 @@ void DrawStatsPanel()
       CreateLabel(prefix + "ml", "Training Data: " + IntegerToString(g_trainingDataCount), x + 10, y, clrCyan, 9);
       y += 18;
    }
+   CreateLabel(prefix + "comboCov", "Combo coverage: " + IntegerToString(g_comboObservedCount) + "/" + IntegerToString(MathMax(g_combinationStatsCount,1)), x + 10, y, clrCyan, 9);
+   y += 18;
 
    // Settings summary
    CreateLabel(prefix + "settings", "MinSig:" + IntegerToString(INPUT_MIN_SIGNALS) +
