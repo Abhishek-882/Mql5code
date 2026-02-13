@@ -5876,7 +5876,11 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
    }
 
    if(g_positionCount >= INPUT_MAX_CONCURRENT_TRADES) return;
-   if(GetCurrentDailyLossPercent() >= INPUT_DAILY_LOSS_LIMIT_PERCENT) return;
+   if(INPUT_GATE_DAILY_LOSS_ON && g_daily.dayStartBalance > 0.0)
+   {
+      double currentDailyLossPercent = (g_daily.lossToday / g_daily.dayStartBalance) * 100.0;
+      if(currentDailyLossPercent >= INPUT_DAILY_LOSS_LIMIT_PERCENT) return;
+   }
    if(!HasEnoughMargin(lots, price)) return;
 
    string comment = g_activeRecoveryPrefix + IntegerToString((int)parentTicket);
@@ -8322,3 +8326,4 @@ void HandleMultiLevelPartial(ulong ticket)
                " | L2Done=", g_positions[idx].multiPartialLevel2Done);
    }
 }
+
