@@ -89,7 +89,8 @@ enum ENUM_MARKOV_STATE
 //+------------------------------------------------------------------+
 //--- Expiry Lock
 input group    "=== Expiry Lock ==="
-input int      INPUT_EXPIRY_YEAR  = 2030;         // Expiry Year (FIXED: Extended)
+input bool     INPUT_ENABLE_EXPIRY_LOCK = false;  // Master toggle for EA time lock (default OFF)
+input int      INPUT_EXPIRY_YEAR  = 2030;         // Expiry Year (used only when lock enabled)
 input int      INPUT_EXPIRY_MONTH = 12;           // Expiry Month
 input int      INPUT_EXPIRY_DAY   = 31;           // Expiry Day
 //--- Trading Configuration
@@ -1298,13 +1299,16 @@ bool ValidateInputsStrict(string &err)
    if(INPUT_POSITION_AGE_HOURS < 0) { err = "INPUT_POSITION_AGE_HOURS must be >= 0"; return false; }
    if(INPUT_TREE_BRANCH_MIN_SUPPORT < 1) { err = "INPUT_TREE_BRANCH_MIN_SUPPORT must be >= 1"; return false; }
    if(INPUT_TREE_MAX_SELECTED_FEATURES < 1) { err = "INPUT_TREE_MAX_SELECTED_FEATURES must be >= 1"; return false; }
-   MqlDateTime nowDt;
-   TimeToStruct(TimeCurrent(), nowDt);
-   if(INPUT_EXPIRY_YEAR < nowDt.year || INPUT_EXPIRY_YEAR > (nowDt.year + 50)) { err = "INPUT_EXPIRY_YEAR must be within current year..current year + 50"; return false; }
-   if(INPUT_EXPIRY_MONTH < 1 || INPUT_EXPIRY_MONTH > 12) { err = "INPUT_EXPIRY_MONTH must be within 1..12"; return false; }
-   int maxExpiryDay = GetDaysInMonth(INPUT_EXPIRY_YEAR, INPUT_EXPIRY_MONTH);
-   if(maxExpiryDay <= 0) { err = "INPUT_EXPIRY date components are invalid"; return false; }
-   if(INPUT_EXPIRY_DAY < 1 || INPUT_EXPIRY_DAY > maxExpiryDay) { err = "INPUT_EXPIRY_DAY is invalid for selected month/year"; return false; }
+   if(INPUT_ENABLE_EXPIRY_LOCK)
+   {
+      MqlDateTime nowDt;
+      TimeToStruct(TimeCurrent(), nowDt);
+      if(INPUT_EXPIRY_YEAR < nowDt.year || INPUT_EXPIRY_YEAR > (nowDt.year + 50)) { err = "INPUT_EXPIRY_YEAR must be within current year..current year + 50"; return false; }
+      if(INPUT_EXPIRY_MONTH < 1 || INPUT_EXPIRY_MONTH > 12) { err = "INPUT_EXPIRY_MONTH must be within 1..12"; return false; }
+      int maxExpiryDay = GetDaysInMonth(INPUT_EXPIRY_YEAR, INPUT_EXPIRY_MONTH);
+      if(maxExpiryDay <= 0) { err = "INPUT_EXPIRY date components are invalid"; return false; }
+      if(INPUT_EXPIRY_DAY < 1 || INPUT_EXPIRY_DAY > maxExpiryDay) { err = "INPUT_EXPIRY_DAY is invalid for selected month/year"; return false; }
+   }
    if(!INPUT_CLOSE_ON_OPPOSITE_SIGNAL) { err = "INPUT_CLOSE_ON_OPPOSITE_SIGNAL must remain true in this strategy (reverse signal replacement contract)"; return false; }
    if(INPUT_TREE_MIN_SELECTED_MATCH < 0) { err = "INPUT_TREE_MIN_SELECTED_MATCH must be >= 0"; return false; }
    if(INPUT_MAX_RECOVERY_PER_POS < 0) { err = "INPUT_MAX_RECOVERY_PER_POS must be >= 0"; return false; }
@@ -1355,14 +1359,6 @@ void ReportInactiveInputParameters()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   //--- Expiry check
-   if(IsEAExpired())
-   {
-      Print("EA EXPIRED. Please contact support for a new version.");
-      Alert("EA V7 HumanBrain has expired!");
-      return INIT_FAILED;
-   }
-
    //--- Validate inputs
    string strictErr = "";
    if(!ValidateInputsStrict(strictErr))
@@ -1382,12 +1378,19 @@ int OnInit()
    }
 
    datetime resolvedExpiry = 0;
-   if(!ResolveExpiryDateTime(resolvedExpiry))
+   if(INPUT_ENABLE_EXPIRY_LOCK)
    {
-      Print("ERROR: Expiry configuration could not be resolved via StructToTime().");
-      return INIT_PARAMETERS_INCORRECT;
+      if(!ResolveExpiryDateTime(resolvedExpiry))
+      {
+         Print("ERROR: Expiry configuration could not be resolved via StructToTime().");
+         return INIT_PARAMETERS_INCORRECT;
+      }
+      Print("EXPIRY LOCK ACTIVE (end-of-day semantics): ", TimeToString(resolvedExpiry, TIME_DATE|TIME_SECONDS));
    }
-   Print("EXPIRY RESOLVED (end-of-day semantics): ", TimeToString(resolvedExpiry, TIME_DATE|TIME_SECONDS));
+   else
+   {
+      Print("EXPIRY LOCK DISABLED: EA will not expire by date.");
+   }
 
    if(!g_rngSeeded)
    {
@@ -1941,6 +1944,9 @@ void ReleaseIndicators()
 //+------------------------------------------------------------------+
 bool IsEAExpired()
 {
+   if(!INPUT_ENABLE_EXPIRY_LOCK)
+      return false;
+
    datetime expiryDate = 0;
    if(!ResolveExpiryDateTime(expiryDate))
    {
@@ -8801,7 +8807,8 @@ void LoadAdaptiveParams()
 void SaveRuntimeState()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_runtime.bin";
-   int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
+   string tmpName = filename + ".tmp";
+   int handle = FileOpen(tmpName, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE)
    {
       Print("WARNING: SaveRuntimeState failed to open ", filename);
