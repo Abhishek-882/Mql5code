@@ -95,6 +95,7 @@ input int      INPUT_EXPIRY_DAY   = 31;           // Expiry Day
 //--- Trading Configuration
 input group    "=== Trading Configuration ==="
 input int      INPUT_MAX_CONCURRENT_TRADES  = 3;  // Max concurrent MAIN trades (FIXED: Reduced from 5)
+input int      INPUT_MAX_CONCURRENT_RECOVERY_TRADES = 3; // Max concurrent recovery/aux trades
 input int      INPUT_MAX_SAME_DIRECTION    = 2;  // Max same-direction trades
 input double   INPUT_PROXIMITY_POINTS      = 0.0; // Proximity rule disabled (timeout-only pacing)
 input int      INPUT_POSITION_AGE_HOURS    = 24;  // Close stale positions after N hours (0=disabled)
@@ -103,6 +104,8 @@ input int      INPUT_ORDER_COOLDOWN_SECONDS = 300; // Cooldown between orders (s
 input ENUM_EXECUTION_MODE INPUT_EXECUTION_MODE = MARKET; // Order execution mode
 input int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset from market (points)
 input int      INPUT_PENDING_EXPIRY_MINUTES = 60; // Pending stop expiry in minutes
+input bool     INPUT_RESET_ALL_PERSISTED_STATE = false; // Delete all persisted symbol+magic files on init
+input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // Close previous position when opposite signal appears
 //--- Risk Management
 input group    "=== Risk Management ==="
 input ENUM_RISK_PROFILE INPUT_RISK_PROFILE = RISK_MEDIUM; // Risk Profile
@@ -466,6 +469,7 @@ input bool     INPUT_ENABLE_LOGGING   = true;     // Enable detailed logging
 input bool     INPUT_SHOW_PANEL       = true;     // Show on-chart panel
 input bool     INPUT_ENABLE_ALERTS    = false;    // Enable alert notifications
 input int      INPUT_REPEAT_LOG_RESTART_THRESHOLD = 50; // Restart EA when exact same log repeats this many times
+input int      INPUT_CLOSED_DEALS_MAX_ROWS = 5000; // Max rows to keep in closed deals csv (0=unlimited)
 //+------------------------------------------------------------------+
 //| SECTION 3: CONSTANTS                                             |
 //+------------------------------------------------------------------+
@@ -483,7 +487,8 @@ input int      INPUT_REPEAT_LOG_RESTART_THRESHOLD = 50; // Restart EA when exact
 #define Q_TABLE_ACTIONS           4
 #define MARKOV_STATES             3
 #define QTABLE_SCHEMA_VERSION     3
-#define RUNTIME_SCHEMA_VERSION    7
+#define RUNTIME_SCHEMA_VERSION    8
+#define EA_VERSION_LABEL          "V7.3"
 #define QTABLE_HASH_SENTINEL      0x51424C31
 #define RUNTIME_HASH_SENTINEL     0x52554E31
 
@@ -853,10 +858,62 @@ bool IsFeatureEnabled(string featureId)
 
 bool ReplaceFileAtomic(const string tmpName, const string finalName)
 {
-   if(FileIsExist(finalName))
-      FileDelete(finalName);
-   return FileMove(tmpName, 0, finalName, 0);
+   if(!FileIsExist(tmpName))
+   {
+      Print("ERROR: ReplaceFileAtomic missing temp file: ", tmpName, " -> ", finalName);
+      return false;
+   }
+
+   int testHandle = FileOpen(tmpName, FILE_READ | FILE_BIN);
+   if(testHandle == INVALID_HANDLE)
+      testHandle = FileOpen(tmpName, FILE_READ | FILE_CSV | FILE_ANSI, ',');
+   if(testHandle == INVALID_HANDLE)
+   {
+      Print("ERROR: ReplaceFileAtomic temp file unreadable: ", tmpName, " -> ", finalName);
+      return false;
+   }
+   FileClose(testHandle);
+
+   string backupName = finalName + ".bak";
+   if(FileIsExist(backupName) && !FileDelete(backupName))
+   {
+      Print("ERROR: ReplaceFileAtomic failed deleting stale backup: ", backupName);
+      return false;
+   }
+
+   bool hadDestination = FileIsExist(finalName);
+   if(hadDestination)
+   {
+      if(!FileMove(finalName, 0, backupName, 0))
+      {
+         Print("ERROR: ReplaceFileAtomic failed moving destination to backup: ", finalName, " -> ", backupName);
+         return false;
+      }
+   }
+
+   if(!FileMove(tmpName, 0, finalName, 0))
+   {
+      Print("ERROR: ReplaceFileAtomic failed moving temp to destination: ", tmpName, " -> ", finalName);
+      if(hadDestination)
+      {
+         if(!FileMove(backupName, 0, finalName, 0))
+            Print("WARNING: ReplaceFileAtomic rollback failed: ", backupName, " -> ", finalName);
+         else
+            Print("WARNING: ReplaceFileAtomic rollback restored destination: ", finalName);
+      }
+      return false;
+   }
+
+   if(hadDestination && FileIsExist(backupName) && !FileDelete(backupName))
+      Print("WARNING: ReplaceFileAtomic success but could not delete backup: ", backupName);
+
+   return true;
 }
+
+void ResetRuntimeLinkedInMemoryState();
+
+bool ResetAllPersistedStateFiles();
+
 //--- Risk
 RiskParams g_risk;
 AdaptiveParams g_adaptive;
@@ -1182,7 +1239,7 @@ bool ValidateInputsStrict(string &err)
    if(INPUT_EXECUTION_MODE == PENDING_STOP)
    {
       if(INPUT_PENDING_STOP_OFFSET_POINTS <= 0) { err = "INPUT_PENDING_STOP_OFFSET_POINTS must be > 0 when pending mode is enabled"; return false; }
-      if(INPUT_PENDING_EXPIRY_MINUTES <= 0) { err = "INPUT_PENDING_EXPIRY_MINUTES must be > 0 when pending mode is enabled"; return false; }
+      if(INPUT_EXEC_PENDING_EXPIRY_ON && INPUT_PENDING_EXPIRY_MINUTES <= 0) { err = "INPUT_PENDING_EXPIRY_MINUTES must be > 0 when pending expiry is enabled"; return false; }
    }
    if(INPUT_POSITION_AGE_HOURS < 0) { err = "INPUT_POSITION_AGE_HOURS must be >= 0"; return false; }
    if(INPUT_TREE_BRANCH_MIN_SUPPORT < 1) { err = "INPUT_TREE_BRANCH_MIN_SUPPORT must be >= 1"; return false; }
@@ -1409,6 +1466,12 @@ int OnInit()
    ArrayResize(g_positionCloseAccumulators, 0);
    g_positionCloseAccumulatorCount = 0;
 
+   if(INPUT_RESET_ALL_PERSISTED_STATE)
+   {
+      bool resetOk = ResetAllPersistedStateFiles();
+      Print("RESET PERSISTENCE ON INIT: ", (resetOk ? "SUCCESS" : "FAILED"));
+   }
+
    //--- Load persisted learning data (only if effective feature paths need it)
    if(INPUT_ENABLE_FINGERPRINT)
       LoadFingerprintData();
@@ -1575,7 +1638,7 @@ int OnInit()
    //--- Calculate initial average ATR
    CalculateAverageATR();
 
-   Print("=== EA V7.2 HumanBrain Complete - INITIALIZED (13 BUGS FIXED) ===");
+   Print("=== EA "+EA_VERSION_LABEL+" HumanBrain Complete - INITIALIZED ===");
    Print("Symbol: ", _Symbol, " | Magic: ", INPUT_MAGIC_NUMBER);
    Print("Risk: ", g_risk.riskPercent, "% | MaxTrades: ", g_adaptive.maxPositions);
    Print("Q-Learning: ", INPUT_ENABLE_RL ? "ON" : "OFF", " | Markov: ", INPUT_ENABLE_MARKOV ? "ON" : "OFF");
@@ -1727,7 +1790,7 @@ void OnDeinit(const int reason)
          " threat=", g_gateDiagnostics.threatRejects,
          " confidence=", g_gateDiagnostics.confidenceRejects,
          " max_positions=", g_gateDiagnostics.maxPositionsRejects);
-   Print("=== EA V7.2 HumanBrain DEINITIALIZED (reason=", reason, ") ===");
+   Print("=== EA "+EA_VERSION_LABEL+" HumanBrain DEINITIALIZED (reason=", reason, ") ===");
 }
 //+------------------------------------------------------------------+
 void ReleaseIndicators()
@@ -1892,7 +1955,11 @@ void OnTick()
          DecisionResult decision;
          ZeroMemory(decision);
          if(RunDecisionPipeline(decision) && decision.shouldTrade)
+         {
+            if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
+               CloseMainPositionsOppositeToSignal(decision.direction);
             ExecuteOrder(decision);
+         }
       }
    }
    g_tickMsDecision = GetTickCount() - t0;
@@ -1916,6 +1983,37 @@ void OnTick()
       g_lastCheckpointTime = now;
    }
    g_tickMsPersistence = GetTickCount() - t0;
+}
+
+bool CloseMainPositionsOppositeToSignal(int direction)
+{
+   bool allClosed = true;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket))
+         continue;
+
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, COMMENT_MAIN_PREFIX) < 0)
+         continue;
+
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+      if(posDir == direction)
+         continue;
+
+      if(!g_trade.PositionClose(ticket))
+      {
+         allClosed = false;
+         Print("OPPOSITE SIGNAL CLOSE FAILED: ticket=", ticket, " ret=", g_trade.ResultRetcode(), " ", g_trade.ResultComment());
+      }
+      else
+      {
+         Print("OPPOSITE SIGNAL CLOSE: closed ticket=", ticket, " for new direction=", direction);
+      }
+   }
+   return allClosed;
 }
 
 void OnTimer()
@@ -3974,7 +4072,8 @@ void SaveCombinationStatsSnapshot()
                 g_combinationStats[i].rankScore);
    }
    FileClose(handle);
-   ReplaceFileAtomic(tmpName, filename);
+   if(!ReplaceFileAtomic(tmpName, filename))
+      Print("WARNING: Failed atomic replace for combination stats file ", filename);
 }
 
 void RecomputeCombinationDerivedMetrics(int idx)
@@ -4206,7 +4305,8 @@ void SaveTreeFeatureRanking()
                 g_treeFeatureMetrics[i].selected ? 1 : 0);
    }
    FileClose(handle);
-   ReplaceFileAtomic(tmpName, filename);
+   if(!ReplaceFileAtomic(tmpName, filename))
+      Print("WARNING: Failed atomic replace for tree feature metrics file ", filename);
 }
 
 bool ComboSubsetContainsFeature(const string feature, const string &canonicalSubsets[])
@@ -4607,7 +4707,7 @@ bool RunDecisionPipeline(DecisionResult &decision)
    }
 
    //--- STEP 12: Position sizing (threat + confidence + RL)
-   double lotSize = CalculateLotSize(slPoints, confidence, threat, rlAction);
+   double lotSize = CalculateLotSize(slPoints, confidence, threat, rlAction, direction);
 
    // Soft threat gating before hard no-trade: shrink lot near threat threshold
    if(INPUT_THREAT_SOFT_LOT_SHRINK_ON && g_effThreatSoftLotShrink && threat > INPUT_MAX_THREAT_ENTRY)
@@ -4758,6 +4858,15 @@ bool CheckAllGates(string &rejectReason)
    return true;
 }
 //+------------------------------------------------------------------+
+bool IsCountableForEntryGating(const string comment)
+{
+   if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) return false;
+   if(StringFind(comment, COMMENT_AVG_PREFIX) >= 0) return false;
+   if(StringFind(comment, COMMENT_HEDGE_PREFIX) >= 0) return false;
+   if(StringFind(comment, COMMENT_GRID_PREFIX) >= 0) return false;
+   return true;
+}
+
  // Same-direction limit: prevent all positions being in one direction
  bool CheckSameDirectionLimit(int direction, string &rejectReason)
  {
@@ -4770,9 +4879,7 @@ bool CheckAllGates(string &rejectReason)
        if(!IsOurPosition(ticket)) continue;
 
        string comment = PositionGetString(POSITION_COMMENT);
-       if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
-       if(StringFind(comment, COMMENT_AVG_PREFIX)      >= 0) continue;
-       if(StringFind(comment, COMMENT_HEDGE_PREFIX)    >= 0) continue;
+       if(!IsCountableForEntryGating(comment)) continue;
 
        int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
        if(posDir == direction)
@@ -4815,6 +4922,9 @@ bool CheckAllGates(string &rejectReason)
        ulong ticket = PositionGetTicket(i);
        if(ticket == 0) continue;
        if(!IsOurPosition(ticket)) continue;
+
+       string comment = PositionGetString(POSITION_COMMENT);
+       if(!IsCountableForEntryGating(comment)) continue;
 
        double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
        double dist = MathAbs(currentPrice - entryPrice);
@@ -5254,7 +5364,7 @@ int GetCurrentSession()
 //+------------------------------------------------------------------+
 //| SECTION 21: POSITION SIZING (Multi?factor adaptive)              |
 //+------------------------------------------------------------------+
-double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_RL_ACTION rlAction)
+double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_RL_ACTION rlAction, int direction)
 {
    if(slPoints <= 0) return 0;
 
@@ -5320,7 +5430,8 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
 
    // Check margin
    double marginRequired = 0;
-   if(!OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lotSize, price, marginRequired))
+   ENUM_ORDER_TYPE marginOrderType = (direction >= 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
+   if(!OrderCalcMargin(marginOrderType, _Symbol, lotSize, price, marginRequired))
       return 0;
 
    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
@@ -5409,6 +5520,17 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
    placedOrderTicket = result.order;
    return true;
 }
+string BuildUniqueOrderComment(const string prefix, int direction)
+{
+   static uint seq = 0;
+   seq++;
+   string dirTag = (direction >= 0) ? "B" : "S";
+   string comment = prefix + dirTag + "_" + IntegerToString((int)TimeCurrent()) + "_" + IntegerToString((int)GetTickCount()) + "_" + IntegerToString((int)(seq % 100000));
+   if(StringLen(comment) > 31)
+      comment = StringSubstr(comment, 0, 31);
+   return comment;
+}
+
 ulong ResolveOpenedPositionId(ulong orderTicket, string comment)
 {
    // 1) Prefer live-position lookup by our comment/magic/symbol
@@ -5446,10 +5568,53 @@ ulong ResolveOpenedPositionId(ulong orderTicket, string comment)
 
    return 0;
 }
+bool CheckTotalRiskBudgetForCandidate(int direction, double lotSize, double slPoints, string &reason)
+{
+   double tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+   double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize <= 0.0 || tickValue <= 0.0)
+      return true;
+
+   double openRisk = 0.0;
+   for(int i = 0; i < PositionsTotal(); i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) continue;
+      double psl = PositionGetDouble(POSITION_SL);
+      double popen = PositionGetDouble(POSITION_PRICE_OPEN);
+      if(psl <= 0.0 || popen <= 0.0) continue;
+      double points = MathAbs(popen - psl) / g_point;
+      double lot = PositionGetDouble(POSITION_VOLUME);
+      openRisk += (points * g_point / tickSize) * tickValue * lot;
+   }
+
+   double candidateRisk = (slPoints * g_point / tickSize) * tickValue * lotSize;
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity <= 0.0) return true;
+
+   double maxRiskMoney = equity * (g_risk.maxTotalRisk / 100.0);
+   double totalRisk = openRisk + candidateRisk;
+   if(totalRisk > maxRiskMoney)
+   {
+      reason = "Total risk cap exceeded basis=equity totalRisk=" + DoubleToString(totalRisk,2) +
+               " cap=" + DoubleToString(maxRiskMoney,2) + " openRisk=" + DoubleToString(openRisk,2) +
+               " candidateRisk=" + DoubleToString(candidateRisk,2);
+      return false;
+   }
+   return true;
+}
+
 bool ExecuteOrder(const DecisionResult &decision)
 {
    if(!IsPlacementEnabled())
       return false;
+
+   string riskReject = "";
+   if(!CheckTotalRiskBudgetForCandidate(decision.direction, decision.lotSize, decision.slPoints, riskReject))
+   {
+      Print("ORDER REJECTED: ", riskReject);
+      return false;
+   }
    double price, sl, tp;
    ENUM_ORDER_TYPE orderType;
 
@@ -5472,7 +5637,7 @@ bool ExecuteOrder(const DecisionResult &decision)
    tp = NormalizeDouble(tp, g_digits);
    price = NormalizeDouble(price, g_digits);
 
-   string comment = COMMENT_MAIN_PREFIX + IntegerToString(TimeCurrent());
+   string comment = BuildUniqueOrderComment(COMMENT_MAIN_PREFIX, decision.direction);
    if(INPUT_EXECUTION_MODE == PENDING_STOP)
    {
       if(!IsFeatureEnabled("pending_orders"))
@@ -5523,6 +5688,7 @@ bool ExecuteOrder(const DecisionResult &decision)
    for(int attempt = 0; attempt < maxAttempts; attempt++)
    {
       g_trade.SetTypeFilling(GetFillingMode());
+      g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_MAIN));
 
       if(g_trade.PositionOpen(_Symbol, orderType, decision.lotSize, price, sl, tp, comment))
       {
@@ -5578,10 +5744,9 @@ bool ExecuteOrder(const DecisionResult &decision)
       else
          price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-      Sleep(100 + attempt * 100);
    }
 
-   Print("ORDER FAILED after 3 attempts");
+   Print("ORDER FAILED after ", maxAttempts, " attempts | retry=", (INPUT_EXEC_MARKET_RETRY_ON ? "ON" : "OFF"));
    return false;
 }
 //+------------------------------------------------------------------+
@@ -5958,10 +6123,10 @@ bool CanModifyPosition(ulong ticket)
    }
    return true;
 }
-bool HasEnoughMargin(double lots, double price)
+bool HasEnoughMargin(double lots, double price, ENUM_ORDER_TYPE orderType)
 {
    double marginRequired = 0.0;
-   if(!OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lots, price, marginRequired))
+   if(!OrderCalcMargin(orderType, _Symbol, lots, price, marginRequired))
       return false;
    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    return (marginRequired <= freeMargin * 0.95);
@@ -6191,13 +6356,16 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
       return;
    }
 
-   if(g_positionCount >= INPUT_MAX_CONCURRENT_TRADES) return;
+   int mainCount = CountMainPositionsFromBroker();
+   int recoveryCount = CountRecoveryPositions();
+   if(mainCount >= INPUT_MAX_CONCURRENT_TRADES) return;
+   if(recoveryCount >= INPUT_MAX_CONCURRENT_RECOVERY_TRADES) return;
    if(INPUT_GATE_DAILY_LOSS_ON && g_daily.dayStartBalance > 0.0)
    {
       double currentDailyLossPercent = (g_daily.lossToday / g_daily.dayStartBalance) * 100.0;
       if(currentDailyLossPercent >= INPUT_DAILY_LOSS_LIMIT_PERCENT) return;
    }
-   if(!HasEnoughMargin(lots, price)) return;
+   if(!HasEnoughMargin(lots, price, orderType)) return;
 
    string comment = g_activeRecoveryPrefix + IntegerToString((int)parentTicket);
 
@@ -6847,7 +7015,20 @@ void UpsertTrackedPositionFromEntryDeal(ulong positionId, ulong dealTicket)
 
 void ProcessEntryDeals()
 {
+   static ulong countedPositionIds[];
+   static datetime countedDayStart = 0;
+
    datetime now = TimeCurrent();
+   MqlDateTime dt;
+   TimeToStruct(now, dt);
+   dt.hour = 0; dt.min = 0; dt.sec = 0;
+   datetime todayStart = StructToTime(dt);
+   if(countedDayStart != todayStart)
+   {
+      ArrayResize(countedPositionIds, 0);
+      countedDayStart = todayStart;
+   }
+
    int safetyMargin = MathMax(0, INPUT_HISTORY_SAFETY_MARGIN_SECONDS);
    datetime fromTime = (g_lastProcessedEntryDealTime > 0)
                        ? g_lastProcessedEntryDealTime - safetyMargin
@@ -6883,10 +7064,26 @@ void ProcessEntryDeals()
       // Pending-stop fills and market entries are normalized from broker deal/position data.
       UpsertTrackedPositionFromEntryDeal(positionId, dealTicket);
 
-      g_daily.tradesPlaced++;
+      bool alreadyCounted = false;
+      for(int p = 0; p < ArraySize(countedPositionIds); p++)
+      {
+         if(countedPositionIds[p] == positionId)
+         {
+            alreadyCounted = true;
+            break;
+         }
+      }
+      if(!alreadyCounted && positionId > 0)
+      {
+         int csz = ArraySize(countedPositionIds);
+         ArrayResize(countedPositionIds, csz + 1);
+         countedPositionIds[csz] = positionId;
+         g_daily.tradesPlaced++;
+      }
       if(INPUT_ENABLE_LOGGING)
          Print("ENTRY DEAL: deal=", dealTicket, " | order=", orderTicket,
                " | position=", positionId,
+               " | uniquePositionCounted=", (!alreadyCounted ? "yes" : "no"),
                " | tradesFilledToday=", g_daily.tradesPlaced,
                " | pendingPlacedToday=", g_daily.pendingOrdersPlaced);
 
@@ -6969,23 +7166,12 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
    string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
    long magic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
    string filename = symbol + "_" + IntegerToString((int)magic) + "_closed_deals.csv";
-   bool newFile = !FileIsExist(filename);
-   int handle = FileOpen(filename, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
-   if(handle == INVALID_HANDLE) return;
-
-   if(newFile)
-   {
-      FileWrite(handle,
-                "Symbol", "Magic", "DealTicket", "PositionID", "Direction", "NetProfit",
-                "SignalCombination", "Confidence", "Threat", "MTF", "Session", "EntryRegime", "CloseRegimeEstimate", "Timestamp");
-   }
-
-   FileSeek(handle, 0, SEEK_END);
 
    ulong posId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
    datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
    ENUM_DEAL_TYPE dealType = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
-   int direction = (dealType == DEAL_TYPE_SELL) ? 1 : -1;
+   int direction = 0;
+   string directionConfidence = "LOW";
    string signalCombination = "";
    double confidence = 0;
    double threat = 0;
@@ -6997,6 +7183,7 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
    if(FindPositionContext(posId, ctx))
    {
       direction = ctx.direction;
+      directionConfidence = "HIGH";
       signalCombination = ctx.signalCombination;
       confidence = ctx.confidenceAtEntry;
       threat = ctx.threatAtEntry;
@@ -7004,16 +7191,53 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
       sessionRefTime = ctx.entryTime;
       entryRegime = ctx.entryRegime;
    }
+   else
+   {
+      if(HistorySelect(closeTime - 86400 * 30, closeTime + 1))
+      {
+         for(int i = HistoryDealsTotal() - 1; i >= 0; i--)
+         {
+            ulong d = HistoryDealGetTicket(i);
+            if(d == 0) continue;
+            if((ulong)HistoryDealGetInteger(d, DEAL_POSITION_ID) != posId) continue;
+            ENUM_DEAL_ENTRY e = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(d, DEAL_ENTRY);
+            if(e != DEAL_ENTRY_IN && e != DEAL_ENTRY_INOUT) continue;
+            ENUM_DEAL_TYPE t = (ENUM_DEAL_TYPE)HistoryDealGetInteger(d, DEAL_TYPE);
+            if(t == DEAL_TYPE_BUY) { direction = 1; directionConfidence = "MED"; break; }
+            if(t == DEAL_TYPE_SELL) { direction = -1; directionConfidence = "MED"; break; }
+         }
+      }
+
+      if(direction == 0)
+      {
+         if(dealType == DEAL_TYPE_SELL || dealType == DEAL_TYPE_BUY_CANCELED) direction = 1;
+         else if(dealType == DEAL_TYPE_BUY || dealType == DEAL_TYPE_SELL_CANCELED) direction = -1;
+         directionConfidence = "LOW";
+      }
+   }
 
    int session = GetSessionFromTime(sessionRefTime);
    ENUM_MARKET_REGIME closeRegimeEstimate = EstimateRegimeAtTime(closeTime);
 
+   bool newFile = !FileIsExist(filename);
+   int handle = FileOpen(filename, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+   if(handle == INVALID_HANDLE) return;
+
+   if(newFile)
+   {
+      FileWrite(handle,
+                "Symbol", "Magic", "DealTicket", "PositionID", "Direction", "DirectionConfidence", "NetProfit",
+                "SignalCombination", "Confidence", "Threat", "MTF", "Session", "EntryRegime", "CloseRegimeEstimate", "Timestamp");
+   }
+
+   FileSeek(handle, 0, SEEK_END);
    FileWrite(handle,
       symbol,
       magic,
       dealTicket,
       posId,
       direction,
+      directionConfidence,
       netProfit,
       signalCombination,
       confidence,
@@ -7026,6 +7250,7 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
 
    FileClose(handle);
 }
+
 //+------------------------------------------------------------------+
 void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bool isWin)
 {
@@ -7461,6 +7686,11 @@ void CloseAllPositions(string reason)
       return;
    }
 
+   bool safeOnlyOur = true;
+   bool safeSymbolCurrent = true;
+   if(!g_effCloseAllOnlyOur || !(g_effCloseAllSymbolFilter && INPUT_CLOSE_ALL_SYMBOL_SCOPE_CURRENT))
+      Print("WARNING: CloseAllPositions broad scope request detected but safety policy forces only-our + current-symbol.");
+
    int attempted = 0;
    int closed = 0;
    int failed = 0;
@@ -7471,10 +7701,10 @@ void CloseAllPositions(string reason)
       if(ticket == 0) continue;
       if(!PositionSelectByTicket(ticket)) continue;
 
-      if(g_effCloseAllOnlyOur && !IsOurPosition(ticket))
+      if(safeOnlyOur && !IsOurPosition(ticket))
          continue;
 
-      if(g_effCloseAllSymbolFilter && INPUT_CLOSE_ALL_SYMBOL_SCOPE_CURRENT)
+      if(safeSymbolCurrent)
       {
          if(PositionGetString(POSITION_SYMBOL) != _Symbol)
             continue;
@@ -7496,8 +7726,8 @@ void CloseAllPositions(string reason)
          " attempted=", attempted,
          " closed=", closed,
          " failed=", failed,
-         " onlyOur=", (g_effCloseAllOnlyOur ? "ON" : "OFF"),
-         " symbolFilter=", (g_effCloseAllSymbolFilter ? "ON" : "OFF"));
+         " onlyOur=", (safeOnlyOur ? "ON" : "OFF"),
+         " symbolFilter=", (safeSymbolCurrent ? "ON" : "OFF"));
 }
 //+------------------------------------------------------------------+
 void ArchiveRecentlyClosedPositionContext(const PositionState &state)
@@ -7588,7 +7818,8 @@ void CleanupInactivePositions()
 void SaveQTable()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_qtable.bin";
-   int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
+   string tmpName = filename + ".tmp";
+   int handle = FileOpen(tmpName, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
 
    uint checksum = FNV1aStart();
@@ -7616,7 +7847,11 @@ void SaveQTable()
       }
 
    FileWriteInteger(handle, (int)checksum);
+   FileFlush(handle);
    FileClose(handle);
+
+   if(!ReplaceFileAtomic(tmpName, filename))
+      Print("ERROR: SaveRuntimeState replace failed, previous runtime file kept intact: ", filename);
    Print("Q-Table saved: ", g_rlTradesCompleted, " trades recorded");
 }
 //+------------------------------------------------------------------+
@@ -8146,27 +8381,29 @@ void SaveRuntimeState()
 
       checksum = FNV1aUpdateInt(checksum, g_pendingRL[i].state);
       checksum = FNV1aUpdateInt(checksum, (int)g_pendingRL[i].action);
+      checksum = FNV1aUpdateLong(checksum, (long)g_pendingRL[i].timestamp);
       checksum = FNV1aUpdateLong(checksum, (long)g_pendingRL[i].orderTicket);
       checksum = FNV1aUpdateLong(checksum, (long)g_pendingRL[i].positionTicket);
       checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].entryPrice);
       checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].slDistance);
       checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].lot);
       checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].tickValue);
+      checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].confidenceSnapshot);
+      checksum = FNV1aUpdateInt(checksum, g_pendingRL[i].mtfScoreSnapshot);
+      checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].comboStrengthSnapshot);
    }
 
    FileWriteInteger(handle, (int)checksum);
+   FileFlush(handle);
    FileClose(handle);
+
+   if(!ReplaceFileAtomic(tmpName, filename))
+      Print("ERROR: SaveRuntimeState replace failed, previous runtime file kept intact: ", filename);
 }
 
 void ResetRuntimeStateAfterIntegrityFailure()
 {
-   g_pendingRLCount = 0;
-   g_lastProcessedDealTicket = 0;
-   g_lastProcessedDealTime = 0;
-   g_lastProcessedEntryDealTicket = 0;
-   g_lastProcessedEntryDealTime = 0;
-   g_rlMatchedUpdates = 0;
-   g_rlUnmatchedCloses = 0;
+   ResetRuntimeLinkedInMemoryState();
 }
 
 void LoadRuntimeState()
@@ -8236,12 +8473,16 @@ void LoadRuntimeState()
 
       checksum = FNV1aUpdateInt(checksum, rec.state);
       checksum = FNV1aUpdateInt(checksum, (int)rec.action);
+      checksum = FNV1aUpdateLong(checksum, (long)rec.timestamp);
       checksum = FNV1aUpdateLong(checksum, (long)rec.orderTicket);
       checksum = FNV1aUpdateLong(checksum, (long)rec.positionTicket);
       checksum = FNV1aUpdateDouble(checksum, rec.entryPrice);
       checksum = FNV1aUpdateDouble(checksum, rec.slDistance);
       checksum = FNV1aUpdateDouble(checksum, rec.lot);
       checksum = FNV1aUpdateDouble(checksum, rec.tickValue);
+      checksum = FNV1aUpdateDouble(checksum, rec.confidenceSnapshot);
+      checksum = FNV1aUpdateInt(checksum, rec.mtfScoreSnapshot);
+      checksum = FNV1aUpdateDouble(checksum, rec.comboStrengthSnapshot);
 
       bool validRec = (rec.state >= 0 && rec.state < Q_TABLE_STATES && rec.action >= 0 && rec.action < Q_TABLE_ACTIONS &&
                        MathIsValidNumber(rec.entryPrice) && MathIsValidNumber(rec.slDistance) &&
@@ -8269,6 +8510,75 @@ void LoadRuntimeState()
          ResetRuntimeStateAfterIntegrityFailure();
       }
    }
+}
+
+void ResetRuntimeLinkedInMemoryState()
+{
+   g_pendingRLCount = 0;
+   ArrayResize(g_pendingRL, MathMax(0, INPUT_RL_PENDING_HARD_CAP));
+   ArrayResize(g_markovQueue, 0);
+   g_markovQueueCount = 0;
+   g_markovQueueHead = 0;
+   g_lastProcessedDealTicket = 0;
+   g_lastProcessedDealTime = 0;
+   g_lastProcessedEntryDealTicket = 0;
+   g_lastProcessedEntryDealTime = 0;
+   g_rlMatchedUpdates = 0;
+   g_rlUnmatchedCloses = 0;
+   g_closedDealsProcessedTotal = 0;
+}
+
+bool ResetAllPersistedStateFiles()
+{
+   string base = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER);
+   string files[] = {
+      base + "_training.csv",
+      base + "_fp.csv",
+      base + "_combo_stats.csv",
+      base + "_qtable.bin",
+      base + "_markov.bin",
+      base + "_adaptive.bin",
+      base + "_runtime.bin",
+      base + "_closed_deals.csv"
+   };
+
+   bool success = true;
+   int deleted = 0;
+   for(int i = 0; i < ArraySize(files); i++)
+   {
+      if(FileIsExist(files[i]))
+      {
+         bool ok = FileDelete(files[i]);
+         Print("RESET PERSISTENCE: ", (ok ? "deleted " : "FAILED "), files[i]);
+         if(ok) deleted++;
+         if(!ok) success = false;
+      }
+      string tmp = files[i] + ".tmp";
+      if(FileIsExist(tmp))
+      {
+         bool okTmp = FileDelete(tmp);
+         Print("RESET PERSISTENCE: ", (okTmp ? "deleted " : "FAILED "), tmp);
+         if(!okTmp) success = false;
+      }
+      string bak = files[i] + ".bak";
+      if(FileIsExist(bak))
+      {
+         bool okBak = FileDelete(bak);
+         Print("RESET PERSISTENCE: ", (okBak ? "deleted " : "FAILED "), bak);
+         if(!okBak) success = false;
+      }
+   }
+
+   g_fingerprintCount = 0;
+   g_trainingDataCount = 0;
+   g_combinationStatsCount = 0;
+   g_comboObservedCount = 0;
+   g_markovTradesRecorded = 0;
+   g_lastMarkovState = MARKOV_EVEN;
+   ResetRuntimeLinkedInMemoryState();
+
+   Print("RESET PERSISTENCE: completed deletedFiles=", deleted, " success=", (success ? "true" : "false"));
+   return success;
 }
 
 //+------------------------------------------------------------------+
@@ -8300,7 +8610,7 @@ void DrawStatsPanel()
    y += 10;
 
    // Title
-   CreateLabel(prefix + "title", "EA V7.2 HumanBrain (13 BUGS FIXED)", x + 10, y, clrGold, 10);
+   CreateLabel(prefix + "title", "EA " + EA_VERSION_LABEL + " HumanBrain", x + 10, y, clrGold, 10);
    y += 20;
 
    // State
@@ -8448,7 +8758,7 @@ void DrawStatsPanel()
    y += 16;
 
    // Version line
-   CreateLabel(prefix + "version", "V7.2 - 13 critical bugs fixed (threat/drawdown/signals/adaptive)", x + 10, y, clrGray, 8);
+   CreateLabel(prefix + "version", EA_VERSION_LABEL + " runtime", x + 10, y, clrGray, 8);
 
    ChartRedraw(0);
 }
