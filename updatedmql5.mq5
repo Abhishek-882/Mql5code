@@ -414,6 +414,14 @@ input double   INPUT_COMBO_CONFIDENCE_WEIGHT = 0.3; // How strongly combo streng
 input ENUM_COMBO_RANK_MODE INPUT_COMBO_RANK_MODE = COMBO_RANK_HEURISTIC;
 input bool     INPUT_LOG_COMBINATION_INSIGHTS = true; // Print best/worst combination insights
 input int      INPUT_COMBO_INSIGHT_TOP_N = 1;     // Number of best/worst combos to log per refresh
+input bool     INPUT_ENABLE_TREE_FEATURE_MODULE = false; // Decision-tree subset feature ranking
+input bool     INPUT_TREE_ADJUST_CONFIDENCE_ON = false; // Apply selected tree features to confidence
+input bool     INPUT_TREE_ENTRY_GATE_ON = false; // Require minimum selected-feature matches
+input int      INPUT_TREE_BRANCH_MIN_SUPPORT = 10; // Minimum branch support for feature IG
+input int      INPUT_TREE_MAX_SELECTED_FEATURES = 5; // Max features selected by greedy IG
+input int      INPUT_TREE_MIN_SELECTED_MATCH = 1; // Minimum selected-feature matches for entry gate
+input double   INPUT_TREE_MIN_IG = 0.0001; // Minimum IG to keep feature
+input double   INPUT_TREE_CONFIDENCE_WEIGHT = 0.15; // Confidence adjustment weight from selected features
 input bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include recovery/aux positions in age-timeout close
 input int      INPUT_POSITION_AGE_CHECK_SECONDS = 5; // Throttle stale-position timeout checks
 input int      INPUT_HISTORY_PROCESS_INTERVAL_SECONDS = 2; // Throttle closed-deal history scan
@@ -526,6 +534,9 @@ struct PositionState
    string   signalCombination;
    string   comment;
    datetime entryTime;
+   int      entrySession;
+   int      entryDayOfWeek;
+   ENUM_MARKET_REGIME entryRegime;
    double   confidenceAtEntry;
    double   threatAtEntry;
    int      mtfScoreAtEntry;
@@ -659,6 +670,19 @@ struct CombinationStats
    int      rangingWins;
    int      rangingTotal;
 };
+struct TreeFeatureMetric
+{
+   string   feature;
+   int      support;
+   int      yesWins;
+   int      yesLosses;
+   int      noWins;
+   int      noLosses;
+   double   entropyYes;
+   double   entropyNo;
+   double   infoGain;
+   bool     selected;
+};
 struct DailyStats
 {
    datetime dayStart;
@@ -754,7 +778,7 @@ datetime g_dataWarningWindowStart = 0;
 
 //--- Persistence / validation schema
 #define FP_SCHEMA_VERSION         2
-#define TRAINING_SCHEMA_VERSION   2
+#define TRAINING_SCHEMA_VERSION   3
 #define ADAPTIVE_SCHEMA_VERSION   2
 
 double GetPipSize(const string symbol)
@@ -891,6 +915,11 @@ int      g_combinationStatsCount = 0;
 string   g_comboUniverse[];
 int      g_comboUniverseCount = 0;
 int      g_comboObservedCount = 0;
+TreeFeatureMetric g_treeFeatureMetrics[];
+int      g_treeFeatureMetricCount = 0;
+string   g_treeSelectedFeatures[];
+int      g_treeSelectedFeatureCount = 0;
+double   g_treeParentEntropy = 0.0;
 int      g_consecWinBoostTrades = 0;
 string   g_activeRecoveryPrefix = COMMENT_AVG_PREFIX;
 ENUM_POSITION_SUBTYPE g_activeRecoverySubtype = SUBTYPE_AVERAGING;
@@ -1120,6 +1149,10 @@ void LogToggleMatrix(const string feature, bool legacyFlag, bool newToggle, bool
 
 void BuildDeterministicComboUniverse();
 void SaveCombinationStatsSnapshot();
+int BuildCanonicalComboSubsets(const string rawCombination, int k, string &subsets[]);
+void RebuildDecisionTreeFeatureModule();
+int CountSelectedTreeFeatureMatches(const string rawCombination);
+double GetTreeConfidenceAdjustment(const string rawCombination);
 
 bool ValidateInputsStrict(string &err)
 {
@@ -1152,6 +1185,9 @@ bool ValidateInputsStrict(string &err)
       if(INPUT_PENDING_EXPIRY_MINUTES <= 0) { err = "INPUT_PENDING_EXPIRY_MINUTES must be > 0 when pending mode is enabled"; return false; }
    }
    if(INPUT_POSITION_AGE_HOURS < 0) { err = "INPUT_POSITION_AGE_HOURS must be >= 0"; return false; }
+   if(INPUT_TREE_BRANCH_MIN_SUPPORT < 1) { err = "INPUT_TREE_BRANCH_MIN_SUPPORT must be >= 1"; return false; }
+   if(INPUT_TREE_MAX_SELECTED_FEATURES < 1) { err = "INPUT_TREE_MAX_SELECTED_FEATURES must be >= 1"; return false; }
+   if(INPUT_TREE_MIN_SELECTED_MATCH < 0) { err = "INPUT_TREE_MIN_SELECTED_MATCH must be >= 0"; return false; }
    if(INPUT_MAX_RECOVERY_PER_POS < 0) { err = "INPUT_MAX_RECOVERY_PER_POS must be >= 0"; return false; }
    if(INPUT_RECOVERY_TIMEOUT_MINUTES <= 0) { err = "INPUT_RECOVERY_TIMEOUT_MINUTES must be > 0"; return false; }
    if(INPUT_RECOVERY_TRIGGER_DEPTH < 1.0 || INPUT_RECOVERY_TRIGGER_DEPTH > 95.0) { err = "INPUT_RECOVERY_TRIGGER_DEPTH must be within 1..95"; return false; }
@@ -2521,18 +2557,31 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
    bool allowComboAdaptive = (!mlNonNeutral);
    if(INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_INFERENCE_ON && allowComboAdaptive)
    {
-      for(int i = 0; i < g_combinationStatsCount; i++)
+      string canonicalSubsets[];
+      int subsetCount = BuildCanonicalComboSubsets(combination, INPUT_MIN_SIGNALS, canonicalSubsets);
+      double avgRank = 0.0;
+      int rankCount = 0;
+      for(int s = 0; s < subsetCount; s++)
       {
-         if(g_combinationStats[i].combination == combination && g_combinationStats[i].totalTrades >= INPUT_COMBO_MIN_TRADES)
+         for(int i = 0; i < g_combinationStatsCount; i++)
          {
-            double edge = (g_combinationStats[i].rankScore - 50.0) / 50.0; // -1..+1
-            double comboMultiplier = (1.0 + edge * INPUT_COMBO_CONFIDENCE_WEIGHT);
-            conf *= comboMultiplier;
-            comboApplied = true;
-            appliedComboMultiplier = comboMultiplier;
-            comboNonNeutral = (MathAbs(comboMultiplier - 1.0) > 0.00001);
-            break;
+            if(g_combinationStats[i].combination == canonicalSubsets[s] && g_combinationStats[i].totalTrades >= INPUT_COMBO_MIN_TRADES)
+            {
+               avgRank += g_combinationStats[i].rankScore;
+               rankCount++;
+               break;
+            }
          }
+      }
+      if(rankCount > 0)
+      {
+         avgRank /= rankCount;
+         double edge = (avgRank - 50.0) / 50.0; // -1..+1
+         double comboMultiplier = (1.0 + edge * INPUT_COMBO_CONFIDENCE_WEIGHT);
+         conf *= comboMultiplier;
+         comboApplied = true;
+         appliedComboMultiplier = comboMultiplier;
+         comboNonNeutral = (MathAbs(comboMultiplier - 1.0) > 0.00001);
       }
    }
 
@@ -2546,6 +2595,9 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
          consecBoostApplied *= 0.5;
       conf += consecBoostApplied;
    }
+
+   double treeAdj = GetTreeConfidenceAdjustment(combination);
+   conf += treeAdj;
 
    if(INPUT_ENABLE_LOGGING)
    {
@@ -2565,6 +2617,7 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
             " comboApplied=", (comboApplied ? "true" : "false"),
             " comboMul=", DoubleToString(appliedComboMultiplier, 3),
             " comboNon1=", (comboNonNeutral ? "true" : "false"),
+            " treeAdj=", DoubleToString(treeAdj, 3),
             " consecBoost=", DoubleToString(consecBoostApplied, 2));
    }
 
@@ -3256,12 +3309,24 @@ ENUM_RL_ACTION GetRLAction(int state)
 //+------------------------------------------------------------------+
 double GetCombinationStrengthSnapshot(const string &combination)
 {
-   for(int i = 0; i < g_combinationStatsCount; i++)
+   string canonicalSubsets[];
+   int subsetCount = BuildCanonicalComboSubsets(combination, INPUT_MIN_SIGNALS, canonicalSubsets);
+   if(subsetCount <= 0) return 50.0;
+
+   double sumStrength = 0.0;
+   int matches = 0;
+   for(int s = 0; s < subsetCount; s++)
    {
-      if(g_combinationStats[i].combination == combination)
-         return g_combinationStats[i].strengthScore;
+      for(int i = 0; i < g_combinationStatsCount; i++)
+      {
+         if(g_combinationStats[i].combination != canonicalSubsets[s]) continue;
+         sumStrength += g_combinationStats[i].strengthScore;
+         matches++;
+         break;
+      }
    }
-   return 50.0;
+   if(matches <= 0) return 50.0;
+   return sumStrength / matches;
 }
 //+------------------------------------------------------------------+
 double ResolveNextStateConfidence(const RLStateAction &rec)
@@ -3782,6 +3847,63 @@ string BuildComboFromMask(int mask, const string &names[], int n)
    return combo;
 }
 
+int IndicatorNameIndex(const string token)
+{
+   string factorNames[8] = {"EMA","RSI","STOCH","ENGULF","BREAK","VOL","MACD","WPR"};
+   for(int i = 0; i < 8; i++)
+      if(token == factorNames[i]) return i;
+   return -1;
+}
+
+int ParseRawSignalCombinationOrdered(const string rawCombination, string &orderedIndicators[])
+{
+   ArrayResize(orderedIndicators, 0);
+   if(StringLen(rawCombination) == 0) return 0;
+
+   string factorNames[8] = {"EMA","RSI","STOCH","ENGULF","BREAK","VOL","MACD","WPR"};
+   bool present[8];
+   ArrayInitialize(present, false);
+
+   string parts[];
+   int cnt = StringSplit(rawCombination, '_', parts);
+   for(int i = 0; i < cnt; i++)
+   {
+      int idx = IndicatorNameIndex(parts[i]);
+      if(idx >= 0) present[idx] = true;
+   }
+
+   for(int i = 0; i < 8; i++)
+   {
+      if(!present[i]) continue;
+      int n = ArraySize(orderedIndicators);
+      ArrayResize(orderedIndicators, n + 1);
+      orderedIndicators[n] = factorNames[i];
+   }
+   return ArraySize(orderedIndicators);
+}
+
+int BuildCanonicalComboSubsets(const string rawCombination, int k, string &subsets[])
+{
+   ArrayResize(subsets, 0);
+   string orderedIndicators[];
+   int active = ParseRawSignalCombinationOrdered(rawCombination, orderedIndicators);
+   if(active < k || k <= 0) return 0;
+
+   int maxMask = (1 << active);
+   for(int mask = 1; mask < maxMask; mask++)
+   {
+      int bits = 0;
+      for(int b = 0; b < active; b++) if((mask & (1 << b)) != 0) bits++;
+      if(bits != k) continue;
+
+      string combo = BuildComboFromMask(mask, orderedIndicators, active);
+      int n = ArraySize(subsets);
+      ArrayResize(subsets, n + 1);
+      subsets[n] = combo;
+   }
+   return ArraySize(subsets);
+}
+
 void BuildDeterministicComboUniverse()
 {
    ArrayResize(g_comboUniverse, 0);
@@ -3896,32 +4018,39 @@ void RecomputeCombinationDerivedMetrics(int idx)
 
 void UpdateCombinationStatsIncremental(const TrainingData &row)
 {
-   int idx = -1;
-   for(int i = 0; i < g_combinationStatsCount; i++)
-      if(g_combinationStats[i].combination == row.signalCombination) { idx = i; break; }
+   string canonicalSubsets[];
+   int subsetCount = BuildCanonicalComboSubsets(row.signalCombination, INPUT_MIN_SIGNALS, canonicalSubsets);
+   if(subsetCount <= 0) return;
 
-   if(idx < 0 && g_combinationStatsCount < MAX_COMBINATION_STATS)
+   for(int si = 0; si < subsetCount; si++)
    {
-      idx = g_combinationStatsCount++;
-      ZeroMemory(g_combinationStats[idx]);
-      g_combinationStats[idx].combination = row.signalCombination;
-      g_combinationStats[idx].comboId = "OBS_" + IntegerToString(idx + 1);
+      int idx = -1;
+      for(int i = 0; i < g_combinationStatsCount; i++)
+         if(g_combinationStats[i].combination == canonicalSubsets[si]) { idx = i; break; }
+
+      if(idx < 0 && g_combinationStatsCount < MAX_COMBINATION_STATS)
+      {
+         idx = g_combinationStatsCount++;
+         ZeroMemory(g_combinationStats[idx]);
+         g_combinationStats[idx].combination = canonicalSubsets[si];
+         g_combinationStats[idx].comboId = canonicalSubsets[si];
+      }
+      if(idx < 0) continue;
+
+      g_combinationStats[idx].seen = true;
+      g_combinationStats[idx].totalTrades++;
+      if(row.isWin) { g_combinationStats[idx].wins++; g_combinationStats[idx].totalProfit += row.profitLoss; }
+      else { g_combinationStats[idx].losses++; g_combinationStats[idx].totalLoss += MathAbs(row.profitLoss); }
+
+      if(row.entrySession == 0) { g_combinationStats[idx].asianTotal++; if(row.isWin) g_combinationStats[idx].asianWins++; }
+      else if(row.entrySession == 1) { g_combinationStats[idx].londonTotal++; if(row.isWin) g_combinationStats[idx].londonWins++; }
+      else if(row.entrySession == 2) { g_combinationStats[idx].nyTotal++; if(row.isWin) g_combinationStats[idx].nyWins++; }
+
+      if(row.entryRegime == REGIME_TRENDING) { g_combinationStats[idx].trendingTotal++; if(row.isWin) g_combinationStats[idx].trendingWins++; }
+      else if(row.entryRegime == REGIME_RANGING) { g_combinationStats[idx].rangingTotal++; if(row.isWin) g_combinationStats[idx].rangingWins++; }
+
+      RecomputeCombinationDerivedMetrics(idx);
    }
-   if(idx < 0) return;
-
-   g_combinationStats[idx].seen = true;
-   g_combinationStats[idx].totalTrades++;
-   if(row.isWin) { g_combinationStats[idx].wins++; g_combinationStats[idx].totalProfit += row.profitLoss; }
-   else { g_combinationStats[idx].losses++; g_combinationStats[idx].totalLoss += MathAbs(row.profitLoss); }
-
-   if(row.entrySession == 0) { g_combinationStats[idx].asianTotal++; if(row.isWin) g_combinationStats[idx].asianWins++; }
-   else if(row.entrySession == 1) { g_combinationStats[idx].londonTotal++; if(row.isWin) g_combinationStats[idx].londonWins++; }
-   else if(row.entrySession == 2) { g_combinationStats[idx].nyTotal++; if(row.isWin) g_combinationStats[idx].nyWins++; }
-
-   if(row.entryRegime == REGIME_TRENDING) { g_combinationStats[idx].trendingTotal++; if(row.isWin) g_combinationStats[idx].trendingWins++; }
-   else if(row.entryRegime == REGIME_RANGING) { g_combinationStats[idx].rangingTotal++; if(row.isWin) g_combinationStats[idx].rangingWins++; }
-
-   RecomputeCombinationDerivedMetrics(idx);
 }
 void RecalculateCombinationStats()
 {
@@ -3935,30 +4064,33 @@ void RecalculateCombinationStats()
          int idx = g_combinationStatsCount++;
          ZeroMemory(g_combinationStats[idx]);
          g_combinationStats[idx].combination = g_comboUniverse[u];
-         g_combinationStats[idx].comboId = "C" + IntegerToString(u + 1);
+         g_combinationStats[idx].comboId = g_comboUniverse[u];
          g_combinationStats[idx].seen = false;
       }
    }
 
-   // Group trades by combination
+   // Group trades by canonical size-k subsets extracted from raw combinations
    for(int i = 0; i < g_trainingDataCount; i++)
    {
-      string combo = g_trainingData[i].signalCombination;
-      int idx = -1;
-      for(int j = 0; j < g_combinationStatsCount; j++)
-         if(g_combinationStats[j].combination == combo) { idx = j; break; }
-
-      if(idx < 0 && g_combinationStatsCount < MAX_COMBINATION_STATS)
+      string canonicalSubsets[];
+      int subsetCount = BuildCanonicalComboSubsets(g_trainingData[i].signalCombination, INPUT_MIN_SIGNALS, canonicalSubsets);
+      for(int si = 0; si < subsetCount; si++)
       {
-         idx = g_combinationStatsCount;
-         g_combinationStatsCount++;
-         ZeroMemory(g_combinationStats[idx]);
-         g_combinationStats[idx].combination = combo;
-         g_combinationStats[idx].comboId = "OBS_" + IntegerToString(idx + 1);
-      }
+         int idx = -1;
+         for(int j = 0; j < g_combinationStatsCount; j++)
+            if(g_combinationStats[j].combination == canonicalSubsets[si]) { idx = j; break; }
 
-      if(idx >= 0)
-      {
+         if(idx < 0 && g_combinationStatsCount < MAX_COMBINATION_STATS)
+         {
+            idx = g_combinationStatsCount;
+            g_combinationStatsCount++;
+            ZeroMemory(g_combinationStats[idx]);
+            g_combinationStats[idx].combination = canonicalSubsets[si];
+            g_combinationStats[idx].comboId = canonicalSubsets[si];
+         }
+
+         if(idx < 0) continue;
+
          g_combinationStats[idx].seen = true;
          g_combinationStats[idx].totalTrades++;
          if(g_trainingData[i].isWin)
@@ -3972,7 +4104,6 @@ void RecalculateCombinationStats()
             g_combinationStats[idx].totalLoss += MathAbs(g_trainingData[i].profitLoss);
          }
 
-         // Session breakdown
          if(g_trainingData[i].entrySession == 0)
          {
             g_combinationStats[idx].asianTotal++;
@@ -3989,7 +4120,6 @@ void RecalculateCombinationStats()
             if(g_trainingData[i].isWin) g_combinationStats[idx].nyWins++;
          }
 
-         // Regime breakdown
          if(g_trainingData[i].entryRegime == REGIME_TRENDING)
          {
             g_combinationStats[idx].trendingTotal++;
@@ -4045,8 +4175,178 @@ void RecalculateCombinationStats()
    }
 
    Print("COMBO COVERAGE: observed=", g_comboObservedCount, " / total=", MathMax(g_combinationStatsCount, 1));
+   RebuildDecisionTreeFeatureModule();
    SaveCombinationStatsSnapshot();
 }
+
+//+------------------------------------------------------------------+
+//| SECTION 17B: DECISION-TREE FEATURE MODULE                        |
+//+------------------------------------------------------------------+
+void SaveTreeFeatureRanking()
+{
+   string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_tree_feature_rank.csv";
+   string tmpName = filename + ".tmp";
+   int handle = FileOpen(tmpName, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+   if(handle == INVALID_HANDLE) return;
+
+   FileWrite(handle, "feature", "support", "yesWins", "yesLosses", "noWins", "noLosses", "entropyYes", "entropyNo", "IG", "selectedFlag");
+   for(int i = 0; i < g_treeFeatureMetricCount; i++)
+   {
+      int yesTotal = g_treeFeatureMetrics[i].yesWins + g_treeFeatureMetrics[i].yesLosses;
+      FileWrite(handle,
+                g_treeFeatureMetrics[i].feature,
+                yesTotal,
+                g_treeFeatureMetrics[i].yesWins,
+                g_treeFeatureMetrics[i].yesLosses,
+                g_treeFeatureMetrics[i].noWins,
+                g_treeFeatureMetrics[i].noLosses,
+                g_treeFeatureMetrics[i].entropyYes,
+                g_treeFeatureMetrics[i].entropyNo,
+                g_treeFeatureMetrics[i].infoGain,
+                g_treeFeatureMetrics[i].selected ? 1 : 0);
+   }
+   FileClose(handle);
+   ReplaceFileAtomic(tmpName, filename);
+}
+
+bool ComboSubsetContainsFeature(const string feature, const string &canonicalSubsets[])
+{
+   for(int i = 0; i < ArraySize(canonicalSubsets); i++)
+      if(canonicalSubsets[i] == feature) return true;
+   return false;
+}
+
+int CountSelectedTreeFeatureMatches(const string rawCombination)
+{
+   if(g_treeSelectedFeatureCount <= 0) return 0;
+   string canonicalSubsets[];
+   int subsetCount = BuildCanonicalComboSubsets(rawCombination, INPUT_MIN_SIGNALS, canonicalSubsets);
+   if(subsetCount <= 0) return 0;
+
+   int matches = 0;
+   for(int i = 0; i < g_treeSelectedFeatureCount; i++)
+      if(ComboSubsetContainsFeature(g_treeSelectedFeatures[i], canonicalSubsets)) matches++;
+   return matches;
+}
+
+double GetTreeConfidenceAdjustment(const string rawCombination)
+{
+   if(!INPUT_ENABLE_TREE_FEATURE_MODULE || !INPUT_TREE_ADJUST_CONFIDENCE_ON || g_treeSelectedFeatureCount <= 0)
+      return 0.0;
+
+   string canonicalSubsets[];
+   int subsetCount = BuildCanonicalComboSubsets(rawCombination, INPUT_MIN_SIGNALS, canonicalSubsets);
+   if(subsetCount <= 0) return 0.0;
+
+   double cumulative = 0.0;
+   int hits = 0;
+   for(int i = 0; i < g_treeFeatureMetricCount; i++)
+   {
+      if(!g_treeFeatureMetrics[i].selected) continue;
+      if(!ComboSubsetContainsFeature(g_treeFeatureMetrics[i].feature, canonicalSubsets)) continue;
+
+      int yesTot = g_treeFeatureMetrics[i].yesWins + g_treeFeatureMetrics[i].yesLosses;
+      if(yesTot <= 0) continue;
+      double wrEdge = ((double)g_treeFeatureMetrics[i].yesWins / yesTot) - 0.5;
+      cumulative += wrEdge * g_treeFeatureMetrics[i].infoGain;
+      hits++;
+   }
+
+   if(hits <= 0) return 0.0;
+   return cumulative * 100.0 * INPUT_TREE_CONFIDENCE_WEIGHT;
+}
+
+void RebuildDecisionTreeFeatureModule()
+{
+   g_treeParentEntropy = 0.0;
+   g_treeFeatureMetricCount = 0;
+   g_treeSelectedFeatureCount = 0;
+   ArrayResize(g_treeFeatureMetrics, 0);
+   ArrayResize(g_treeSelectedFeatures, 0);
+
+   if(!INPUT_ENABLE_TREE_FEATURE_MODULE || g_trainingDataCount <= 0) return;
+
+   int parentWins = 0;
+   int parentLosses = 0;
+   for(int i = 0; i < g_trainingDataCount; i++)
+   {
+      if(g_trainingData[i].isWin) parentWins++;
+      else parentLosses++;
+   }
+   g_treeParentEntropy = ComputeEntropyFromCounts(parentWins, parentLosses);
+
+   int branchMin = MathMax(INPUT_COMBO_MIN_TRADES, INPUT_TREE_BRANCH_MIN_SUPPORT);
+   int featureUniverse = INPUT_ENABLE_FULL_COMBO_UNIVERSE ? g_comboUniverseCount : g_combinationStatsCount;
+   for(int f = 0; f < featureUniverse; f++)
+   {
+      string feature = INPUT_ENABLE_FULL_COMBO_UNIVERSE ? g_comboUniverse[f] : g_combinationStats[f].combination;
+      if(StringLen(feature) == 0) continue;
+
+      int yesWins = 0, yesLosses = 0, noWins = 0, noLosses = 0;
+      for(int i = 0; i < g_trainingDataCount; i++)
+      {
+         string canonicalSubsets[];
+         int subsetCount = BuildCanonicalComboSubsets(g_trainingData[i].signalCombination, INPUT_MIN_SIGNALS, canonicalSubsets);
+         bool hasFeature = (subsetCount > 0 && ComboSubsetContainsFeature(feature, canonicalSubsets));
+         if(hasFeature)
+         {
+            if(g_trainingData[i].isWin) yesWins++;
+            else yesLosses++;
+         }
+         else
+         {
+            if(g_trainingData[i].isWin) noWins++;
+            else noLosses++;
+         }
+      }
+
+      int yesTotal = yesWins + yesLosses;
+      int noTotal = noWins + noLosses;
+      if(yesTotal < branchMin || noTotal < branchMin) continue;
+
+      double hYes = ComputeEntropyFromCounts(yesWins, yesLosses);
+      double hNo = ComputeEntropyFromCounts(noWins, noLosses);
+      double total = yesTotal + noTotal;
+      double weighted = ((double)yesTotal / total) * hYes + ((double)noTotal / total) * hNo;
+      double ig = MathMax(0.0, g_treeParentEntropy - weighted);
+
+      int idx = ArraySize(g_treeFeatureMetrics);
+      ArrayResize(g_treeFeatureMetrics, idx + 1);
+      g_treeFeatureMetrics[idx].feature = feature;
+      g_treeFeatureMetrics[idx].support = yesTotal;
+      g_treeFeatureMetrics[idx].yesWins = yesWins;
+      g_treeFeatureMetrics[idx].yesLosses = yesLosses;
+      g_treeFeatureMetrics[idx].noWins = noWins;
+      g_treeFeatureMetrics[idx].noLosses = noLosses;
+      g_treeFeatureMetrics[idx].entropyYes = hYes;
+      g_treeFeatureMetrics[idx].entropyNo = hNo;
+      g_treeFeatureMetrics[idx].infoGain = ig;
+      g_treeFeatureMetrics[idx].selected = false;
+   }
+
+   g_treeFeatureMetricCount = ArraySize(g_treeFeatureMetrics);
+   for(int pick = 0; pick < INPUT_TREE_MAX_SELECTED_FEATURES; pick++)
+   {
+      int best = -1;
+      for(int i = 0; i < g_treeFeatureMetricCount; i++)
+      {
+         if(g_treeFeatureMetrics[i].selected) continue;
+         if(g_treeFeatureMetrics[i].infoGain < INPUT_TREE_MIN_IG) continue;
+         if(best < 0 || g_treeFeatureMetrics[i].infoGain > g_treeFeatureMetrics[best].infoGain)
+            best = i;
+      }
+      if(best < 0) break;
+
+      g_treeFeatureMetrics[best].selected = true;
+      int n = ArraySize(g_treeSelectedFeatures);
+      ArrayResize(g_treeSelectedFeatures, n + 1);
+      g_treeSelectedFeatures[n] = g_treeFeatureMetrics[best].feature;
+      g_treeSelectedFeatureCount++;
+   }
+
+   SaveTreeFeatureRanking();
+}
+
 //+------------------------------------------------------------------+
 //| SECTION 18: MARKET REGIME DETECTION                              |
 //+------------------------------------------------------------------+
@@ -4242,6 +4542,17 @@ bool RunDecisionPipeline(DecisionResult &decision)
       if(INPUT_ENABLE_LOGGING)
          LogWithRestartGuard("Confidence too low: " + DoubleToString(confidence, 2) + " < " + DoubleToString(minConf, 2));
       return false;
+   }
+
+   if(INPUT_ENABLE_TREE_FEATURE_MODULE && INPUT_TREE_ENTRY_GATE_ON)
+   {
+      int selectedHits = CountSelectedTreeFeatureMatches(signals.combinationString);
+      if(selectedHits < INPUT_TREE_MIN_SELECTED_MATCH)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            LogWithRestartGuard("Tree feature gate failed: hits=" + IntegerToString(selectedHits) + " < " + IntegerToString(INPUT_TREE_MIN_SELECTED_MATCH));
+         return false;
+      }
    }
 
    //--- STEP 9: Q?Learning action selection (optional)
@@ -5316,6 +5627,11 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
    g_positions[idx].signalCombination = decision.signalCombination;
    g_positions[idx].comment = comment;
    g_positions[idx].entryTime = TimeCurrent();
+   g_positions[idx].entrySession = GetSessionFromTime(g_positions[idx].entryTime);
+   MqlDateTime entryDt;
+   TimeToStruct(g_positions[idx].entryTime, entryDt);
+   g_positions[idx].entryDayOfWeek = entryDt.day_of_week;
+   g_positions[idx].entryRegime = g_currentRegime;
    g_positions[idx].confidenceAtEntry = decision.confidence;
    g_positions[idx].threatAtEntry = decision.threatLevel;
    g_positions[idx].mtfScoreAtEntry = decision.mtfScore;
@@ -6013,6 +6329,11 @@ void SyncPositionStates()
       g_positions[idx].direction = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
       g_positions[idx].comment = PositionGetString(POSITION_COMMENT);
       g_positions[idx].entryTime = (datetime)PositionGetInteger(POSITION_TIME);
+      g_positions[idx].entrySession = GetSessionFromTime(g_positions[idx].entryTime);
+      MqlDateTime syncDt1;
+      TimeToStruct(g_positions[idx].entryTime, syncDt1);
+      g_positions[idx].entryDayOfWeek = syncDt1.day_of_week;
+      g_positions[idx].entryRegime = REGIME_UNKNOWN;
       g_positions[idx].signalCombination = "";
       g_positions[idx].fingerprintId = "";
       g_positions[idx].confidenceAtEntry = 50;
@@ -6065,6 +6386,11 @@ void SyncExistingPositions()
       g_positions[idx].direction = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
       g_positions[idx].comment = PositionGetString(POSITION_COMMENT);
       g_positions[idx].entryTime = (datetime)PositionGetInteger(POSITION_TIME);
+      g_positions[idx].entrySession = GetSessionFromTime(g_positions[idx].entryTime);
+      MqlDateTime syncDt2;
+      TimeToStruct(g_positions[idx].entryTime, syncDt2);
+      g_positions[idx].entryDayOfWeek = syncDt2.day_of_week;
+      g_positions[idx].entryRegime = REGIME_UNKNOWN;
       g_positions[idx].signalCombination = "";
       g_positions[idx].fingerprintId = "";
       g_positions[idx].confidenceAtEntry = 50;
@@ -6607,6 +6933,37 @@ int GetSessionFromTime(datetime ts)
    return -1;
 }
 //+------------------------------------------------------------------+
+ENUM_MARKET_REGIME EstimateRegimeAtTime(datetime ts)
+{
+   if(ts <= 0) return REGIME_UNKNOWN;
+
+   int shift = iBarShift(_Symbol, PERIOD_H1, ts, true);
+   if(shift < 0) shift = iBarShift(_Symbol, PERIOD_H1, ts, false);
+   if(shift < 0) return REGIME_UNKNOWN;
+
+   double adx[];
+   if(CopyBuffer(g_hADX_H1, 0, shift, 1, adx) < 1) return REGIME_UNKNOWN;
+
+   double atrNow[];
+   if(CopyBuffer(g_hATR_H1, 0, shift, 1, atrNow) < 1) return REGIME_UNKNOWN;
+
+   double atrHist[];
+   int avgLen = 30;
+   if(CopyBuffer(g_hATR_H1, 0, shift + 1, avgLen, atrHist) < avgLen) return REGIME_UNKNOWN;
+
+   double atrAvg = 0.0;
+   for(int i = 0; i < avgLen; i++) atrAvg += atrHist[i];
+   atrAvg /= avgLen;
+   if(atrAvg <= 0.0) return REGIME_UNKNOWN;
+
+   double volRatio = atrNow[0] / atrAvg;
+   if(volRatio >= 1.5) return REGIME_VOLATILE;
+   if(volRatio < 0.7) return REGIME_QUIET;
+   if(adx[0] >= 25.0) return REGIME_TRENDING;
+   if(adx[0] < 20.0) return REGIME_RANGING;
+   return REGIME_UNKNOWN;
+}
+//+------------------------------------------------------------------+
 void RecordClosedDealData(ulong dealTicket, double netProfit)
 {
    string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
@@ -6620,39 +6977,38 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
    {
       FileWrite(handle,
                 "Symbol", "Magic", "DealTicket", "PositionID", "Direction", "NetProfit",
-                "SignalCombination", "Confidence", "Threat", "MTF", "Session", "Regime", "Timestamp");
+                "SignalCombination", "Confidence", "Threat", "MTF", "Session", "EntryRegime", "CloseRegimeEstimate", "Timestamp");
    }
 
    FileSeek(handle, 0, SEEK_END);
 
-      ulong posId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
+   ulong posId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
    datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
    ENUM_DEAL_TYPE dealType = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
-   // For close deals, DEAL_TYPE is usually opposite side of original entry.
    int direction = (dealType == DEAL_TYPE_SELL) ? 1 : -1;
    string signalCombination = "";
    double confidence = 0;
    double threat = 0;
    int mtfScore = 0;
    datetime sessionRefTime = closeTime;
+   ENUM_MARKET_REGIME entryRegime = REGIME_UNKNOWN;
 
-   for(int i = 0; i < g_positionCount; i++)
+   PositionState ctx;
+   if(FindPositionContext(posId, ctx))
    {
-      if(g_positions[i].ticket == posId)
-      {
-         direction = g_positions[i].direction;
-         signalCombination = g_positions[i].signalCombination;
-         confidence = g_positions[i].confidenceAtEntry;
-         threat = g_positions[i].threatAtEntry;
-         mtfScore = g_positions[i].mtfScoreAtEntry;
-         sessionRefTime = g_positions[i].entryTime;
-         break;
-      }
+      direction = ctx.direction;
+      signalCombination = ctx.signalCombination;
+      confidence = ctx.confidenceAtEntry;
+      threat = ctx.threatAtEntry;
+      mtfScore = ctx.mtfScoreAtEntry;
+      sessionRefTime = ctx.entryTime;
+      entryRegime = ctx.entryRegime;
    }
 
    int session = GetSessionFromTime(sessionRefTime);
+   ENUM_MARKET_REGIME closeRegimeEstimate = EstimateRegimeAtTime(closeTime);
 
-  FileWrite(handle,
+   FileWrite(handle,
       symbol,
       magic,
       dealTicket,
@@ -6664,7 +7020,8 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
       threat,
       mtfScore,
       session,
-      (int)g_currentRegime,
+      (int)entryRegime,
+      (int)closeRegimeEstimate,
       closeTime);
 
    FileClose(handle);
@@ -6696,7 +7053,7 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
    MqlDateTime dt;
    TimeToStruct(closeTime, dt);
    g_trainingData[idx].closeDayOfWeek = dt.day_of_week;
-   g_trainingData[idx].closeRegime = g_currentRegime;
+   g_trainingData[idx].closeRegime = EstimateRegimeAtTime(closeTime);
    g_trainingData[idx].volatilityRatio = CalculateVolatilityRatio();
    g_trainingData[idx].entrySession = g_trainingData[idx].closeSession;
    g_trainingData[idx].entryDayOfWeek = g_trainingData[idx].closeDayOfWeek;
@@ -6715,11 +7072,17 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
       g_trainingData[idx].slPrice = ctx.slPrice;
       g_trainingData[idx].tpPrice = ctx.tpPrice;
       g_trainingData[idx].entryTime = ctx.entryTime;
-      g_trainingData[idx].entrySession = GetSessionFromTime(ctx.entryTime);
-      MqlDateTime edt;
-      TimeToStruct(ctx.entryTime, edt);
-      g_trainingData[idx].entryDayOfWeek = edt.day_of_week;
-      g_trainingData[idx].entryRegime = g_currentRegime;
+      g_trainingData[idx].entrySession = ctx.entrySession;
+      g_trainingData[idx].entryDayOfWeek = ctx.entryDayOfWeek;
+      g_trainingData[idx].entryRegime = ctx.entryRegime;
+      if(g_trainingData[idx].entrySession < -1 || g_trainingData[idx].entrySession > 2)
+         g_trainingData[idx].entrySession = GetSessionFromTime(ctx.entryTime);
+      if(g_trainingData[idx].entryDayOfWeek < 0 || g_trainingData[idx].entryDayOfWeek > 6)
+      {
+         MqlDateTime edt;
+         TimeToStruct(ctx.entryTime, edt);
+         g_trainingData[idx].entryDayOfWeek = edt.day_of_week;
+      }
       g_trainingData[idx].holdingMinutes = (int)MathMax((closeTime - ctx.entryTime) / 60, 0);
    }
 
@@ -6727,6 +7090,8 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
    UpdateCombinationStatsIncremental(g_trainingData[idx]);
    if((g_trainingDataCount % 200) == 0)
       RecalculateCombinationStats();
+   else if(INPUT_ENABLE_TREE_FEATURE_MODULE && (g_trainingDataCount % 50) == 0)
+      RebuildDecisionTreeFeatureModule();
 
    if(INPUT_ENABLE_LOGGING)
       Print("TRAINING DATA: DealTicket=", dealTicket,
@@ -7589,6 +7954,19 @@ void LoadTrainingData()
       row.closeRegime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
       row.fingerprintId = FileReadString(handle);
 
+      if(schemaVer < 3)
+      {
+         if(row.entryTime > 0)
+         {
+            row.entrySession = GetSessionFromTime(row.entryTime);
+            MqlDateTime edt;
+            TimeToStruct(row.entryTime, edt);
+            row.entryDayOfWeek = edt.day_of_week;
+         }
+         if(row.entryRegime == REGIME_UNKNOWN)
+            row.entryRegime = row.closeRegime;
+      }
+
       bool valid = (row.ticket > 0 && MathIsValidNumber(row.profitLoss) &&
                     MathIsValidNumber(row.confidenceAtEntry) && row.confidenceAtEntry >= 0.0 && row.confidenceAtEntry <= 100.0 &&
                     MathIsValidNumber(row.threatAtEntry) && row.threatAtEntry >= 0.0 && row.threatAtEntry <= 100.0 &&
@@ -7606,6 +7984,8 @@ void LoadTrainingData()
    FileClose(handle);
    if(schemaVer != TRAINING_SCHEMA_VERSION)
       Print("WARNING: Training schema mismatch file=", schemaVer, " expected=", TRAINING_SCHEMA_VERSION);
+   if(schemaVer < TRAINING_SCHEMA_VERSION)
+      Print("Training migration applied from schema ", schemaVer, " -> ", TRAINING_SCHEMA_VERSION);
    Print("Training data loaded: ", g_trainingDataCount, " records | badRows=", badRows, " | declaredRows=", rowCount);
 }
 //+------------------------------------------------------------------+
@@ -8326,4 +8706,3 @@ void HandleMultiLevelPartial(ulong ticket)
                " | L2Done=", g_positions[idx].multiPartialLevel2Done);
    }
 }
-
