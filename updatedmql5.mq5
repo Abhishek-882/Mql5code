@@ -856,6 +856,13 @@ bool IsFeatureEnabled(string featureId)
    return true;
 }
 
+void EmitConfiguredAlert(const string message)
+{
+   if(!INPUT_ENABLE_ALERTS)
+      return;
+   Alert(message);
+}
+
 bool ReplaceFileAtomic(const string tmpName, const string finalName)
 {
    if(!FileIsExist(tmpName))
@@ -1098,6 +1105,7 @@ bool g_effModifyMoveToBE = false;
 bool g_effModifyTrailingSL = false;
 bool g_effModifyTrailingTP = false;
 bool g_effModifySkipLossOnHighSpread = false;
+bool g_effRecoveryEnabled = false;
 
 struct EffectiveConfig
 {
@@ -1267,6 +1275,25 @@ bool ValidateInputsStrict(string &err)
    if(totalSignals < 1 || totalSignals > 8) { err = "INPUT_TOTAL_SIGNALS/INPUT_TOTAL_SIGNAL_FACTORS must resolve to 1..8"; return false; }
    if(INPUT_MIN_SIGNALS < 1 || INPUT_MIN_SIGNALS > totalSignals) { err = "INPUT_MIN_SIGNALS must be within 1..total_signals"; return false; }
    return true;
+}
+
+
+void ReportInactiveInputParameters()
+{
+   string ignored = "";
+   if(INPUT_RECOVERY_MODE != RECOVERY_GRID)
+      ignored += " INPUT_GRID_STEP_POINTS INPUT_GRID_MAX_ORDERS INPUT_GRID_LOT_SCALING;";
+   if(INPUT_RECOVERY_MODE != RECOVERY_MARTINGALE)
+      ignored += " INPUT_MARTINGALE_MULTIPLIER INPUT_MARTINGALE_MAX_ORDERS;";
+   if(INPUT_RECOVERY_MODE != RECOVERY_HEDGING)
+      ignored += " INPUT_HEDGE_TRIGGER_OFFSET_POINTS INPUT_HEDGE_MAX_ORDERS;";
+
+   if(StringLen(ignored) > 0)
+      Print("INIT WARNING: currently inactive/ignored by selected runtime mode:", ignored);
+
+   Print("INIT INPUT STATUS: INPUT_ENABLE_ALERTS=", (INPUT_ENABLE_ALERTS ? "ACTIVE" : "OFF"),
+         " | INPUT_CLOSED_DEALS_MAX_ROWS=", IntegerToString(INPUT_CLOSED_DEALS_MAX_ROWS),
+         " | INPUT_STREAK_FATIGUE_ADJ=", DoubleToString(INPUT_STREAK_FATIGUE_ADJ, 4));
 }
 
 //+------------------------------------------------------------------+
@@ -1545,6 +1572,7 @@ int OnInit()
    g_effModifyTrailingSL = ResolveRuntimeToggle(INPUT_ENABLE_TRAILING, INPUT_ENABLE_MODIFY_TRAILING_SL);
    g_effModifyTrailingTP = ResolveRuntimeToggle(INPUT_ENABLE_TRAILING_TP, INPUT_ENABLE_MODIFY_TRAILING_TP);
    g_effModifySkipLossOnHighSpread = ResolveRuntimeToggle(INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD, INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD);
+   g_effRecoveryEnabled = ResolveRuntimeToggle(INPUT_ENABLE_RECOVERY, INPUT_ENABLE_RECOVERY);
 
    LogToggleMatrix("UpdateEAState.ExtremeByThreat", false, INPUT_ENABLE_EXTREME_BY_THREAT, g_effExtremeByThreat);
    LogToggleMatrix("UpdateEAState.ExtremeByDrawdown", false, INPUT_ENABLE_EXTREME_BY_DRAWDOWN, g_effExtremeByDrawdown);
@@ -1568,6 +1596,7 @@ int OnInit()
    LogToggleMatrix("ManageTrailingTP", INPUT_ENABLE_TRAILING_TP, INPUT_ENABLE_MODIFY_TRAILING_TP, g_effModifyTrailingTP);
    LogToggleMatrix("MoveToBreakeven", INPUT_MOVE_BE_AFTER_PARTIAL, INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN, g_effModifyMoveToBE);
    LogToggleMatrix("ShouldSkipStopAdjustmentsForTicket", INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD, INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD, g_effModifySkipLossOnHighSpread);
+   LogToggleMatrix("Recovery.Master", INPUT_ENABLE_RECOVERY, INPUT_ENABLE_RECOVERY, g_effRecoveryEnabled);
 
    if(INPUT_USE_LEGACY_BEHAVIOR_MAPPING && INPUT_TOGGLE_RESOLUTION_MODE == TOGGLE_RESOLUTION_MIGRATION)
    {
@@ -1604,6 +1633,7 @@ int OnInit()
    Print("CHECKLIST GUARD ManageTrailingTP=", (g_effModifyTrailingTP ? "ON" : "OFF"));
    Print("CHECKLIST GUARD MoveToBreakeven=", (g_effModifyMoveToBE ? "ON" : "OFF"));
    Print("CHECKLIST GUARD ShouldSkipStopAdjustmentsForTicket=", (g_effModifySkipLossOnHighSpread ? "ON" : "OFF"));
+   Print("CHECKLIST GUARD Recovery.Master=", (g_effRecoveryEnabled ? "ON" : "OFF"));
 
    //--- Master toggle compatibility matrix
    Print("FEATURE MATRIX [Placement]: place=", (INPUT_TOGGLE_PLACE_ORDERS?"ON":"OFF"),
@@ -1657,6 +1687,7 @@ int OnInit()
          " TrailSL=", (INPUT_ENABLE_TRAILING?"ON":"OFF"),
          " TrailTP=", (INPUT_ENABLE_TRAILING_TP?"ON":"OFF"));
 
+   ReportInactiveInputParameters();
    EventSetTimer(AI_TIMER_SECONDS);
    return INIT_SUCCEEDED;
 }
@@ -1880,7 +1911,7 @@ void OnTick()
    }
    if(g_effClose50PctDefensive)
       Handle50PercentLotClose();
-   if(INPUT_ENABLE_RECOVERY && !expired && INPUT_RECOVERY_MODE != RECOVERY_OFF)
+   if(g_effRecoveryEnabled && !expired && INPUT_RECOVERY_MODE != RECOVERY_OFF)
    {
       if(INPUT_RECOVERY_MODE == RECOVERY_AVERAGING) MonitorRecoveryAveragingMode();
       else if(INPUT_RECOVERY_MODE == RECOVERY_HEDGING) MonitorRecoveryHedgingMode();
@@ -1956,9 +1987,25 @@ void OnTick()
          ZeroMemory(decision);
          if(RunDecisionPipeline(decision) && decision.shouldTrade)
          {
+            bool canExecuteNewEntry = true;
             if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
-               CloseMainPositionsOppositeToSignal(decision.direction);
-            ExecuteOrder(decision);
+            {
+               bool closeOk = CloseMainPositionsOppositeToSignal(decision.direction);
+               if(!closeOk)
+               {
+                  canExecuteNewEntry = false;
+                  int remainingOpposite = CountMainPositionsOppositeDirection(decision.direction);
+                  Print("ENTRY SKIPPED: opposite-signal close incomplete | remainingOpposite=", remainingOpposite,
+                        " | direction=", (decision.direction == 1 ? "BUY" : "SELL"));
+               }
+               else
+               {
+                  CancelOppositePendingStops(decision.direction, "OPPOSITE_SIGNAL_REPLACEMENT");
+               }
+            }
+
+            if(canExecuteNewEntry)
+               ExecuteOrder(decision);
          }
       }
    }
@@ -1985,8 +2032,27 @@ void OnTick()
    g_tickMsPersistence = GetTickCount() - t0;
 }
 
+bool IsClosePolicyEnabledForOppositeSignal(string &reason)
+{
+   if(!IsCloseEnabled() || !IsFeatureEnabled("close"))
+   {
+      reason = "close placement master disabled";
+      return false;
+   }
+   reason = "";
+   return true;
+}
+
 bool CloseMainPositionsOppositeToSignal(int direction)
 {
+   string closeReason = "";
+   if(!IsClosePolicyEnabledForOppositeSignal(closeReason))
+   {
+      if(ShouldPrintOncePerWindow("close_opposite_disabled", 60))
+         Print("OPPOSITE SIGNAL CLOSE SKIPPED: ", closeReason);
+      return false;
+   }
+
    bool allClosed = true;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -2014,6 +2080,68 @@ bool CloseMainPositionsOppositeToSignal(int direction)
       }
    }
    return allClosed;
+}
+
+int CountMainPositionsOppositeDirection(int direction)
+{
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket))
+         continue;
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, COMMENT_MAIN_PREFIX) < 0)
+         continue;
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+      if(posDir != direction)
+         count++;
+   }
+   return count;
+}
+
+int CancelOppositePendingStops(int direction, const string reason)
+{
+   int cancelled = 0;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0 || !OrderSelect(ticket))
+         continue;
+      if(OrderGetString(ORDER_SYMBOL) != _Symbol)
+         continue;
+      if(!IsOurMagic(OrderGetInteger(ORDER_MAGIC)))
+         continue;
+
+      ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      int orderDir = 0;
+      if(type == ORDER_TYPE_BUY_STOP) orderDir = 1;
+      else if(type == ORDER_TYPE_SELL_STOP) orderDir = -1;
+      else continue;
+
+      if(orderDir == direction)
+         continue;
+
+      string comment = OrderGetString(ORDER_COMMENT);
+      if(StringFind(comment, COMMENT_MAIN_PREFIX) < 0)
+         continue;
+
+      if(g_trade.OrderDelete(ticket))
+      {
+         cancelled++;
+         Print("PENDING CANCELLED: ticket=", ticket,
+               " | direction=", (orderDir == 1 ? "BUY_STOP" : "SELL_STOP"),
+               " | reason=", reason);
+      }
+      else
+      {
+         Print("PENDING CANCEL FAILED: ticket=", ticket,
+               " | ret=", g_trade.ResultRetcode(), " ", g_trade.ResultComment(),
+               " | reason=", reason);
+      }
+   }
+   return cancelled;
 }
 
 void OnTimer()
@@ -2694,6 +2822,13 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
       conf += consecBoostApplied;
    }
 
+   double streakFatiguePenalty = 0.0;
+   if(INPUT_STREAK_FATIGUE_ADJ > 0.0 && g_consecWinBoostTrades > 0)
+   {
+      streakFatiguePenalty = MathMax(0.0, INPUT_STREAK_FATIGUE_ADJ * g_consecWinBoostTrades * 100.0);
+      conf -= streakFatiguePenalty;
+   }
+
    double treeAdj = GetTreeConfidenceAdjustment(combination);
    conf += treeAdj;
 
@@ -2716,7 +2851,8 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
             " comboMul=", DoubleToString(appliedComboMultiplier, 3),
             " comboNon1=", (comboNonNeutral ? "true" : "false"),
             " treeAdj=", DoubleToString(treeAdj, 3),
-            " consecBoost=", DoubleToString(consecBoostApplied, 2));
+            " consecBoost=", DoubleToString(consecBoostApplied, 2),
+            " streakFatiguePenalty=", DoubleToString(streakFatiguePenalty, 2));
    }
 
    //--- Canonical threat penalty budget: keep a single confidence penalty path
@@ -5710,6 +5846,7 @@ bool ExecuteOrder(const DecisionResult &decision)
                              " | Signals: ", decision.signalCombination,
                " | OrderTicket: ", orderTicket,
                " | PositionId: ", positionId);
+         EmitConfiguredAlert("MAIN ORDER PLACED " + (decision.direction == 1 ? "BUY" : "SELL") + " lot=" + DoubleToString(decision.lotSize, 2));
 
          // Track position in internal array
    TrackNewPosition(positionId, decision, comment);
@@ -6136,126 +6273,208 @@ bool HasEnoughMargin(double lots, double price, ENUM_ORDER_TYPE orderType)
 //| SECTION 25: RECOVERY MODE DISPATCHER (Part 9)                    |
 //+------------------------------------------------------------------+
 void MonitorRecoveryAveragingMode() { g_activeRecoveryPrefix = COMMENT_AVG_PREFIX; g_activeRecoverySubtype = SUBTYPE_AVERAGING; MonitorRecoveryAveraging(); }
-void MonitorRecoveryHedgingMode()
+void MonitorRecoveryHedgingMode() { g_activeRecoveryPrefix = COMMENT_HEDGE_PREFIX; g_activeRecoverySubtype = SUBTYPE_RECOVERY; MonitorRecoveryHedging(); }
+void MonitorRecoveryGridMode() { g_activeRecoveryPrefix = COMMENT_GRID_PREFIX; g_activeRecoverySubtype = SUBTYPE_RECOVERY; MonitorRecoveryGrid(); }
+void MonitorRecoveryMartingaleMode() { g_activeRecoveryPrefix = COMMENT_RECOVERY_PREFIX; g_activeRecoverySubtype = SUBTYPE_RECOVERY; MonitorRecoveryMartingale(); }
+
+bool CanPlaceRecoveryOrder(string &reason)
 {
-   g_activeRecoveryPrefix = COMMENT_HEDGE_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
-}
-void MonitorRecoveryGridMode()
-{
-   g_activeRecoveryPrefix = COMMENT_GRID_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
-}
-void MonitorRecoveryMartingaleMode()
-{
-   g_activeRecoveryPrefix = COMMENT_RECOVERY_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
+   if(!IsPlacementEnabled())
+   {
+      reason = "placement disabled";
+      return false;
+   }
+   if(!IsFeatureEnabled("market_orders"))
+   {
+      reason = "market order path disabled";
+      return false;
+   }
+
+   string gateReason = "";
+   if(!CheckAllGates(gateReason))
+   {
+      reason = "shared gate reject: " + gateReason;
+      return false;
+   }
+
+   int recoveryCount = CountRecoveryPositions();
+   if(recoveryCount >= INPUT_MAX_CONCURRENT_RECOVERY_TRADES)
+   {
+      reason = "recovery cap reached (recovery cap=" + IntegerToString(INPUT_MAX_CONCURRENT_RECOVERY_TRADES) + ")";
+      return false;
+   }
+
+   if(INPUT_GATE_MAX_DAILY_TRADES_ON && g_daily.tradesPlaced >= INPUT_MAX_DAILY_TRADES)
+   {
+      reason = "main cap reached (daily cap=" + IntegerToString(INPUT_MAX_DAILY_TRADES) + ")";
+      return false;
+   }
+
+   reason = "";
+   return true;
 }
 
-//| SECTION 25: RECOVERY AVERAGING SYSTEM (Part 9)                   |
-//+------------------------------------------------------------------+
+int CountRecoveryLayersForParent(ulong parentTicket, int parentType)
+{
+   int layers = 0;
+   string parentTag = IntegerToString((int)parentTicket);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) continue;
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      if(posType != parentType) continue;
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, parentTag) < 0) continue;
+      if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
+         StringFind(comment, COMMENT_AVG_PREFIX) >= 0 ||
+         StringFind(comment, COMMENT_GRID_PREFIX) >= 0 ||
+         StringFind(comment, COMMENT_HEDGE_PREFIX) >= 0)
+         layers++;
+   }
+   return layers;
+}
+
 void MonitorRecoveryAveraging()
 {
    double threat = CalculateMarketThreat();
    ENUM_THREAT_ZONE zone = GetThreatZone(threat);
-
-   double baseTriggerDepth = INPUT_RECOVERY_TRIGGER_DEPTH;
-   double triggerDepth = baseTriggerDepth;
-
-   if(zone == THREAT_RED)
-      triggerDepth -= 10.0;
-   else if(zone == THREAT_ORANGE)
-      triggerDepth -= 5.0;
-
-   if(threat >= 70.0)
-      triggerDepth -= 5.0;
-
+   double triggerDepth = INPUT_RECOVERY_TRIGGER_DEPTH;
+   if(zone == THREAT_RED) triggerDepth -= 10.0;
+   else if(zone == THREAT_ORANGE) triggerDepth -= 5.0;
+   if(threat >= 70.0) triggerDepth -= 5.0;
    triggerDepth = MathMax(5.0, MathMin(95.0, triggerDepth));
 
    for(int i = 0; i < g_positionCount; i++)
    {
       if(!g_positions[i].isActive) continue;
       if(g_positions[i].recoveryCount >= INPUT_MAX_RECOVERY_PER_POS) continue;
-
-      // Skip non-main positions
-      if(StringFind(g_positions[i].comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
-      if(StringFind(g_positions[i].comment, COMMENT_AVG_PREFIX)      >= 0) continue;
-
       if(threat < INPUT_RECOVERY_THREAT_MIN) continue;
-
-      if(g_positions[i].lastRecoveryTime > 0 &&
-         TimeCurrent() - g_positions[i].lastRecoveryTime < INPUT_RECOVERY_COOLDOWN_SECONDS)
-         continue;
-
+      if(g_positions[i].lastRecoveryTime > 0 && TimeCurrent() - g_positions[i].lastRecoveryTime < INPUT_RECOVERY_COOLDOWN_SECONDS) continue;
       ulong ticket = g_positions[i].ticket;
-
-      if(!PositionSelectByTicket(ticket))
-      {
-         g_positions[i].isActive = false;
-         continue;
-      }
-
+      if(!PositionSelectByTicket(ticket)) { g_positions[i].isActive = false; continue; }
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double slPrice = PositionGetDouble(POSITION_SL);
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-
       if(slPrice == 0) continue;
-
       double slDist = MathAbs(entryPrice - slPrice);
       if(slDist <= 0) continue;
-
-      double loss = 0;
-      if(posType == POSITION_TYPE_BUY)
-         loss = entryPrice - currentPrice;
-      else
-         loss = currentPrice - entryPrice;
-
+      double loss = (posType == POSITION_TYPE_BUY) ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
       if(loss <= 0) continue;
 
       double depthPct = (loss / slDist) * 100.0;
+      if(depthPct < triggerDepth || depthPct > 70.0) continue;
 
-      if(depthPct >= triggerDepth && depthPct <= 70)
+      double lotRatio = INPUT_RECOVERY_LOT_RATIO_MOD;
+      if(threat < 50) lotRatio = INPUT_RECOVERY_LOT_RATIO_SAFE;
+      else if(threat >= 70) lotRatio = INPUT_RECOVERY_LOT_RATIO_HIGH;
+
+      double recLots = MathMin(g_maxLot, MathMax(g_minLot, MathFloor((g_positions[i].originalLots * lotRatio) / g_lotStep) * g_lotStep));
+      Print("RECOVERY MODE=AVERAGING decision: triggerDepth=", DoubleToString(triggerDepth,2),
+            " | lotRatio=", DoubleToString(lotRatio,2), " | threat=", DoubleToString(threat,2));
+      if(PlaceRecoveryOrder(ticket, posType, recLots, slPrice, entryPrice))
       {
-         double lotRatio = INPUT_RECOVERY_LOT_RATIO_MOD;
-         if(threat < 50)
-            lotRatio = INPUT_RECOVERY_LOT_RATIO_SAFE;
-         else if(threat >= 70)
-            lotRatio = INPUT_RECOVERY_LOT_RATIO_HIGH;
-
-         if(INPUT_ENABLE_LOGGING)
-         {
-            Print("RECOVERY CHECK: ticket=", ticket,
-                  " depthPct=", DoubleToString(depthPct, 2),
-                  " triggerDepth=", DoubleToString(triggerDepth, 2),
-                  " lotRatio=", DoubleToString(lotRatio, 2),
-                  " threat=", DoubleToString(threat, 2));
-         }
-
-         double recLots = g_positions[i].originalLots * lotRatio;
-         recLots = MathFloor(recLots / g_lotStep) * g_lotStep;
-         recLots = MathMax(recLots, g_minLot);
-         recLots = MathMin(recLots, g_maxLot);
-
-         PlaceRecoveryOrder(ticket, posType, recLots, slPrice, entryPrice);
-
          g_positions[i].recoveryCount++;
          g_positions[i].lastRecoveryTime = TimeCurrent();
       }
-      else if(INPUT_ENABLE_LOGGING)
+   }
+}
+
+void MonitorRecoveryGrid()
+{
+   for(int i = 0; i < g_positionCount; i++)
+   {
+      if(!g_positions[i].isActive) continue;
+      ulong ticket = g_positions[i].ticket;
+      if(!PositionSelectByTicket(ticket)) continue;
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double slPrice = PositionGetDouble(POSITION_SL);
+      if(slPrice == 0.0) continue;
+
+      int layers = CountRecoveryLayersForParent(ticket, posType);
+      if(layers >= INPUT_GRID_MAX_ORDERS) continue;
+      double adversePoints = MathAbs(currentPrice - entryPrice) / g_point;
+      if(adversePoints < INPUT_GRID_STEP_POINTS * (layers + 1)) continue;
+
+      double recLots = g_positions[i].originalLots * MathPow(INPUT_GRID_LOT_SCALING, layers + 1);
+      recLots = MathMin(g_maxLot, MathMax(g_minLot, MathFloor(recLots / g_lotStep) * g_lotStep));
+      Print("RECOVERY MODE=GRID decision: stepPts=", DoubleToString(INPUT_GRID_STEP_POINTS,1),
+            " | maxOrders=", INPUT_GRID_MAX_ORDERS,
+            " | lotScaling=", DoubleToString(INPUT_GRID_LOT_SCALING,2),
+            " | layers=", layers);
+      if(PlaceRecoveryOrder(ticket, posType, recLots, slPrice, entryPrice))
       {
-         Print("RECOVERY SKIP: ticket=", ticket,
-               " depthPct=", DoubleToString(depthPct, 2),
-               " triggerDepth=", DoubleToString(triggerDepth, 2),
-               " lotRatio=0.00");
+         g_positions[i].recoveryCount++;
+         g_positions[i].lastRecoveryTime = TimeCurrent();
       }
    }
 }
-//+------------------------------------------------------------------+
-//+------------------------------------------------------------------+
+
+void MonitorRecoveryMartingale()
+{
+   for(int i = 0; i < g_positionCount; i++)
+   {
+      if(!g_positions[i].isActive) continue;
+      ulong ticket = g_positions[i].ticket;
+      if(!PositionSelectByTicket(ticket)) continue;
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double slPrice = PositionGetDouble(POSITION_SL);
+      if(slPrice == 0.0) continue;
+
+      int layers = CountRecoveryLayersForParent(ticket, posType);
+      if(layers >= INPUT_MARTINGALE_MAX_ORDERS) continue;
+      double adversePoints = MathAbs(currentPrice - entryPrice) / g_point;
+      if(adversePoints < INPUT_GRID_STEP_POINTS) continue;
+
+      double baseLot = (layers <= 0) ? g_positions[i].originalLots : (g_positions[i].originalLots * MathPow(INPUT_MARTINGALE_MULTIPLIER, layers));
+      double recLots = MathMin(g_maxLot, MathMax(g_minLot, MathFloor((baseLot * INPUT_MARTINGALE_MULTIPLIER) / g_lotStep) * g_lotStep));
+      Print("RECOVERY MODE=MARTINGALE decision: multiplier=", DoubleToString(INPUT_MARTINGALE_MULTIPLIER,2),
+            " | maxOrders=", INPUT_MARTINGALE_MAX_ORDERS,
+            " | layers=", layers,
+            " | nextLots=", DoubleToString(recLots,2));
+      if(PlaceRecoveryOrder(ticket, posType, recLots, slPrice, entryPrice))
+      {
+         g_positions[i].recoveryCount++;
+         g_positions[i].lastRecoveryTime = TimeCurrent();
+      }
+   }
+}
+
+void MonitorRecoveryHedging()
+{
+   for(int i = 0; i < g_positionCount; i++)
+   {
+      if(!g_positions[i].isActive) continue;
+      ulong ticket = g_positions[i].ticket;
+      if(!PositionSelectByTicket(ticket)) continue;
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double slPrice = PositionGetDouble(POSITION_SL);
+      if(slPrice == 0.0) continue;
+
+      int layers = CountRecoveryLayersForParent(ticket, posType);
+      if(layers >= INPUT_HEDGE_MAX_ORDERS) continue;
+      double adversePoints = MathAbs(currentPrice - entryPrice) / g_point;
+      if(adversePoints < INPUT_HEDGE_TRIGGER_OFFSET_POINTS) continue;
+
+      double recLots = MathMin(g_maxLot, MathMax(g_minLot, MathFloor((g_positions[i].originalLots * INPUT_RECOVERY_LOT_RATIO_MOD) / g_lotStep) * g_lotStep));
+      Print("RECOVERY MODE=HEDGING decision: triggerOffsetPts=", DoubleToString(INPUT_HEDGE_TRIGGER_OFFSET_POINTS,1),
+            " | maxOrders=", INPUT_HEDGE_MAX_ORDERS,
+            " | layers=", layers);
+      if(PlaceRecoveryOrder(ticket, posType, recLots, slPrice, entryPrice))
+      {
+         g_positions[i].recoveryCount++;
+         g_positions[i].lastRecoveryTime = TimeCurrent();
+      }
+   }
+}
+
 bool GetRecoveryBasketMetrics(ulong parentTicket, int parentType,
                               double plannedRecoveryLots, double plannedRecoveryPrice,
                               double &combinedBreakEven, double &combinedLots)
@@ -6332,13 +6551,19 @@ bool BuildValidRecoveryTP(int parentType, double price, double sl,
    return true;
 }
 //+------------------------------------------------------------------+
-void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
+bool PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
                         double parentSL, double parentEntry)
 {
+   string placeReason = "";
+   if(!CanPlaceRecoveryOrder(placeReason))
+   {
+      Print("RECOVERY ORDER REJECTED: parent=", parentTicket, " | reason=", placeReason,
+            " | capDecision=", (StringFind(placeReason, "cap") >= 0 ? placeReason : "n/a"));
+      return false;
+   }
+
    ENUM_ORDER_TYPE orderType = (parentType == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double price = (orderType == ORDER_TYPE_BUY) ?
-                  SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
-                  SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double price = (orderType == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
    double sl = NormalizeDouble(parentSL, g_digits);
    double combinedBE = parentEntry;
@@ -6346,26 +6571,21 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
    if(!GetRecoveryBasketMetrics(parentTicket, parentType, lots, price, combinedBE, combinedLots))
    {
       Print("RECOVERY ORDER SKIPPED: unable to calculate combined basket break-even for parent ", parentTicket);
-      return;
+      return false;
    }
 
    double tp = 0.0;
    if(!BuildValidRecoveryTP(parentType, price, sl, combinedBE, tp))
    {
       Print("RECOVERY ORDER SKIPPED: invalid TP model for parent ", parentTicket);
-      return;
+      return false;
    }
 
-   int mainCount = CountMainPositionsFromBroker();
-   int recoveryCount = CountRecoveryPositions();
-   if(mainCount >= INPUT_MAX_CONCURRENT_TRADES) return;
-   if(recoveryCount >= INPUT_MAX_CONCURRENT_RECOVERY_TRADES) return;
-   if(INPUT_GATE_DAILY_LOSS_ON && g_daily.dayStartBalance > 0.0)
+   if(!HasEnoughMargin(lots, price, orderType))
    {
-      double currentDailyLossPercent = (g_daily.lossToday / g_daily.dayStartBalance) * 100.0;
-      if(currentDailyLossPercent >= INPUT_DAILY_LOSS_LIMIT_PERCENT) return;
+      Print("RECOVERY ORDER REJECTED: insufficient margin");
+      return false;
    }
-   if(!HasEnoughMargin(lots, price, orderType)) return;
 
    string comment = g_activeRecoveryPrefix + IntegerToString((int)parentTicket);
 
@@ -6374,19 +6594,27 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
 
    if(g_trade.PositionOpen(_Symbol, orderType, lots, price, sl, tp, comment))
    {
-      Print("RECOVERY ORDER: Parent ", parentTicket,
+      g_lastOrderTime = TimeCurrent();
+      g_daily.tradesPlaced++;
+      g_totalTrades++;
+
+      Print("RECOVERY ORDER: mode=", EnumToString(INPUT_RECOVERY_MODE),
+            " | Parent ", parentTicket,
             " | Type: ", (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"),
             " | Lots: ", DoubleToString(lots, 2),
             " | CombinedLots: ", DoubleToString(combinedLots, 2),
             " | BasketBE: ", DoubleToString(combinedBE, g_digits),
             " | SL: ", DoubleToString(sl, g_digits),
-            " | TP: ", DoubleToString(tp, g_digits));
+            " | TP: ", DoubleToString(tp, g_digits),
+            " | capDecision=main cap shared INPUT_MAX_DAILY_TRADES");
+      EmitConfiguredAlert("RECOVERY ORDER PLACED mode=" + EnumToString(INPUT_RECOVERY_MODE) + " lot=" + DoubleToString(lots, 2));
+      return true;
    }
    else
    {
-      Print("RECOVERY ORDER FAILED: ", g_trade.ResultRetcode(),
-            " - ", g_trade.ResultComment());
+      Print("RECOVERY ORDER FAILED: ", g_trade.ResultRetcode(), " - ", g_trade.ResultComment());
    }
+   return false;
 }
 //+------------------------------------------------------------------+
 void CheckRecoveryTimeouts()
@@ -7161,6 +7389,43 @@ ENUM_MARKET_REGIME EstimateRegimeAtTime(datetime ts)
    return REGIME_UNKNOWN;
 }
 //+------------------------------------------------------------------+
+
+void TrimClosedDealsCsvRows(const string filename)
+{
+   if(INPUT_CLOSED_DEALS_MAX_ROWS <= 0)
+      return;
+
+   int readHandle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
+   if(readHandle == INVALID_HANDLE)
+      return;
+
+   string rows[];
+   int rowCount = 0;
+   while(!FileIsEnding(readHandle))
+   {
+      string line = FileReadString(readHandle);
+      if(StringLen(line) == 0 && FileIsEnding(readHandle))
+         break;
+      ArrayResize(rows, rowCount + 1);
+      rows[rowCount++] = line;
+   }
+   FileClose(readHandle);
+
+   if(rowCount <= INPUT_CLOSED_DEALS_MAX_ROWS + 1)
+      return;
+
+   int writeHandle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+   if(writeHandle == INVALID_HANDLE)
+      return;
+
+   int start = MathMax(1, rowCount - INPUT_CLOSED_DEALS_MAX_ROWS);
+   FileWrite(writeHandle, rows[0]);
+   for(int i = start; i < rowCount; i++)
+      FileWrite(writeHandle, rows[i]);
+
+   FileClose(writeHandle);
+}
+
 void RecordClosedDealData(ulong dealTicket, double netProfit)
 {
    string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
@@ -7249,6 +7514,7 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
       closeTime);
 
    FileClose(handle);
+   TrimClosedDealsCsvRows(filename);
 }
 
 //+------------------------------------------------------------------+
@@ -8669,6 +8935,11 @@ void DrawStatsPanel()
    CreateLabel(prefix + "daily", "Today: Filled " + IntegerToString(g_daily.tradesPlaced) +
                " | Pending Placed " + IntegerToString(g_daily.pendingOrdersPlaced) +
                " | W:" + IntegerToString(g_daily.winsToday) + " L:" + IntegerToString(g_daily.lossesToday),
+               x + 10, y, txtColor, 9);
+   y += 18;
+
+   CreateLabel(prefix + "recoverycap", "RecoveryCap: shared main cap=" + IntegerToString(INPUT_MAX_DAILY_TRADES) +
+               " | concurrentRecoveryMax=" + IntegerToString(INPUT_MAX_CONCURRENT_RECOVERY_TRADES),
                x + 10, y, txtColor, 9);
    y += 18;
 
