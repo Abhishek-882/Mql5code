@@ -105,7 +105,8 @@ input ENUM_EXECUTION_MODE INPUT_EXECUTION_MODE = MARKET; // Order execution mode
 input int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset from market (points)
 input int      INPUT_PENDING_EXPIRY_MINUTES = 60; // Pending stop expiry in minutes
 input bool     INPUT_RESET_ALL_PERSISTED_STATE = false; // Delete all persisted symbol+magic files on init
-input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // Close previous position when opposite signal appears
+input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = true; // Strategy contract: reverse signal replaces prior main direction
+input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL_FORCE = true; // Force opposite-signal replacement even when global close toggle is OFF
 //--- Risk Management
 input group    "=== Risk Management ==="
 input ENUM_RISK_PROFILE INPUT_RISK_PROFILE = RISK_MEDIUM; // Risk Profile
@@ -1219,6 +1220,51 @@ void RebuildDecisionTreeFeatureModule();
 int CountSelectedTreeFeatureMatches(const string rawCombination);
 double GetTreeConfidenceAdjustment(const string rawCombination);
 
+bool IsLeapYearValue(const int year)
+{
+   if((year % 400) == 0) return true;
+   if((year % 100) == 0) return false;
+   return ((year % 4) == 0);
+}
+
+int GetDaysInMonth(const int year, const int month)
+{
+   if(month < 1 || month > 12) return 0;
+   if(month == 2) return IsLeapYearValue(year) ? 29 : 28;
+   if(month == 4 || month == 6 || month == 9 || month == 11) return 30;
+   return 31;
+}
+
+bool ResolveExpiryDateTime(datetime &resolvedExpiry)
+{
+   MqlDateTime expiryStruct;
+   ZeroMemory(expiryStruct);
+   expiryStruct.year = INPUT_EXPIRY_YEAR;
+   expiryStruct.mon = INPUT_EXPIRY_MONTH;
+   expiryStruct.day = INPUT_EXPIRY_DAY;
+   // Expiry semantics: EA remains valid throughout the configured day (end-of-day cutoff).
+   expiryStruct.hour = 23;
+   expiryStruct.min = 59;
+   expiryStruct.sec = 59;
+
+   resolvedExpiry = StructToTime(expiryStruct);
+   return (resolvedExpiry > 0);
+}
+
+bool IsTreeGateReady()
+{
+   if(!INPUT_ENABLE_TREE_FEATURE_MODULE || !INPUT_TREE_ENTRY_GATE_ON)
+      return false;
+
+   if(g_trainingDataCount < INPUT_TREE_BRANCH_MIN_SUPPORT)
+      return false;
+
+   if(g_treeFeatureMetricCount <= 0 || g_treeSelectedFeatureCount <= 0)
+      return false;
+
+   return true;
+}
+
 bool ValidateInputsStrict(string &err)
 {
    int totalSignals = MathMin(INPUT_TOTAL_SIGNALS, INPUT_TOTAL_SIGNAL_FACTORS);
@@ -1252,6 +1298,14 @@ bool ValidateInputsStrict(string &err)
    if(INPUT_POSITION_AGE_HOURS < 0) { err = "INPUT_POSITION_AGE_HOURS must be >= 0"; return false; }
    if(INPUT_TREE_BRANCH_MIN_SUPPORT < 1) { err = "INPUT_TREE_BRANCH_MIN_SUPPORT must be >= 1"; return false; }
    if(INPUT_TREE_MAX_SELECTED_FEATURES < 1) { err = "INPUT_TREE_MAX_SELECTED_FEATURES must be >= 1"; return false; }
+   MqlDateTime nowDt;
+   TimeToStruct(TimeCurrent(), nowDt);
+   if(INPUT_EXPIRY_YEAR < nowDt.year || INPUT_EXPIRY_YEAR > (nowDt.year + 50)) { err = "INPUT_EXPIRY_YEAR must be within current year..current year + 50"; return false; }
+   if(INPUT_EXPIRY_MONTH < 1 || INPUT_EXPIRY_MONTH > 12) { err = "INPUT_EXPIRY_MONTH must be within 1..12"; return false; }
+   int maxExpiryDay = GetDaysInMonth(INPUT_EXPIRY_YEAR, INPUT_EXPIRY_MONTH);
+   if(maxExpiryDay <= 0) { err = "INPUT_EXPIRY date components are invalid"; return false; }
+   if(INPUT_EXPIRY_DAY < 1 || INPUT_EXPIRY_DAY > maxExpiryDay) { err = "INPUT_EXPIRY_DAY is invalid for selected month/year"; return false; }
+   if(!INPUT_CLOSE_ON_OPPOSITE_SIGNAL) { err = "INPUT_CLOSE_ON_OPPOSITE_SIGNAL must remain true in this strategy (reverse signal replacement contract)"; return false; }
    if(INPUT_TREE_MIN_SELECTED_MATCH < 0) { err = "INPUT_TREE_MIN_SELECTED_MATCH must be >= 0"; return false; }
    if(INPUT_MAX_RECOVERY_PER_POS < 0) { err = "INPUT_MAX_RECOVERY_PER_POS must be >= 0"; return false; }
    if(INPUT_RECOVERY_TIMEOUT_MINUTES <= 0) { err = "INPUT_RECOVERY_TIMEOUT_MINUTES must be > 0"; return false; }
@@ -1326,6 +1380,14 @@ int OnInit()
       Print("ERROR: INPUT_MIN_CONFIDENCE must be 0-100");
       return INIT_PARAMETERS_INCORRECT;
    }
+
+   datetime resolvedExpiry = 0;
+   if(!ResolveExpiryDateTime(resolvedExpiry))
+   {
+      Print("ERROR: Expiry configuration could not be resolved via StructToTime().");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+   Print("EXPIRY RESOLVED (end-of-day semantics): ", TimeToString(resolvedExpiry, TIME_DATE|TIME_SECONDS));
 
    if(!g_rngSeeded)
    {
@@ -1503,8 +1565,10 @@ int OnInit()
    if(INPUT_ENABLE_FINGERPRINT)
       LoadFingerprintData();
 
+   bool treeTrainingConsumer = (INPUT_ENABLE_TREE_FEATURE_MODULE && (INPUT_TREE_ENTRY_GATE_ON || INPUT_TREE_ADJUST_CONFIDENCE_ON));
    bool needTrainingData = ((INPUT_ENABLE_ML && (INPUT_ML_INFERENCE_ON || INPUT_ML_RECORD_ON)) ||
-                            (INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_INFERENCE_ON || INPUT_COMBO_ADAPTIVE_RECORD_ON)));
+                            (INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_INFERENCE_ON || INPUT_COMBO_ADAPTIVE_RECORD_ON)) ||
+                            treeTrainingConsumer);
    if(needTrainingData)
    {
       LoadTrainingData();
@@ -1524,6 +1588,13 @@ int OnInit()
          Print("MIGRATION NOTE: If your training set was generated before close-time session/day fix, enable INPUT_RESET_LEGACY_SESSION_DATA once to rebuild statistics.");
       }
       RecalculateCombinationStats();
+      if(INPUT_ENABLE_TREE_FEATURE_MODULE)
+         RebuildDecisionTreeFeatureModule();
+   }
+   else if(INPUT_ENABLE_TREE_FEATURE_MODULE)
+   {
+      RecalculateCombinationStats();
+      RebuildDecisionTreeFeatureModule();
    }
 
    if(INPUT_ENABLE_RL)
@@ -1642,6 +1713,9 @@ int OnInit()
    Print("FEATURE MATRIX [Close]: close=", (INPUT_TOGGLE_CLOSE_ORDERS?"ON":"OFF"),
          " equityFloor=", (INPUT_CLOSE_EQUITY_FLOOR_ON?"ON":"OFF"),
          " partialTP=", (INPUT_CLOSE_PARTIAL_TP_ON?"ON":"OFF"));
+   Print("FEATURE MATRIX [Reversal]: reverse_signal_replaces_prior_direction=", (INPUT_CLOSE_ON_OPPOSITE_SIGNAL?"ON":"OFF"),
+         " force_close_override=", (INPUT_CLOSE_ON_OPPOSITE_SIGNAL_FORCE?"ON":"OFF"),
+         " gate_mode=", (IsTreeGateReady()?"ACTIVE":"BOOTSTRAP_BYPASS"));
    Print("FEATURE MATRIX [Modify]: SL=", (INPUT_TOGGLE_MODIFY_STOPS?"ON":"OFF"),
          " TP=", (INPUT_TOGGLE_MODIFY_TPS?"ON":"OFF"),
          " brokerGuard=", (INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON?"ON":"OFF"));
@@ -1655,6 +1729,10 @@ int OnInit()
       Print("WARNING: Placement master OFF overrides market/pending sub-toggles.");
    if(!INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON)
       Print("WARNING: Broker-distance modify guard is OFF (diagnostics only; unsafe live).");
+   if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL && !INPUT_TOGGLE_CLOSE_ORDERS && !INPUT_CLOSE_ON_OPPOSITE_SIGNAL_FORCE)
+      Print("WARNING: Opposite-signal replacement requested while global close toggle is OFF and force override is OFF. Replacement will be bypassed.");
+   if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL_FORCE && !INPUT_TOGGLE_CLOSE_ORDERS)
+      Print("WARNING: Opposite-signal replacement override active: global close toggle OFF but reversal replacement close path is permitted.");
 
    //--- Initialize daily stats
    g_startingBalance = AccountInfoDouble(ACCOUNT_BALANCE);
@@ -1686,6 +1764,10 @@ int OnInit()
          " 50pct=", (INPUT_ENABLE_50PCT_CLOSE?"ON":"OFF"),
          " TrailSL=", (INPUT_ENABLE_TRAILING?"ON":"OFF"),
          " TrailTP=", (INPUT_ENABLE_TRAILING_TP?"ON":"OFF"));
+   Print("TREE STARTUP SUMMARY: trainingRows=", g_trainingDataCount,
+         " selectedFeatures=", g_treeSelectedFeatureCount,
+         " gateReady=", (IsTreeGateReady()?"YES":"NO"),
+         " gateMode=", (IsTreeGateReady()?"ACTIVE":"BOOTSTRAP_BYPASS"));
 
    ReportInactiveInputParameters();
    EventSetTimer(AI_TIMER_SECONDS);
@@ -1778,8 +1860,10 @@ void OnDeinit(const int reason)
    //--- Save all learning data
    if(INPUT_ENABLE_FINGERPRINT)
       SaveFingerprintData();
+   bool treeTrainingConsumer = (INPUT_ENABLE_TREE_FEATURE_MODULE && (INPUT_TREE_ENTRY_GATE_ON || INPUT_TREE_ADJUST_CONFIDENCE_ON));
    bool needTrainingDataPersist = ((INPUT_ENABLE_ML && (INPUT_ML_INFERENCE_ON || INPUT_ML_RECORD_ON)) ||
-                                   (INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_INFERENCE_ON || INPUT_COMBO_ADAPTIVE_RECORD_ON)));
+                                   (INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_INFERENCE_ON || INPUT_COMBO_ADAPTIVE_RECORD_ON)) ||
+                                   treeTrainingConsumer);
    if(needTrainingDataPersist)
       SaveTrainingData();
    SaveCombinationStatsSnapshot();
@@ -1814,6 +1898,9 @@ void OnDeinit(const int reason)
       }
    }
 
+   Print("DEINIT TRAINING SUMMARY: trainingRows=", g_trainingDataCount,
+         " selectedTreeFeatures=", g_treeSelectedFeatureCount,
+         " treeGateReady=", (IsTreeGateReady()?"YES":"NO"));
       Print("Gate diagnostics summary | session=", g_gateDiagnostics.sessionRejects,
          " cooldown=", g_gateDiagnostics.cooldownRejects,
          " signals=", g_gateDiagnostics.signalsRejects,
@@ -1854,10 +1941,14 @@ void ReleaseIndicators()
 //+------------------------------------------------------------------+
 bool IsEAExpired()
 {
-   datetime expiryDate = StringToTime(IntegerToString(INPUT_EXPIRY_YEAR) + "." +
-                         IntegerToString(INPUT_EXPIRY_MONTH) + "." +
-                         IntegerToString(INPUT_EXPIRY_DAY));
-   return (TimeCurrent() >= expiryDate);
+   datetime expiryDate = 0;
+   if(!ResolveExpiryDateTime(expiryDate))
+   {
+      if(ShouldPrintOncePerWindow("expiry_struct_to_time_failed", 300))
+         Print("EXPIRY ERROR: failed to resolve configured expiry date/time via StructToTime. Failing safe (not auto-expiring).");
+      return false;
+   }
+   return (TimeCurrent() > expiryDate);
 }
 //+------------------------------------------------------------------+
 //| SECTION 8: OnTick - MAIN HANDLER                                 |
@@ -1990,17 +2081,18 @@ void OnTick()
             bool canExecuteNewEntry = true;
             if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
             {
+               // Strategy contract: reverse signal replaces prior main direction before new entry.
                bool closeOk = CloseMainPositionsOppositeToSignal(decision.direction);
                if(!closeOk)
                {
                   canExecuteNewEntry = false;
                   int remainingOpposite = CountMainPositionsOppositeDirection(decision.direction);
-                  Print("ENTRY SKIPPED: opposite-signal close incomplete | remainingOpposite=", remainingOpposite,
+                  Print("ENTRY SKIPPED: reverse-signal replacement incomplete | remainingOpposite=", remainingOpposite,
                         " | direction=", (decision.direction == 1 ? "BUY" : "SELL"));
                }
                else
                {
-                  CancelOppositePendingStops(decision.direction, "OPPOSITE_SIGNAL_REPLACEMENT");
+                  CancelOppositePendingStops(decision.direction, "REVERSE_SIGNAL_REPLACEMENT");
                }
             }
 
@@ -2034,13 +2126,21 @@ void OnTick()
 
 bool IsClosePolicyEnabledForOppositeSignal(string &reason)
 {
-   if(!IsCloseEnabled() || !IsFeatureEnabled("close"))
+   bool closeMasterEnabled = (IsCloseEnabled() && IsFeatureEnabled("close"));
+   if(closeMasterEnabled)
    {
-      reason = "close placement master disabled";
-      return false;
+      reason = "close policy enabled";
+      return true;
    }
-   reason = "";
-   return true;
+
+   if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL_FORCE)
+   {
+      reason = "close master disabled but forced for reverse-signal replacement";
+      return true;
+   }
+
+   reason = "close placement master disabled and force override OFF";
+   return false;
 }
 
 bool CloseMainPositionsOppositeToSignal(int direction)
@@ -2049,7 +2149,7 @@ bool CloseMainPositionsOppositeToSignal(int direction)
    if(!IsClosePolicyEnabledForOppositeSignal(closeReason))
    {
       if(ShouldPrintOncePerWindow("close_opposite_disabled", 60))
-         Print("OPPOSITE SIGNAL CLOSE SKIPPED: ", closeReason);
+         Print("REVERSE SIGNAL REPLACEMENT BYPASSED: ", closeReason);
       return false;
    }
 
@@ -4782,12 +4882,23 @@ bool RunDecisionPipeline(DecisionResult &decision)
 
    if(INPUT_ENABLE_TREE_FEATURE_MODULE && INPUT_TREE_ENTRY_GATE_ON)
    {
-      int selectedHits = CountSelectedTreeFeatureMatches(signals.combinationString);
-      if(selectedHits < INPUT_TREE_MIN_SELECTED_MATCH)
+      bool enforceTreeGate = IsTreeGateReady();
+      if(enforceTreeGate)
       {
-         if(INPUT_ENABLE_LOGGING)
-            LogWithRestartGuard("Tree feature gate failed: hits=" + IntegerToString(selectedHits) + " < " + IntegerToString(INPUT_TREE_MIN_SELECTED_MATCH));
-         return false;
+         int selectedHits = CountSelectedTreeFeatureMatches(signals.combinationString);
+         if(selectedHits < INPUT_TREE_MIN_SELECTED_MATCH)
+         {
+            if(INPUT_ENABLE_LOGGING)
+               LogWithRestartGuard("Tree feature gate failed: hits=" + IntegerToString(selectedHits) + " < " + IntegerToString(INPUT_TREE_MIN_SELECTED_MATCH));
+            return false;
+         }
+      }
+      else if(ShouldPrintOncePerWindow("tree_gate_bootstrap_bypass", 300))
+      {
+         Print("Tree gate bypassed: insufficient training data | trainingRows=", g_trainingDataCount,
+               " selectedFeatures=", g_treeSelectedFeatureCount,
+               " metrics=", g_treeFeatureMetricCount,
+               " minSupport=", INPUT_TREE_BRANCH_MIN_SUPPORT);
       }
    }
 
@@ -7399,31 +7510,125 @@ void TrimClosedDealsCsvRows(const string filename)
    if(readHandle == INVALID_HANDLE)
       return;
 
-   string rows[];
+   const int CLOSED_DEALS_COLS = 15;
+   string header[];
+   ArrayResize(header, CLOSED_DEALS_COLS);
+   string dataRows[];
    int rowCount = 0;
+   int malformedRows = 0;
+
+   int col = 0;
    while(!FileIsEnding(readHandle))
    {
-      string line = FileReadString(readHandle);
-      if(StringLen(line) == 0 && FileIsEnding(readHandle))
+      string field = FileReadString(readHandle);
+      if(FileIsLineEnding(readHandle))
+      {
+         if(col == 0 && StringLen(field) == 0)
+            continue;
+
+         if(col < CLOSED_DEALS_COLS)
+         {
+            if(col >= 0)
+               header[col] = field;
+            for(int k = col + 1; k < CLOSED_DEALS_COLS; k++)
+               header[k] = "";
+         }
+         col = 0;
          break;
-      ArrayResize(rows, rowCount + 1);
-      rows[rowCount++] = line;
+      }
+
+      if(col < CLOSED_DEALS_COLS)
+         header[col] = field;
+      col++;
    }
+
+   if(StringLen(header[0]) == 0)
+   {
+      FileClose(readHandle);
+      return;
+   }
+
+   string rowFields[];
+   ArrayResize(rowFields, CLOSED_DEALS_COLS);
+   col = 0;
+   while(!FileIsEnding(readHandle))
+   {
+      string field = FileReadString(readHandle);
+      if(col < CLOSED_DEALS_COLS)
+         rowFields[col] = field;
+      col++;
+
+      if(FileIsLineEnding(readHandle))
+      {
+         if(col == CLOSED_DEALS_COLS)
+         {
+            string packed = rowFields[0];
+            for(int k = 1; k < CLOSED_DEALS_COLS; k++)
+               packed += "" + rowFields[k];
+            ArrayResize(dataRows, rowCount + 1);
+            dataRows[rowCount++] = packed;
+         }
+         else if(col > 1 || StringLen(field) > 0)
+         {
+            malformedRows++;
+            if(ShouldPrintOncePerWindow("closed_deals_trim_malformed", 120))
+               Print("CLOSED_DEALS TRIM WARNING: malformed CSV row detected | cols=", col,
+                     " expected=", CLOSED_DEALS_COLS, " file=", filename);
+         }
+
+         for(int clearIdx = 0; clearIdx < CLOSED_DEALS_COLS; clearIdx++)
+            rowFields[clearIdx] = "";
+         col = 0;
+      }
+   }
+
    FileClose(readHandle);
 
-   if(rowCount <= INPUT_CLOSED_DEALS_MAX_ROWS + 1)
+   if(col > 0)
+   {
+      malformedRows++;
+      if(ShouldPrintOncePerWindow("closed_deals_trim_malformed_tail", 120))
+         Print("CLOSED_DEALS TRIM WARNING: trailing malformed CSV row detected | cols=", col,
+               " expected=", CLOSED_DEALS_COLS, " file=", filename);
+   }
+
+   if(rowCount <= INPUT_CLOSED_DEALS_MAX_ROWS)
       return;
 
    int writeHandle = FileOpen(filename, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(writeHandle == INVALID_HANDLE)
       return;
 
-   int start = MathMax(1, rowCount - INPUT_CLOSED_DEALS_MAX_ROWS);
-   FileWrite(writeHandle, rows[0]);
-   for(int i = start; i < rowCount; i++)
-      FileWrite(writeHandle, rows[i]);
+   FileWrite(writeHandle,
+             header[0], header[1], header[2], header[3], header[4],
+             header[5], header[6], header[7], header[8], header[9],
+             header[10], header[11], header[12], header[13], header[14]);
+
+   int startRow = MathMax(0, rowCount - INPUT_CLOSED_DEALS_MAX_ROWS);
+   string unpacked[];
+   ArrayResize(unpacked, CLOSED_DEALS_COLS);
+   for(int i = startRow; i < rowCount; i++)
+   {
+      int parts = StringSplit(dataRows[i], StringGetCharacter("", 0), unpacked);
+      if(parts != CLOSED_DEALS_COLS)
+      {
+         malformedRows++;
+         if(ShouldPrintOncePerWindow("closed_deals_trim_unpack_failed", 120))
+            Print("CLOSED_DEALS TRIM WARNING: packed row unpack failure | cols=", parts,
+                  " expected=", CLOSED_DEALS_COLS, " file=", filename);
+         continue;
+      }
+
+      FileWrite(writeHandle,
+                unpacked[0], unpacked[1], unpacked[2], unpacked[3], unpacked[4],
+                unpacked[5], unpacked[6], unpacked[7], unpacked[8], unpacked[9],
+                unpacked[10], unpacked[11], unpacked[12], unpacked[13], unpacked[14]);
+   }
 
    FileClose(writeHandle);
+
+   if(malformedRows > 0 && ShouldPrintOncePerWindow("closed_deals_trim_malformed_summary", 120))
+      Print("CLOSED_DEALS TRIM SUMMARY: malformedRows=", malformedRows, " file=", filename);
 }
 
 void RecordClosedDealData(ulong dealTicket, double netProfit)
