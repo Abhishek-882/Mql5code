@@ -712,6 +712,8 @@ struct GateDiagnostics
    int      cooldownRejects;
    int      signalsRejects;
    int      mtfRejects;
+      int      mtfDataReadRejects;
+   int      adxDataReadRejects;
    int      threatRejects;
    int      confidenceRejects;
    int      maxPositionsRejects;
@@ -781,6 +783,11 @@ long     g_stopLevel;
 long     g_freezeLevel;
 int      g_dataIntegrityWarnings = 0;
 datetime g_dataWarningWindowStart = 0;
+bool     g_lotStepFallbackLogged = false;
+bool     g_mtfReadFailureThisTick = false;
+bool     g_lastMtfAlignmentHadReadFailure = false;
+bool     g_lastMtfConsensusHadReadFailure = false;
+ENUM_ORDER_TYPE_FILLING g_selectedFillingMode = ORDER_FILLING_IOC;
 
 //--- Persistence / validation schema
 #define FP_SCHEMA_VERSION         2
@@ -839,6 +846,22 @@ bool IsFiniteInRange(double value, double minValue, double maxValue)
 {
    return (MathIsValidNumber(value) && value >= minValue && value <= maxValue);
 }
+
+double GetEffectiveLotStep()
+{
+   if(MathIsValidNumber(g_lotStep) && g_lotStep > 0.0)
+      return g_lotStep;
+
+   double fallbackStep = (MathIsValidNumber(g_minLot) && g_minLot > 0.0) ? g_minLot : 0.01;
+   if(!g_lotStepFallbackLogged)
+   {
+      g_lotStepFallbackLogged = true;
+      LogWithRestartGuard("LOT STEP FALLBACK: invalid SYMBOL_VOLUME_STEP=" + DoubleToString(g_lotStep, 8) +
+                          " using fallback=" + DoubleToString(fallbackStep, 8));
+   }
+   return fallbackStep;
+}
+
 
 void ResetAdaptiveParamsToDefaults();
 
@@ -1226,6 +1249,8 @@ bool ValidateInputsStrict(string &err)
    if(!(INPUT_DAILY_LOSS_LIMIT_PERCENT > 0.0 && INPUT_DAILY_LOSS_LIMIT_PERCENT <= 100.0)) { err = "INPUT_DAILY_LOSS_LIMIT_PERCENT must be > 0 and <= 100"; return false; }
    if(!(INPUT_RISK_PERCENT == 0.0 || (INPUT_RISK_PERCENT > 0.0 && INPUT_RISK_PERCENT <= 100.0))) { err = "INPUT_RISK_PERCENT must be 0 or in (0,100]"; return false; }
    if(!(INPUT_RL_WEIGHT >= 0.0 && INPUT_RL_WEIGHT <= 1.0)) { err = "INPUT_RL_WEIGHT must be within [0,1]"; return false; }
+   if(!(INPUT_MIN_MTF_SCORE >= 0 && INPUT_MIN_MTF_SCORE <= 10)) { err = "INPUT_MIN_MTF_SCORE must be within 0..10"; return false; }
+   if(!(INPUT_MTF_CONSENSUS_VOTE_WEIGHT >= 0.0 && INPUT_MTF_CONSENSUS_VOTE_WEIGHT <= 10.0)) { err = "INPUT_MTF_CONSENSUS_VOTE_WEIGHT must be within [0,10]"; return false; }
    if(!(INPUT_HIGH_SPREAD_CLOSE_PERCENT >= 1.0 && INPUT_HIGH_SPREAD_CLOSE_PERCENT <= 100.0)) { err = "INPUT_HIGH_SPREAD_CLOSE_PERCENT must be within [1,100]"; return false; }
    if(INPUT_SERVER_UTC_OFFSET_HOURS < -14 || INPUT_SERVER_UTC_OFFSET_HOURS > 14) { err = "INPUT_SERVER_UTC_OFFSET_HOURS must be within -14..14"; return false; }
    if(INPUT_MIN_LOT_SIZE <= 0.0) { err = "INPUT_MIN_LOT_SIZE must be > 0"; return false; }
@@ -1348,6 +1373,23 @@ int OnInit()
    g_minLot       = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    g_maxLot       = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    g_digits       = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+    bool invalidVolumeStep = (!MathIsValidNumber(g_lotStep) || g_lotStep <= 0.0);
+   bool invalidVolumeMin = (!MathIsValidNumber(g_minLot) || g_minLot <= 0.0);
+   bool invalidVolumeMax = (!MathIsValidNumber(g_maxLot) || g_maxLot <= 0.0 || g_maxLot < g_minLot);
+   if(invalidVolumeStep || invalidVolumeMin || invalidVolumeMax)
+   {
+      PrintFormat("=== INVALID SYMBOL VOLUME CONSTRAINTS - INIT FAILED ===\n"
+                  "Symbol: %s\n"
+                  "SYMBOL_VOLUME_STEP: %.10f\n"
+                  "SYMBOL_VOLUME_MIN: %.10f\n"
+                  "SYMBOL_VOLUME_MAX: %.10f\n"
+                  "Action: Trading disabled. Check broker/tester symbol volume settings.",
+                  _Symbol,
+                  g_lotStep,
+                  g_minLot,
+                  g_maxLot);
+      return INIT_FAILED;
+   }
    g_contractSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
    g_stopLevel    = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    g_freezeLevel  = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
@@ -1414,8 +1456,16 @@ int OnInit()
    //--- Setup trade object
    g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_MAIN));
    g_trade.SetDeviationInPoints(30);
-   g_trade.SetTypeFilling(ORDER_FILLING_FOK);
+  g_selectedFillingMode = GetFillingMode();
+   g_trade.SetTypeFilling(g_selectedFillingMode);
    g_trade.SetAsyncMode(false);
+
+   if(INPUT_ENABLE_LOGGING)
+      Print("MTF SETTINGS: minScore=", INPUT_MIN_MTF_SCORE,
+            " | consensusWeight=", DoubleToString(INPUT_MTF_CONSENSUS_VOTE_WEIGHT, 2));
+
+   if(INPUT_ENABLE_LOGGING)
+      Print("FILL MODE SELECTED: ", EnumToString(g_selectedFillingMode));
 
    //--- Initialize ALL indicator handles
    if(!InitializeIndicators())
@@ -1790,6 +1840,8 @@ void OnDeinit(const int reason)
          " cooldown=", g_gateDiagnostics.cooldownRejects,
          " signals=", g_gateDiagnostics.signalsRejects,
          " mtf=", g_gateDiagnostics.mtfRejects,
+          " mtf_data=", g_gateDiagnostics.mtfDataReadRejects,
+         " adx_data=", g_gateDiagnostics.adxDataReadRejects,
          " threat=", g_gateDiagnostics.threatRejects,
          " confidence=", g_gateDiagnostics.confidenceRejects,
          " max_positions=", g_gateDiagnostics.maxPositionsRejects);
@@ -1968,9 +2020,19 @@ void OnTick()
             }
             else
             {
+             bool canExecuteOrder = true;
                if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
-                  CloseMainPositionsOppositeToSignal(decision.direction);
-               ExecuteOrder(decision);
+                  {
+                  bool closeOk = CloseMainPositionsOppositeToSignal(decision.direction);
+                  if(!closeOk)
+                  {
+                     canExecuteOrder = false;
+                     if(INPUT_ENABLE_LOGGING)
+                        LogWithRestartGuard("ENTRY BLOCKED: opposite-signal close failed; skipping new entry this cycle.");
+                  }
+               }
+               if(canExecuteOrder)
+                  ExecuteOrder(decision);
             }
          }
       }
@@ -3252,47 +3314,89 @@ string GenerateSignalCombinationString(const SignalResult &signals)
 int CalculateMTFAlignment(int direction)
 {
    int score = 0;
-
+ g_lastMtfAlignmentHadReadFailure = false;
    //--- M5 (weight: 1)
    double m5Fast[], m5Slow[];
-   if(CopyBuffer(g_hEmaFast_M5, 0, 0, 1, m5Fast) == 1 &&
-      CopyBuffer(g_hEmaSlow_M5, 0, 0, 1, m5Slow) == 1)
+   
+      int m5FastRead = CopyBuffer(g_hEmaFast_M5, 0, 0, 1, m5Fast);
+   int m5SlowRead = CopyBuffer(g_hEmaSlow_M5, 0, 0, 1, m5Slow);
+   if(m5FastRead == 1 && m5SlowRead == 1)
    {
       if((direction == 1 && m5Fast[0] > m5Slow[0]) ||
          (direction == -1 && m5Fast[0] < m5Slow[0]))
          score += 1;
    }
 
+ else
+   {
+      g_lastMtfAlignmentHadReadFailure = true;
+      g_mtfReadFailureThisTick = true;
+      g_gateDiagnostics.mtfDataReadRejects++;
+      if(INPUT_ENABLE_LOGGING)
+         LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment M5 fastRead=" + IntegerToString(m5FastRead) +
+                             " slowRead=" + IntegerToString(m5SlowRead));
+   }
+
+   // Closed candles for higher timeframes prevent intrabar flips (start_pos=1).
    //--- H1 (weight: 2)
    double h1Fast[], h1Slow[];
-   if(CopyBuffer(g_hEmaFast_H1, 0, 0, 1, h1Fast) == 1 &&
-      CopyBuffer(g_hEmaSlow_H1, 0, 0, 1, h1Slow) == 1)
+   int h1FastRead = CopyBuffer(g_hEmaFast_H1, 0, 1, 1, h1Fast);
+   int h1SlowRead = CopyBuffer(g_hEmaSlow_H1, 0, 1, 1, h1Slow);
+   if(h1FastRead == 1 && h1SlowRead == 1)
    {
       if((direction == 1 && h1Fast[0] > h1Slow[0]) ||
          (direction == -1 && h1Fast[0] < h1Slow[0]))
          score += 2;
    }
-
+ else
+   {
+      g_lastMtfAlignmentHadReadFailure = true;
+      g_mtfReadFailureThisTick = true;
+      g_gateDiagnostics.mtfDataReadRejects++;
+      if(INPUT_ENABLE_LOGGING)
+         LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment H1 fastRead=" + IntegerToString(h1FastRead) +
+                             " slowRead=" + IntegerToString(h1SlowRead));
+   }
    //--- H4 (weight: 3)
    double h4Fast[], h4Slow[];
-   if(CopyBuffer(g_hEmaFast_H4, 0, 0, 1, h4Fast) == 1 &&
-      CopyBuffer(g_hEmaSlow_H4, 0, 0, 1, h4Slow) == 1)
+  int h4FastRead = CopyBuffer(g_hEmaFast_H4, 0, 1, 1, h4Fast);
+   int h4SlowRead = CopyBuffer(g_hEmaSlow_H4, 0, 1, 1, h4Slow);
+   if(h4FastRead == 1 && h4SlowRead == 1)
    {
       if((direction == 1 && h4Fast[0] > h4Slow[0]) ||
          (direction == -1 && h4Fast[0] < h4Slow[0]))
          score += 3;
    }
-
+else
+   {
+      g_lastMtfAlignmentHadReadFailure = true;
+      g_mtfReadFailureThisTick = true;
+      g_gateDiagnostics.mtfDataReadRejects++;
+      if(INPUT_ENABLE_LOGGING)
+         LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment H4 fastRead=" + IntegerToString(h4FastRead) +
+                             " slowRead=" + IntegerToString(h4SlowRead));
+   }
    //--- D1 (weight: 4)
    double d1Fast[], d1Slow[];
-   if(CopyBuffer(g_hEmaFast_D1, 0, 0, 1, d1Fast) == 1 &&
-      CopyBuffer(g_hEmaSlow_D1, 0, 0, 1, d1Slow) == 1)
+  int d1FastRead = CopyBuffer(g_hEmaFast_D1, 0, 1, 1, d1Fast);
+   int d1SlowRead = CopyBuffer(g_hEmaSlow_D1, 0, 1, 1, d1Slow);
+   if(d1FastRead == 1 && d1SlowRead == 1)
+   
    {
       if((direction == 1 && d1Fast[0] > d1Slow[0]) ||
          (direction == -1 && d1Fast[0] < d1Slow[0]))
          score += 4;
    }
-
+else
+   {
+      g_lastMtfAlignmentHadReadFailure = true;
+      g_mtfReadFailureThisTick = true;
+      g_gateDiagnostics.mtfDataReadRejects++;
+      if(INPUT_ENABLE_LOGGING)
+         LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment D1 fastRead=" + IntegerToString(d1FastRead) +
+                             " slowRead=" + IntegerToString(d1SlowRead));
+   }
+   
    return score;
 }
 //+------------------------------------------------------------------+
@@ -3302,32 +3406,64 @@ int GetTimeframeDirectionConsensus(int &agreeingFrames)
    int bullishFrames = 0;
    int bearishFrames = 0;
 
+ g_lastMtfConsensusHadReadFailure = false;
+ 
    // Consensus is intentionally based on higher-timeframe structure only.
-   // H1/H4/D1 reduces M1 noise while still reacting sooner than weekly filters.
+   // Closed candles (start_pos=1) are used on H1/H4/D1 to avoid intrabar flips.
    double h1Fast[], h1Slow[];
-   if(CopyBuffer(g_hEmaFast_H1, 0, 0, 1, h1Fast) == 1 &&
-      CopyBuffer(g_hEmaSlow_H1, 0, 0, 1, h1Slow) == 1)
+int h1FastRead = CopyBuffer(g_hEmaFast_H1, 0, 1, 1, h1Fast);
+   int h1SlowRead = CopyBuffer(g_hEmaSlow_H1, 0, 1, 1, h1Slow);
+   if(h1FastRead == 1 && h1SlowRead == 1)
    {
       if(h1Fast[0] > h1Slow[0]) bullishFrames++;
       else if(h1Fast[0] < h1Slow[0]) bearishFrames++;
    }
-
+ else
+   {
+      g_lastMtfConsensusHadReadFailure = true;
+      g_mtfReadFailureThisTick = true;
+      g_gateDiagnostics.mtfDataReadRejects++;
+      if(INPUT_ENABLE_LOGGING)
+         LogWithRestartGuard("MTF DATA READ FAILED: GetTimeframeDirectionConsensus H1 fastRead=" + IntegerToString(h1FastRead) +
+                             " slowRead=" + IntegerToString(h1SlowRead));
+   }
+   
    double h4Fast[], h4Slow[];
-   if(CopyBuffer(g_hEmaFast_H4, 0, 0, 1, h4Fast) == 1 &&
-      CopyBuffer(g_hEmaSlow_H4, 0, 0, 1, h4Slow) == 1)
+    int h4FastRead = CopyBuffer(g_hEmaFast_H4, 0, 1, 1, h4Fast);
+   int h4SlowRead = CopyBuffer(g_hEmaSlow_H4, 0, 1, 1, h4Slow);
+   if(h4FastRead == 1 && h4SlowRead == 1)
    {
       if(h4Fast[0] > h4Slow[0]) bullishFrames++;
       else if(h4Fast[0] < h4Slow[0]) bearishFrames++;
    }
-
+else
+   {
+      g_lastMtfConsensusHadReadFailure = true;
+      g_mtfReadFailureThisTick = true;
+      g_gateDiagnostics.mtfDataReadRejects++;
+      if(INPUT_ENABLE_LOGGING)
+         LogWithRestartGuard("MTF DATA READ FAILED: GetTimeframeDirectionConsensus H4 fastRead=" + IntegerToString(h4FastRead) +
+                             " slowRead=" + IntegerToString(h4SlowRead));
+   }
+   
    double d1Fast[], d1Slow[];
-   if(CopyBuffer(g_hEmaFast_D1, 0, 0, 1, d1Fast) == 1 &&
-      CopyBuffer(g_hEmaSlow_D1, 0, 0, 1, d1Slow) == 1)
+    int d1FastRead = CopyBuffer(g_hEmaFast_D1, 0, 1, 1, d1Fast);
+   int d1SlowRead = CopyBuffer(g_hEmaSlow_D1, 0, 1, 1, d1Slow);
+   if(d1FastRead == 1 && d1SlowRead == 1)
    {
       if(d1Fast[0] > d1Slow[0]) bullishFrames++;
       else if(d1Fast[0] < d1Slow[0]) bearishFrames++;
    }
-
+ else
+   {
+      g_lastMtfConsensusHadReadFailure = true;
+      g_mtfReadFailureThisTick = true;
+      g_gateDiagnostics.mtfDataReadRejects++;
+      if(INPUT_ENABLE_LOGGING)
+         LogWithRestartGuard("MTF DATA READ FAILED: GetTimeframeDirectionConsensus D1 fastRead=" + IntegerToString(d1FastRead) +
+                             " slowRead=" + IntegerToString(d1SlowRead));
+   }
+   
    if(bullishFrames >= 2)
    {
       agreeingFrames = bullishFrames;
@@ -4498,6 +4634,8 @@ void DetectMarketRegime()
 //+------------------------------------------------------------------+
 bool RunDecisionPipeline(DecisionResult &decision)
 {
+g_mtfReadFailureThisTick = false;
+
    //--- STEP 1: Pre?trade gates
    string rejectReason = "";
    if(!CheckAllGates(rejectReason))
@@ -4579,14 +4717,20 @@ bool RunDecisionPipeline(DecisionResult &decision)
    if(INPUT_GATE_ADX_FILTER_ON && INPUT_USE_ADX_FILTER)
    {
       double adx[];
-      if(CopyBuffer(g_hADX_M1, 0, 0, 1, adx) == 1)
+      int adxRead = CopyBuffer(g_hADX_M1, 0, 0, 1, adx);
+      if(adxRead != 1)
       {
-         if(adx[0] < INPUT_ADX_MIN_THRESHOLD)
-         {
-            if(INPUT_ENABLE_LOGGING)
-               LogWithRestartGuard("ADX filter failed: " + DoubleToString(adx[0], 2) + " < " + DoubleToString(INPUT_ADX_MIN_THRESHOLD, 2));
-            return false;
-         }
+         g_gateDiagnostics.adxDataReadRejects++;
+         if(INPUT_ENABLE_LOGGING)
+            LogWithRestartGuard("ADX data unavailable in RunDecisionPipeline (CopyBuffer=" + IntegerToString(adxRead) + ") - rejecting entry");
+         return false;
+      }
+
+      if(adx[0] < INPUT_ADX_MIN_THRESHOLD)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            LogWithRestartGuard("ADX filter failed: " + DoubleToString(adx[0], 2) + " < " + DoubleToString(INPUT_ADX_MIN_THRESHOLD, 2));
+         return false;
       }
     }
 
@@ -4623,8 +4767,9 @@ bool RunDecisionPipeline(DecisionResult &decision)
     {
        g_gateDiagnostics.mtfRejects++;
        if(INPUT_ENABLE_LOGGING)
-          LogWithRestartGuard("MTF alignment failed: " + IntegerToString(mtfScore) + " < " + IntegerToString(INPUT_MIN_MTF_SCORE));
-       return false;
+         LogWithRestartGuard("MTF alignment failed: " + IntegerToString(mtfScore) + " < " + IntegerToString(INPUT_MIN_MTF_SCORE) +
+                             " | dataReadFailedThisTick=" + (g_mtfReadFailureThisTick ? "YES" : "NO"));
+                                    return false;
     }
 
    //--- STEP 6: Fingerprint generation
@@ -5471,7 +5616,7 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
       lotSize *= GetStreakLotMultiplier();
 
    // Round to lot step and clamp to limits
-   lotSize = MathFloor(lotSize / g_lotStep) * g_lotStep;
+   lotSize = MathFloor(lotSize / GetEffectiveLotStep()) * GetEffectiveLotStep();
    lotSize = MathMax(lotSize, g_risk.minLot);
    lotSize = MathMin(lotSize, g_risk.maxLot);
    lotSize = MathMax(lotSize, g_minLot);
@@ -5487,7 +5632,7 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
    if(INPUT_LOT_MARGIN_DOWNSCALE_ON && marginRequired > freeMargin * 0.8)
    {
       lotSize = (freeMargin * 0.5) / (marginRequired / lotSize);
-      lotSize = MathFloor(lotSize / g_lotStep) * g_lotStep;
+      lotSize = MathFloor(lotSize / GetEffectiveLotStep()) * GetEffectiveLotStep();
       if(lotSize < g_minLot) return 0;
    }
 
@@ -5523,6 +5668,7 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
    request.magic = BuildMagicForSubtype(SUBTYPE_MAIN);
    request.volume = decision.lotSize;
    request.deviation = 30;
+   request.type_filling = g_selectedFillingMode;
    request.comment = comment;
    if(INPUT_EXEC_PENDING_EXPIRY_ON)
    {
@@ -5760,7 +5906,7 @@ bool ExecuteOrder(const DecisionResult &decision)
    int maxAttempts = INPUT_EXEC_MARKET_RETRY_ON ? 3 : 1;
    for(int attempt = 0; attempt < maxAttempts; attempt++)
    {
-      g_trade.SetTypeFilling(GetFillingMode());
+     g_trade.SetTypeFilling(g_selectedFillingMode);
       g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_MAIN));
 
       if(g_trade.PositionOpen(_Symbol, orderType, decision.lotSize, price, sl, tp, comment))
@@ -5965,7 +6111,7 @@ void Handle50PercentLotClose()
          }
 
          double lotsToClose = currentLots * closeRatio;
-         lotsToClose = MathFloor(lotsToClose / g_lotStep) * g_lotStep;
+        lotsToClose = MathFloor(lotsToClose / GetEffectiveLotStep()) * GetEffectiveLotStep();
          lotsToClose = MathMax(lotsToClose, g_minLot);
 
          if(lotsToClose < g_minLot || lotsToClose >= currentLots)
@@ -6043,7 +6189,7 @@ void ManagePartialClose()
       if(profitPct >= INPUT_PARTIAL_TP_PERCENT)
       {
          double lotsToClose = currentLots * INPUT_PARTIAL_CLOSE_RATIO;
-         lotsToClose = MathFloor(lotsToClose / g_lotStep) * g_lotStep;
+          lotsToClose = MathFloor(lotsToClose / GetEffectiveLotStep()) * GetEffectiveLotStep();
          lotsToClose = MathMax(lotsToClose, g_minLot);
 
          if(lotsToClose < g_minLot || lotsToClose >= currentLots)
@@ -6051,7 +6197,6 @@ void ManagePartialClose()
             g_positions[i].partialClosed = true;
             continue;
          }
-
          if(g_trade.PositionClosePartial(ticket, lotsToClose))
          {
             g_positions[i].partialClosed = true;
@@ -6314,7 +6459,7 @@ void MonitorRecoveryAveraging()
          }
 
          double recLots = g_positions[i].originalLots * lotRatio;
-         recLots = MathFloor(recLots / g_lotStep) * g_lotStep;
+          recLots = MathFloor(recLots / GetEffectiveLotStep()) * GetEffectiveLotStep();
          recLots = MathMax(recLots, g_minLot);
          recLots = MathMin(recLots, g_maxLot);
 
@@ -6447,7 +6592,7 @@ void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
 
    string comment = g_activeRecoveryPrefix + IntegerToString((int)parentTicket);
 
-   g_trade.SetTypeFilling(GetFillingMode());
+    g_trade.SetTypeFilling(g_selectedFillingMode);
    g_trade.SetExpertMagicNumber(BuildMagicForSubtype(g_activeRecoverySubtype));
 
    if(g_trade.PositionOpen(_Symbol, orderType, lots, price, sl, tp, comment))
@@ -8802,6 +8947,11 @@ void DrawStatsPanel()
                IntegerToString(g_gateDiagnostics.signalsRejects) + " / " +
                IntegerToString(g_gateDiagnostics.mtfRejects), x + 10, y, txtColor, 9);
    y += 18;
+     CreateLabel(prefix + "diagData", "DataRejects MTF/ADX: " +
+               IntegerToString(g_gateDiagnostics.mtfDataReadRejects) + " / " +
+               IntegerToString(g_gateDiagnostics.adxDataReadRejects) +
+               " | MTFReadFailTick=" + (g_mtfReadFailureThisTick ? "Y" : "N"), x + 10, y, txtColor, 9);
+   y += 18;
    CreateLabel(prefix + "diagThreat", "Rejects Threat/Confidence: " +
                IntegerToString(g_gateDiagnostics.threatRejects) + " / " +
                IntegerToString(g_gateDiagnostics.confidenceRejects), x + 10, y, txtColor, 9);
@@ -8862,9 +9012,11 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode()
    long filling = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
    if((filling & SYMBOL_FILLING_FOK) != 0) return ORDER_FILLING_FOK;
    if((filling & SYMBOL_FILLING_IOC) != 0) return ORDER_FILLING_IOC;
-   // RETURN flag constant is not available in all MQL5 builds; prefer safe IOC fallback.
+   #ifdef SYMBOL_FILLING_RETURN
+   if((filling & SYMBOL_FILLING_RETURN) != 0) return ORDER_FILLING_RETURN;
+#endif
 
-   // Fallback: IOC is safer for market orders on many brokers than RETURN
+    // Broker did not advertise known modes; keep IOC fallback for safety.
    return ORDER_FILLING_IOC;
 }
 
@@ -9063,7 +9215,7 @@ void HandleMultiLevelPartial(ulong ticket)
    if(!shouldClose) return;
 
    double lotsToClose = vol * 0.25;
-   lotsToClose = MathFloor(lotsToClose / g_lotStep) * g_lotStep;
+  lotsToClose = MathFloor(lotsToClose / GetEffectiveLotStep()) * GetEffectiveLotStep();
    lotsToClose = NormalizeDouble(lotsToClose, (int)g_lotDigits);
 
    if(lotsToClose < g_minLot || lotsToClose >= vol)
