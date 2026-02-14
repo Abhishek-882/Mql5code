@@ -1952,13 +1952,23 @@ void OnTick()
       DetectMarketRegime();
       if(!expired)
       {
-         DecisionResult decision;
+          DecisionResult decision;
          ZeroMemory(decision);
          if(RunDecisionPipeline(decision) && decision.shouldTrade)
          {
-            if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
-               CloseMainPositionsOppositeToSignal(decision.direction);
-            ExecuteOrder(decision);
+            int cooldownRemainingSec = 0;
+            if(IsOrderCooldownActive(cooldownRemainingSec))
+            {
+               if(INPUT_ENABLE_LOGGING)
+                  LogWithRestartGuard("Cooldown still active (" + IntegerToString(cooldownRemainingSec) + "s remaining). Signal execution deferred.");
+               g_gateDiagnostics.cooldownRejects++;
+            }
+            else
+            {
+               if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
+                  CloseMainPositionsOppositeToSignal(decision.direction);
+               ExecuteOrder(decision);
+            }
          }
       }
    }
@@ -4764,6 +4774,17 @@ bool RunDecisionPipeline(DecisionResult &decision)
    return true;
 }
 //+------------------------------------------------------------------+
+bool IsOrderCooldownActive(int &remainingSec)
+{
+   remainingSec = 0;
+   if(INPUT_ORDER_COOLDOWN_SECONDS <= 0)
+      return false;
+
+   int elapsedSec = (int)(TimeCurrent() - g_lastOrderTime);
+   remainingSec = MathMax(0, INPUT_ORDER_COOLDOWN_SECONDS - elapsedSec);
+   return (remainingSec > 0);
+}
+
 bool CheckAllGates(string &rejectReason)
 {
    // V7.2 FIX (BUG 3): Emergency zero-guard - if maxPositions somehow reaches 0, reset to input default
@@ -4805,10 +4826,11 @@ bool CheckAllGates(string &rejectReason)
       return false;
    }
 
-   if(INPUT_GATE_COOLDOWN_ON && (TimeCurrent() - g_lastOrderTime < INPUT_ORDER_COOLDOWN_SECONDS))
+    int cooldownRemainingSec = 0;
+   if(INPUT_GATE_COOLDOWN_ON && IsOrderCooldownActive(cooldownRemainingSec))
    {
       g_gateDiagnostics.cooldownRejects++;
-      rejectReason = "Order cooldown active";
+      rejectReason = "Order cooldown active (" + IntegerToString(cooldownRemainingSec) + "s remaining)";
       return false;
    }
 
@@ -5607,7 +5629,19 @@ bool CheckTotalRiskBudgetForCandidate(int direction, double lotSize, double slPo
 bool ExecuteOrder(const DecisionResult &decision)
 {
    if(!IsPlacementEnabled())
+   {
+      if(INPUT_ENABLE_LOGGING)
+         Print("EXECUTE ORDER SKIPPED: placement toggle disabled (INPUT_TOGGLE_PLACE_ORDERS=false)");
       return false;
+   }
+
+   int cooldownRemainingSec = 0;
+   if(IsOrderCooldownActive(cooldownRemainingSec))
+   {
+      Print("ORDER REJECTED: Cooldown active (", cooldownRemainingSec, "s remaining)");
+      g_gateDiagnostics.cooldownRejects++;
+      return false;
+   }
 
    string riskReject = "";
    if(!CheckTotalRiskBudgetForCandidate(decision.direction, decision.lotSize, decision.slPoints, riskReject))
@@ -5638,11 +5672,14 @@ bool ExecuteOrder(const DecisionResult &decision)
    price = NormalizeDouble(price, g_digits);
 
    string comment = BuildUniqueOrderComment(COMMENT_MAIN_PREFIX, decision.direction);
-   if(INPUT_EXECUTION_MODE == PENDING_STOP)
+    if(INPUT_EXECUTION_MODE == PENDING_STOP)
    {
       if(!IsFeatureEnabled("pending_orders"))
+      {
+         if(INPUT_ENABLE_LOGGING)
+            Print("EXECUTE ORDER SKIPPED: pending path disabled by toggles");
          return false;
-
+      }
       ulong pendingOrderTicket = 0;
       if(!PlacePendingStopOrder(decision, comment, pendingOrderTicket))
       {
@@ -5682,7 +5719,11 @@ bool ExecuteOrder(const DecisionResult &decision)
    }
 
    if(!IsFeatureEnabled("market_orders"))
+   {
+      if(INPUT_ENABLE_LOGGING)
+         Print("EXECUTE ORDER SKIPPED: market path disabled by toggles");
       return false;
+   }
 
    int maxAttempts = INPUT_EXEC_MARKET_RETRY_ON ? 3 : 1;
    for(int attempt = 0; attempt < maxAttempts; attempt++)
