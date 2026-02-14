@@ -97,6 +97,7 @@ input group    "=== Trading Configuration ==="
 input int      INPUT_MAX_CONCURRENT_TRADES  = 3;  // Max concurrent MAIN trades (FIXED: Reduced from 5)
 input int      INPUT_MAX_CONCURRENT_RECOVERY_TRADES = 3; // Max concurrent recovery/aux trades
 input int      INPUT_MAX_SAME_DIRECTION    = 2;  // Max same-direction trades
+input int      INPUT_SAME_DIRECTION_BLOCK_SECONDS = 360; // Direction-specific re-entry block in seconds (0=disable)
 input double   INPUT_PROXIMITY_POINTS      = 0.0; // Proximity rule disabled (timeout-only pacing)
 input int      INPUT_POSITION_AGE_HOURS    = 24;  // Close stale positions after N hours (0=disabled)
 input int      INPUT_MAGIC_NUMBER           = 770700; // Magic Number
@@ -923,6 +924,8 @@ ENUM_EA_STATE g_prevEaState = STATE_IDLE;
 PositionState g_positions[];
 int      g_positionCount = 0;
 datetime g_lastOrderTime = 0;
+datetime g_lastBuyOrderTime = 0;
+datetime g_lastSellOrderTime = 0;
 datetime g_lastBarTime = 0;
 double   g_peakEquity = 0;
 double   g_startingBalance = 0;
@@ -4595,6 +4598,15 @@ bool RunDecisionPipeline(DecisionResult &decision)
           LogWithRestartGuard("Same-direction limit: " + dirReject);
        return false;
     }
+    int sameDirectionRemainingSec = 0;
+    if(INPUT_GATE_SAME_DIRECTION_ON && IsSameDirectionCooldownActive(direction, sameDirectionRemainingSec))
+    {
+       g_gateDiagnostics.cooldownRejects++;
+       string dirText = (direction == 1 ? "BUY" : "SELL");
+       if(INPUT_ENABLE_LOGGING)
+          LogWithRestartGuard("Same-direction cooldown active (" + dirText + ", " + IntegerToString(sameDirectionRemainingSec) + "s remaining)");
+       return false;
+    }
 
     //--- STEP 4c: Proximity check
     string proxReject = "";
@@ -4782,6 +4794,21 @@ bool IsOrderCooldownActive(int &remainingSec)
 
    int elapsedSec = (int)(TimeCurrent() - g_lastOrderTime);
    remainingSec = MathMax(0, INPUT_ORDER_COOLDOWN_SECONDS - elapsedSec);
+   return (remainingSec > 0);
+}
+
+bool IsSameDirectionCooldownActive(int direction, int &remainingSec)
+{
+   remainingSec = 0;
+   if(INPUT_SAME_DIRECTION_BLOCK_SECONDS <= 0)
+      return false;
+
+   datetime lastDirTime = (direction == 1) ? g_lastBuyOrderTime : g_lastSellOrderTime;
+   if(lastDirTime <= 0)
+      return false;
+
+   int elapsedSec = (int)(TimeCurrent() - lastDirTime);
+   remainingSec = MathMax(0, INPUT_SAME_DIRECTION_BLOCK_SECONDS - elapsedSec);
    return (remainingSec > 0);
 }
 
@@ -5712,8 +5739,13 @@ bool ExecuteOrder(const DecisionResult &decision)
       }
 
       ConsumeStreakMultiplierOrder();
+      datetime orderPlacedTime = TimeCurrent();
       g_daily.pendingOrdersPlaced++;
-      g_lastOrderTime = TimeCurrent();
+       g_lastOrderTime = orderPlacedTime;
+      if(decision.direction == 1)
+         g_lastBuyOrderTime = orderPlacedTime;
+      else
+         g_lastSellOrderTime = orderPlacedTime;
       g_totalTrades++;
       return true;
    }
@@ -5770,7 +5802,12 @@ bool ExecuteOrder(const DecisionResult &decision)
          }
 
          ConsumeStreakMultiplierOrder();
-         g_lastOrderTime = TimeCurrent();
+         datetime orderPlacedTime = TimeCurrent();
+         g_lastOrderTime = orderPlacedTime;
+         if(decision.direction == 1)
+            g_lastBuyOrderTime = orderPlacedTime;
+         else
+            g_lastSellOrderTime = orderPlacedTime;
          g_totalTrades++;
 
          return true;
