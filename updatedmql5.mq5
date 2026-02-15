@@ -5695,6 +5695,9 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
       request.sl = NormalizeDouble(request.price + decision.slPoints * g_point, g_digits);
       request.tp = NormalizeDouble(request.price - decision.tpPoints * g_point, g_digits);
    }
+    // Trailing-TP primary mode for pending entries as well.
+   if(IsTpModifyEnabled() && INPUT_MODIFY_TRAILING_TP_ON && g_effModifyTrailingTP)
+      request.tp = 0.0;
 
    Print("PENDING STOP REQUEST: Type=", EnumToString(request.type),
          " | Trigger=", DoubleToString(request.price, g_digits),
@@ -5843,6 +5846,10 @@ bool ExecuteOrder(const DecisionResult &decision)
    sl = NormalizeDouble(sl, g_digits);
    tp = NormalizeDouble(tp, g_digits);
    price = NormalizeDouble(price, g_digits);
+
+// Trailing-TP primary mode: open trades without static TP and let ManageTrailingTP() drive TP updates.
+   if(IsTpModifyEnabled() && INPUT_MODIFY_TRAILING_TP_ON && g_effModifyTrailingTP)
+      tp = 0.0;
 
    string comment = BuildUniqueOrderComment(COMMENT_MAIN_PREFIX, decision.direction);
     if(INPUT_EXECUTION_MODE == PENDING_STOP)
@@ -9122,7 +9129,7 @@ void ManageTrailingTP()
       double entry = PositionGetDouble(POSITION_PRICE_OPEN);
       int dir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
 
-      if(tp <= 0) continue; // require existing TP
+     
 
       double profitPoints = dir * (current - entry) / _Point;
       if(profitPoints < INPUT_TRAIL_ACTIVATION_POINTS)
@@ -9142,8 +9149,10 @@ void ManageTrailingTP()
             newTP = NormalizeDouble(current - minDistPrice, g_digits);
       }
 
-      // BUY: TP should move up; SELL: TP should move down (further away in profit direction)
-      bool shouldMove = (dir == 1) ? (newTP > tp) : (newTP < tp);
+       // BUY: TP should move up; SELL: TP should move down (further away in profit direction).
+      // If TP is not set yet (trailing-only mode), first TP assignment is always allowed.
+      bool hasExistingTP = (tp > 0.0);
+      bool shouldMove = hasExistingTP ? ((dir == 1) ? (newTP > tp) : (newTP < tp)) : true;
       if(!shouldMove)
          continue;
 
