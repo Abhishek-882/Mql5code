@@ -1,12 +1,12 @@
 #property copyright "HumanBrain EA V7.3 - Position Management Fixed"
 #property link      ""
-#property version   "7.30"
+#property version   "7.31"
 #property strict
-#property description "EA V7.3 HumanBrain Complete - Position Management Bugs Fixed"
+#property description "EA V7.31 HumanBrain Complete - Position Management Bugs Fixed"
 #property description "FIXES: 5-min cooldown, same-direction limit, proximity check,"
 #property description "M5 ATR for SL/TP, position age timeout, raised entry thresholds"
 #property description "Q-Learning (108 states), Markov Chains, 9-Factor Threat, 6-Component Confidence"
-#property description "*** V7.3: 7 critical position management bugs fixed ***"
+#property description "*** V7.31: 11 critical position management bugs fixed (4 major enhancements) ***"
 #include <Trade/Trade.mqh>
 #include <Trade/PositionInfo.mqh>
 //+------------------------------------------------------------------+
@@ -5942,6 +5942,55 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
    if(IsTpModifyEnabled() && INPUT_MODIFY_TRAILING_TP_ON && g_effModifyTrailingTP)
       request.tp = 0.0;
 
+   // V7.31 FIX #4: Broker distance validation for pending stop orders
+   double minStopDist = g_stopLevel * g_point;
+   double currentMarket = (decision.direction == 1) ? ask : bid;
+   double triggerPrice = request.price;
+   double slPrice = request.sl;
+   double tpPrice = request.tp;
+   
+   // Validate: pending trigger vs current bid/ask
+   double triggerDist = MathAbs(triggerPrice - currentMarket);
+   if(triggerDist < minStopDist)
+   {
+      Print("PENDING STOP REJECTED: Trigger price too close to market | ",
+            "Direction=", (decision.direction == 1 ? "BUY" : "SELL"),
+            " | TriggerDist=", DoubleToString(triggerDist / g_point, 1), " pts",
+            " | Required=", DoubleToString(minStopDist / g_point, 1), " pts",
+            " | Market=", DoubleToString(currentMarket, g_digits),
+            " | Trigger=", DoubleToString(triggerPrice, g_digits));
+      return false;
+   }
+   
+   // Validate: SL distance from trigger
+   double slDist = MathAbs(slPrice - triggerPrice);
+   if(slDist < minStopDist && slPrice != 0)
+   {
+      Print("PENDING STOP REJECTED: SL too close to trigger price | ",
+            "Direction=", (decision.direction == 1 ? "BUY" : "SELL"),
+            " | SLDist=", DoubleToString(slDist / g_point, 1), " pts",
+            " | Required=", DoubleToString(minStopDist / g_point, 1), " pts",
+            " | Trigger=", DoubleToString(triggerPrice, g_digits),
+            " | SL=", DoubleToString(slPrice, g_digits));
+      return false;
+   }
+   
+   // Validate: TP distance from trigger (when TP is set)
+   if(tpPrice != 0)
+   {
+      double tpDist = MathAbs(tpPrice - triggerPrice);
+      if(tpDist < minStopDist)
+      {
+         Print("PENDING STOP REJECTED: TP too close to trigger price | ",
+               "Direction=", (decision.direction == 1 ? "BUY" : "SELL"),
+               " | TPDist=", DoubleToString(tpDist / g_point, 1), " pts",
+               " | Required=", DoubleToString(minStopDist / g_point, 1), " pts",
+               " | Trigger=", DoubleToString(triggerPrice, g_digits),
+               " | TP=", DoubleToString(tpPrice, g_digits));
+         return false;
+      }
+   }
+
    Print("PENDING STOP REQUEST: Type=", EnumToString(request.type),
          " | Trigger=", DoubleToString(request.price, g_digits),
          " | SL=", DoubleToString(request.sl, g_digits),
@@ -6379,13 +6428,36 @@ void Handle50PercentLotClose()
 
          if(g_trade.PositionClosePartial(ticket, lotsToClose))
          {
+            // V7.31 FIX #3: Update state ONLY after successful close
+            double remainingLots = PositionGetDouble(POSITION_VOLUME);
+            g_positions[i].currentLots = MathMax(0.0, remainingLots);
             g_positions[i].lotReduced = true;
             g_positions[i].halfSLHit = true;
-            g_positions[i].currentLots = currentLots - lotsToClose;
-            Print("50% LOT CLOSE: Ticket ", ticket,
-                  " | Closed ", lotsToClose,
-                  " lots at ", lossPct, "% SL distance",
-                  " | Remaining ", g_positions[i].currentLots, " lots");
+            
+            Print("50% LOT CLOSE SUCCESS: Ticket ", ticket,
+                  " | Closed ", DoubleToString(lotsToClose, 2),
+                  " lots at ", DoubleToString(lossPct, 2), "% SL distance",
+                  " | Remaining ", DoubleToString(g_positions[i].currentLots, 2), " lots");
+         }
+         else
+         {
+            // V7.31 FIX #3: Handle failed partial close - keep state unchanged
+            double minValidLot = g_minLot;
+            double fullLotRemainder = currentLots - lotsToClose;
+            bool tooSmallRemainder = (fullLotRemainder < minValidLot);
+            bool invalidCloseVolume = (lotsToClose < minValidLot);
+            
+            if(INPUT_ENABLE_LOGGING)
+            {
+               Print("50% LOT CLOSE FAILED: Ticket ", ticket,
+                     " | Requested ", DoubleToString(lotsToClose, 2), " lots",
+                     " | Current ", DoubleToString(currentLots, 2), " lots",
+                     " | MinLot ", DoubleToString(minValidLot, 2),
+                     " | InvalidVolume=", invalidCloseVolume,
+                     " | TooSmallRemainder=", tooSmallRemainder,
+                     " | LastError=", GetLastError());
+            }
+            // State remains unchanged - no lotReduced/halfSLHit flags set
          }
       }
    }
@@ -6491,6 +6563,34 @@ void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 
    double currentSL = PositionGetDouble(POSITION_SL);
    double currentTP = PositionGetDouble(POSITION_TP);
+
+   // V7.31 FIX #1: Guard against moving SL when already better than breakeven
+   if(posType == POSITION_TYPE_BUY)
+   {
+      // For BUY: if currentSL >= entryPrice, it's already at or better than breakeven
+      if(currentSL >= entryPrice && currentSL > 0)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            Print("BREAKEVEN GUARD: BUY position ticket ", ticket, 
+                  " SL already at or better than breakeven | currentSL=", 
+                  DoubleToString(currentSL, g_digits), 
+                  " | entryPrice=", DoubleToString(entryPrice, g_digits));
+         return;
+      }
+   }
+   else // SELL position
+   {
+      // For SELL: if currentSL <= entryPrice and > 0, it's already at or better than breakeven
+      if(currentSL <= entryPrice && currentSL > 0)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            Print("BREAKEVEN GUARD: SELL position ticket ", ticket, 
+                  " SL already at or better than breakeven | currentSL=", 
+                  DoubleToString(currentSL, g_digits), 
+                  " | entryPrice=", DoubleToString(entryPrice, g_digits));
+         return;
+      }
+   }
 
    double newSL = NormalizeDouble(entryPrice, g_digits);
 
@@ -9461,10 +9561,36 @@ void HandleMultiLevelPartial(ulong ticket)
    double open = PositionGetDouble(POSITION_PRICE_OPEN);
    double tp = PositionGetDouble(POSITION_TP);
    double current = PositionGetDouble(POSITION_PRICE_CURRENT);
+   ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
 
    double totalDist = MathAbs(tp - open);
-   if(totalDist <= 0) return;
-   double progress = MathAbs(current - open) / totalDist;
+   if(totalDist <= 0) 
+   {
+      if(INPUT_ENABLE_LOGGING)
+         Print("MULTI PARTIAL: Invalid TP distance | ticket=", ticket, " | totalDist=", totalDist);
+      return;
+   }
+   
+   // V7.31 FIX #2: Directional progress calculation
+   double progress = 0.0;
+   if(posType == POSITION_TYPE_BUY)
+   {
+      // BUY: progress when current > open, moving toward TP
+      if(tp > open) // valid upward TP
+         progress = (current - open) / (tp - open);
+   }
+   else // SELL
+   {
+      // SELL: progress when current < open, moving toward TP
+      if(tp < open) // valid downward TP
+         progress = (open - current) / (open - tp);
+   }
+   
+   // Guard: require progress > 0 before considering thresholds
+   if(progress <= 0)
+   {
+      return; // No progress or moving away from TP
+   }
 
    bool shouldClose = false;
    if(progress >= 0.60 && !g_positions[idx].multiPartialLevel2Done)
