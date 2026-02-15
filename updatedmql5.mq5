@@ -94,7 +94,7 @@ input int      INPUT_EXPIRY_MONTH = 12;           // Expiry Month
 input int      INPUT_EXPIRY_DAY   = 31;           // Expiry Day
 //--- Trading Configuration
 input group    "=== Trading Configuration ==="
-input int      INPUT_MAX_CONCURRENT_TRADES  = 3;  // Max concurrent MAIN trades (FIXED: Reduced from 5)
+input int      INPUT_MAX_CONCURRENT_TRADES  = 3;  // Max concurrent MAIN trades (set 1 for strict single-slot flip behavior)
 input int      INPUT_MAX_CONCURRENT_RECOVERY_TRADES = 3; // Max concurrent recovery/aux trades
 input int      INPUT_MAX_SAME_DIRECTION    = 2;  // Max same-direction trades
 input int      INPUT_SAME_DIRECTION_BLOCK_SECONDS = 360; // Direction-specific re-entry block in seconds (0=disable)
@@ -107,6 +107,11 @@ input int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset fro
 input int      INPUT_PENDING_EXPIRY_MINUTES = 60; // Pending stop expiry in minutes
 input bool     INPUT_RESET_ALL_PERSISTED_STATE = false; // Delete all persisted symbol+magic files on init
 input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // Close previous position when opposite signal appears
+input bool     INPUT_STRICT_OPPOSITE_FLIP_MODE = true; // When max main=1: force close/cancel opposite exposure before new opposite entry
+input bool     INPUT_MAX_MAIN_HARD_CAP_ON = true; // Hard cap: INPUT_MAX_CONCURRENT_TRADES is absolute entry limit (no adaptive expansion in gating)
+input bool     INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON = true; // On opposite flip, cancel opposite-direction MAIN pending stop orders
+input bool     INPUT_FLIP_BYPASS_COOLDOWN_ON = true; // Confirmed opposite flip may bypass global cooldown for replacement entry
+input bool     INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION = false; // Allow adaptive max-position expansion above input cap when hard-cap is OFF
 //--- Risk Management
 input group    "=== Risk Management ==="
 input ENUM_RISK_PROFILE INPUT_RISK_PROFILE = RISK_MEDIUM; // Risk Profile
@@ -949,6 +954,9 @@ int      g_positionCount = 0;
 datetime g_lastOrderTime = 0;
 datetime g_lastBuyOrderTime = 0;
 datetime g_lastSellOrderTime = 0;
+bool     g_currentEntryIsFlip = false;
+bool     g_flipCleanupInProgress = false;
+bool     g_flipCooldownBypassLogged = false;
 datetime g_lastBarTime = 0;
 double   g_peakEquity = 0;
 double   g_startingBalance = 0;
@@ -1694,6 +1702,13 @@ int OnInit()
    Print("=== EA "+EA_VERSION_LABEL+" HumanBrain Complete - INITIALIZED ===");
    Print("Symbol: ", _Symbol, " | Magic: ", INPUT_MAGIC_NUMBER);
    Print("Risk: ", g_risk.riskPercent, "% | MaxTrades: ", g_adaptive.maxPositions);
+      Print("ENTRY POLICY: closeOnOpposite=", (INPUT_CLOSE_ON_OPPOSITE_SIGNAL ? "ON" : "OFF"),
+         " | strictFlip=", (INPUT_STRICT_OPPOSITE_FLIP_MODE ? "ON" : "OFF"),
+         " | hardCap=", (INPUT_MAX_MAIN_HARD_CAP_ON ? "ON" : "OFF"),
+         " | cancelOppPending=", (INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON ? "ON" : "OFF"),
+         " | flipBypassCooldown=", (INPUT_FLIP_BYPASS_COOLDOWN_ON ? "ON" : "OFF"),
+         " | adaptiveMaxExpansion=", (INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION ? "ON" : "OFF"),
+         " | inputMaxMain=", INPUT_MAX_CONCURRENT_TRADES);
    Print("Q-Learning: ", INPUT_ENABLE_RL ? "ON" : "OFF", " | Markov: ", INPUT_ENABLE_MARKOV ? "ON" : "OFF");
    Print("ML: ", INPUT_ENABLE_ML ? "ON" : "OFF", " | AI: ", EnumToString(INPUT_AI_MODE));
    Print("Adaptive: ", INPUT_ENABLE_ADAPTIVE ? "ON" : "OFF");
@@ -2011,30 +2026,54 @@ void OnTick()
          ZeroMemory(decision);
          if(RunDecisionPipeline(decision) && decision.shouldTrade)
          {
-            int cooldownRemainingSec = 0;
-            if(IsOrderCooldownActive(cooldownRemainingSec))
+            bool canExecuteOrder = true;
+            bool hasOppositeOpen = false;
+            bool hasOppositePending = false;
+
+            for(int i = PositionsTotal() - 1; i >= 0; i--)
             {
-               if(INPUT_ENABLE_LOGGING)
-                  LogWithRestartGuard("Cooldown still active (" + IntegerToString(cooldownRemainingSec) + "s remaining). Signal execution deferred.");
-               g_gateDiagnostics.cooldownRejects++;
-            }
-            else
-            {
-             bool canExecuteOrder = true;
-               if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
-                  {
-                  bool closeOk = CloseMainPositionsOppositeToSignal(decision.direction);
-                  if(!closeOk)
-                  {
-                     canExecuteOrder = false;
-                     if(INPUT_ENABLE_LOGGING)
-                        LogWithRestartGuard("ENTRY BLOCKED: opposite-signal close failed; skipping new entry this cycle.");
-                  }
+               ulong posTicket = PositionGetTicket(i);
+               if(posTicket == 0 || !PositionSelectByTicket(posTicket) || !IsOurPosition(posTicket))
+                  continue;
+               string posComment = PositionGetString(POSITION_COMMENT);
+               if(StringFind(posComment, COMMENT_MAIN_PREFIX) < 0 || !IsMainEntryComment(posComment))
+                  continue;
+               int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+               if(posDir != decision.direction)
+               {
+                  hasOppositeOpen = true;
+                  break;
                }
-               if(canExecuteOrder)
-                  ExecuteOrder(decision);
+            }
+
+            if(!hasOppositeOpen)
+            
+            {
+               int oppositePending = CountMainPendingStopsByDirection(decision.direction * -1);
+               hasOppositePending = (oppositePending > 0);
+            }
+            bool isFlipEvent = (hasOppositeOpen || hasOppositePending);
+            if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
+            {
+             if(!CleanupOppositeExposureForFlip(decision.direction))
+               {
+                  canExecuteOrder = false;
+                  if(INPUT_ENABLE_LOGGING)
+                     LogWithRestartGuard("ENTRY BLOCKED: opposite cleanup failed");
+         
             }
          }
+          g_currentEntryIsFlip = (INPUT_STRICT_OPPOSITE_FLIP_MODE && isFlipEvent);
+            g_flipCooldownBypassLogged = false;
+            if(INPUT_ENABLE_LOGGING)
+               Print("ENTRY CONTEXT: ", (g_currentEntryIsFlip ? "flip" : "normal"),
+                     " | direction=", (decision.direction == 1 ? "BUY" : "SELL"));
+
+            if(canExecuteOrder)
+               ExecuteOrder(decision);
+
+            g_currentEntryIsFlip = false;
+            }
       }
    }
    g_tickMsDecision = GetTickCount() - t0;
@@ -2072,6 +2111,8 @@ bool CloseMainPositionsOppositeToSignal(int direction)
       string comment = PositionGetString(POSITION_COMMENT);
       if(StringFind(comment, COMMENT_MAIN_PREFIX) < 0)
          continue;
+         if(!IsMainEntryComment(comment))
+         continue;
 
       int posType = (int)PositionGetInteger(POSITION_TYPE);
       int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
@@ -2081,14 +2122,103 @@ bool CloseMainPositionsOppositeToSignal(int direction)
       if(!g_trade.PositionClose(ticket))
       {
          allClosed = false;
-         Print("OPPOSITE SIGNAL CLOSE FAILED: ticket=", ticket, " ret=", g_trade.ResultRetcode(), " ", g_trade.ResultComment());
+         Print("FLIP_CLEANUP CLOSE FAILED: ticket=", ticket,
+               " | retcode=", g_trade.ResultRetcode(),
+               " | comment=", g_trade.ResultComment());
       }
       else
       {
-         Print("OPPOSITE SIGNAL CLOSE: closed ticket=", ticket, " for new direction=", direction);
+        Print("FLIP_CLEANUP CLOSE: closed ticket=", ticket,
+               " | oldDir=", (posDir == 1 ? "BUY" : "SELL"),
+               " | newDir=", (direction == 1 ? "BUY" : "SELL"));
       }
    }
    return allClosed;
+}
+
+bool CancelMainPendingStopsOppositeToDirection(int direction)
+{
+   bool allCanceled = true;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0 || !OrderSelect(ticket))
+         continue;
+      if(!IsOurMainPendingStopOrder(ticket))
+         continue;
+
+      ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      int orderDir = (type == ORDER_TYPE_BUY_STOP) ? 1 : -1;
+      if(orderDir == direction)
+         continue;
+
+      MqlTradeRequest request;
+      MqlTradeResult result;
+      ZeroMemory(request);
+      ZeroMemory(result);
+
+      request.action = TRADE_ACTION_REMOVE;
+      request.order = ticket;
+      request.symbol = _Symbol;
+      request.magic = BuildMagicForSubtype(SUBTYPE_MAIN);
+      request.comment = "FLIP_CANCEL_OPPOSITE_PENDING";
+
+      bool sent = OrderSend(request, result);
+      if(sent && result.retcode == TRADE_RETCODE_DONE)
+      {
+         RemovePendingRLByOrderTicket(ticket);
+         Print("FLIP_CLEANUP CANCEL_PENDING: ticket=", ticket,
+               " | type=", EnumToString(type),
+               " | retcode=", result.retcode);
+      }
+      else
+      {
+         allCanceled = false;
+         Print("FLIP_CLEANUP CANCEL_PENDING FAILED: ticket=", ticket,
+               " | type=", EnumToString(type),
+               " | retcode=", result.retcode,
+               " | comment=", result.comment);
+      }
+   }
+   return allCanceled;
+}
+
+bool CleanupOppositeExposureForFlip(int direction)
+{
+   if(g_flipCleanupInProgress)
+      return true;
+
+   g_flipCleanupInProgress = true;
+   bool allOk = true;
+
+   int openMainBefore = CountMainPositionsFromBroker();
+   int pendingBuyBefore = CountMainPendingStopsByDirection(1);
+   int pendingSellBefore = CountMainPendingStopsByDirection(-1);
+   Print("FLIP_CLEANUP PRE: targetDir=", (direction == 1 ? "BUY" : "SELL"),
+         " | openMain=", openMainBefore,
+         " | pendingBuy=", pendingBuyBefore,
+         " | pendingSell=", pendingSellBefore);
+
+   if(!CloseMainPositionsOppositeToSignal(direction))
+      allOk = false;
+
+   if(INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON)
+   {
+      if(!CancelMainPendingStopsOppositeToDirection(direction))
+         allOk = false;
+   }
+
+   int openMainAfter = CountMainPositionsFromBroker();
+   int pendingBuyAfter = CountMainPendingStopsByDirection(1);
+   int pendingSellAfter = CountMainPendingStopsByDirection(-1);
+   Print("FLIP_CLEANUP POST: targetDir=", (direction == 1 ? "BUY" : "SELL"),
+         " | openMain=", openMainAfter,
+         " | pendingBuy=", pendingBuyAfter,
+         " | pendingSell=", pendingSellAfter,
+         " | status=", (allOk ? "OK" : "FAILED"));
+
+   g_flipCleanupInProgress = false;
+   return allOk;
 }
 
 void OnTimer()
@@ -2100,6 +2230,56 @@ void OnTimer()
    QueryDeepSeekAI();
    g_tickMsAIRequest = GetTickCount() - timerStart;
 }
+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+{
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
+      return;
+   if(trans.deal == 0)
+      return;
+   if(!HistoryDealSelect(trans.deal))
+      return;
+
+   if((string)HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol)
+      return;
+
+   long magic = HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
+   if(!IsOurMagic(magic))
+      return;
+
+   long entryType = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
+   if(entryType != DEAL_ENTRY_IN)
+      return;
+
+   if(trans.order == 0 || !HistoryOrderSelect(trans.order))
+      return;
+   ENUM_ORDER_TYPE activatedOrderType = (ENUM_ORDER_TYPE)HistoryOrderGetInteger(trans.order, ORDER_TYPE);
+   if(activatedOrderType != ORDER_TYPE_BUY_STOP && activatedOrderType != ORDER_TYPE_SELL_STOP)
+      return;
+
+   long dealType = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
+   int activatedDirection = 0;
+   if(dealType == DEAL_TYPE_BUY)
+      activatedDirection = 1;
+   else if(dealType == DEAL_TYPE_SELL)
+      activatedDirection = -1;
+   else
+      return;
+
+   if(INPUT_CLOSE_ON_OPPOSITE_SIGNAL)
+   {
+      bool ok = CleanupOppositeExposureForFlip(activatedDirection);
+      Print("FLIP_ON_ACTIVATION: direction=", (activatedDirection == 1 ? "BUY" : "SELL"),
+            " | cleanup=", (ok ? "OK" : "FAILED"),
+            " | deal=", trans.deal,
+            " | order=", trans.order,
+            " | reqAction=", request.action,
+            " | resultRetcode=", result.retcode);
+   }
+}
+
 //+------------------------------------------------------------------+
 //| SECTION 9: EA STATE MANAGEMENT                                   |
 //+------------------------------------------------------------------+
@@ -2339,8 +2519,30 @@ bool IsOurPendingOrder(ulong ticket)
 
    return true;
 }
-//--- Count existing pending stop orders by direction (1=BUY, -1=SELL)
-int CountPendingStopsByDirection(int direction)
+bool IsMainEntryComment(const string &comment)
+{
+   if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) return false;
+   if(StringFind(comment, COMMENT_AVG_PREFIX) >= 0) return false;
+   if(StringFind(comment, COMMENT_HEDGE_PREFIX) >= 0) return false;
+   if(StringFind(comment, COMMENT_GRID_PREFIX) >= 0) return false;
+   if(StringFind(comment, COMMENT_50PCT_PREFIX) >= 0) return false;
+   return true;
+}
+
+bool IsOurMainPendingStopOrder(ulong ticket)
+{
+   if(!IsOurPendingOrder(ticket))
+      return false;
+
+   long magic = OrderGetInteger(ORDER_MAGIC);
+   if(IsAuxSubtypeByMagic(magic))
+      return false;
+
+   string comment = OrderGetString(ORDER_COMMENT);
+   return IsMainEntryComment(comment);
+}
+
+int CountMainPendingStopsByDirection(int direction)
 {
    int count = 0;
    int total = OrdersTotal();
@@ -2348,7 +2550,7 @@ int CountPendingStopsByDirection(int direction)
    {
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
-      if(!IsOurPendingOrder(ticket)) continue;
+       if(!IsOurMainPendingStopOrder(ticket)) continue;
 
       ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
       int orderDir = (type == ORDER_TYPE_BUY_STOP) ? 1 : -1;
@@ -2356,6 +2558,25 @@ int CountPendingStopsByDirection(int direction)
          count++;
    }
    return count;
+}
+
+int CountMainPendingStopsAllDirections()
+{
+   return CountMainPendingStopsByDirection(1) + CountMainPendingStopsByDirection(-1);
+}
+
+//--- Count existing pending stop orders by direction (1=BUY, -1=SELL)
+int CountPendingStopsByDirection(int direction)
+{
+   return CountMainPendingStopsByDirection(direction);
+}
+
+int GetEffectiveMainExposureCount()
+{
+   int openMain = CountMainPositionsFromBroker();
+   if(INPUT_EXECUTION_MODE == PENDING_STOP && IsFeatureEnabled("pending_orders"))
+      return (openMain + CountMainPendingStopsAllDirections());
+   return openMain;
 }
 //--- Remove expired pending stop orders and log event
 void CleanupExpiredPendingStopOrders()
@@ -4998,13 +5219,7 @@ bool CheckAllGates(string &rejectReason)
       return false;
    }
 
-    int cooldownRemainingSec = 0;
-   if(INPUT_GATE_COOLDOWN_ON && IsOrderCooldownActive(cooldownRemainingSec))
-   {
-      g_gateDiagnostics.cooldownRejects++;
-      rejectReason = "Order cooldown active (" + IntegerToString(cooldownRemainingSec) + "s remaining)";
-      return false;
-   }
+   // Cooldown is enforced in ExecuteOrder so confirmed flip replacements can bypass when configured.
 
    if(INPUT_GATE_MAX_DAILY_TRADES_ON && g_daily.tradesPlaced >= INPUT_MAX_DAILY_TRADES)
    {
@@ -5032,14 +5247,26 @@ bool CheckAllGates(string &rejectReason)
       return false;
    }
 
-   int currentMainPositions = CountMainPositionsFromBroker();
+    int inputCap = MathMax(1, INPUT_MAX_CONCURRENT_TRADES);
+   int adaptiveCap = MathMax(1, g_adaptive.maxPositions);
+   int allowedAdaptiveDelta = (INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION ? 2 : 0);
+   int adaptiveModeCap = MathMin(adaptiveCap, inputCap + allowedAdaptiveDelta);
+   int effectiveMaxMain = ((INPUT_MAX_MAIN_HARD_CAP_ON || INPUT_STRICT_OPPOSITE_FLIP_MODE) ? inputCap : adaptiveModeCap);
+
+   int openMain = CountMainPositionsFromBroker();
+   int pendingMain = ((INPUT_EXECUTION_MODE == PENDING_STOP && IsFeatureEnabled("pending_orders")) ? CountMainPendingStopsAllDirections() : 0);
+   int effectiveExposure = GetEffectiveMainExposureCount();
    int currentTotalPositions = CountAllOurPositions();
-   if(INPUT_GATE_MAX_POSITIONS_ON && currentMainPositions >= g_adaptive.maxPositions)
+   if(INPUT_GATE_MAX_POSITIONS_ON && effectiveExposure >= effectiveMaxMain)
    {
       g_gateDiagnostics.maxPositionsRejects++;
-      rejectReason = "Max positions reached (main=" + IntegerToString(currentMainPositions) +
-                     " total=" + IntegerToString(currentTotalPositions) +
-                     " max=" + IntegerToString(g_adaptive.maxPositions) + ")";
+      rejectReason = "Max main exposure reached (openMain=" + IntegerToString(openMain) +
+                     " pendingMain=" + IntegerToString(pendingMain) +
+                     " effectiveExposure=" + IntegerToString(effectiveExposure) +
+                     " effectiveMaxMain=" + IntegerToString(effectiveMaxMain) +
+                     " inputCap=" + IntegerToString(inputCap) +
+                     " adaptiveCap=" + IntegerToString(adaptiveCap) +
+                     " total=" + IntegerToString(currentTotalPositions) + ")";
       return false;
    }
 
@@ -5054,11 +5281,7 @@ bool CheckAllGates(string &rejectReason)
 //+------------------------------------------------------------------+
 bool IsCountableForEntryGating(const string comment)
 {
-   if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) return false;
-   if(StringFind(comment, COMMENT_AVG_PREFIX) >= 0) return false;
-   if(StringFind(comment, COMMENT_HEDGE_PREFIX) >= 0) return false;
-   if(StringFind(comment, COMMENT_GRID_PREFIX) >= 0) return false;
-   return true;
+  return IsMainEntryComment(comment);
 }
 
  // Same-direction limit: prevent all positions being in one direction
@@ -5645,13 +5868,33 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
 {
    placedOrderTicket = 0;
 
-   int pendingSameDirection = CountPendingStopsByDirection(decision.direction);
+    int pendingSameDirection = CountMainPendingStopsByDirection(decision.direction);
+   int pendingOppositeDirection = CountMainPendingStopsByDirection(decision.direction * -1);
+   int openMain = CountMainPositionsFromBroker();
+   int effectiveExposure = GetEffectiveMainExposureCount();
+
+   if((INPUT_STRICT_OPPOSITE_FLIP_MODE || INPUT_MAX_MAIN_HARD_CAP_ON) && INPUT_MAX_CONCURRENT_TRADES == 1 && pendingOppositeDirection > 0)
+   {
+      Print("PENDING STOP REJECTED: strict one-slot cap still has opposite pending | oppositePending=", pendingOppositeDirection);
+      return false;
+   }
+
    if(INPUT_EXEC_PENDING_DUPLICATE_BLOCK_ON && pendingSameDirection > 0)
    {
-      Print("PENDING STOP SKIPPED (DUPLICATE): Symbol=", _Symbol,
+       Print("PENDING STOP REJECTED: duplicate pending rule | Symbol=", _Symbol,
             " | Magic=", INPUT_MAGIC_NUMBER,
             " | Direction=", (decision.direction == 1 ? "BUY" : "SELL"),
-            " | ExistingPending=", pendingSameDirection);
+            " | ExistingPendingSameDir=", pendingSameDirection);
+      return false;
+   }
+
+   if((INPUT_STRICT_OPPOSITE_FLIP_MODE || INPUT_MAX_MAIN_HARD_CAP_ON) && effectiveExposure >= MathMax(1, INPUT_MAX_CONCURRENT_TRADES))
+   {
+      Print("PENDING STOP REJECTED: strict slot cap | openMain=", openMain,
+            " | pendingSame=", pendingSameDirection,
+            " | pendingOpposite=", pendingOppositeDirection,
+            " | effectiveExposure=", effectiveExposure,
+            " | cap=", MathMax(1, INPUT_MAX_CONCURRENT_TRADES));
       return false;
    }
    MqlTradeRequest request;
@@ -5812,13 +6055,19 @@ bool ExecuteOrder(const DecisionResult &decision)
    }
 
    int cooldownRemainingSec = 0;
-   if(IsOrderCooldownActive(cooldownRemainingSec))
+    bool cooldownActive = IsOrderCooldownActive(cooldownRemainingSec);
+   bool allowFlipCooldownBypass = (g_currentEntryIsFlip && INPUT_FLIP_BYPASS_COOLDOWN_ON);
+   if(cooldownActive && !allowFlipCooldownBypass)
    {
       Print("ORDER REJECTED: Cooldown active (", cooldownRemainingSec, "s remaining)");
       g_gateDiagnostics.cooldownRejects++;
       return false;
    }
-
+ if(cooldownActive && allowFlipCooldownBypass && !g_flipCooldownBypassLogged)
+   {
+      g_flipCooldownBypassLogged = true;
+      Print("COOLDOWN BYPASS APPLIED: flip replacement entry allowed | remaining=", cooldownRemainingSec, "s");
+   }
    string riskReject = "";
    if(!CheckTotalRiskBudgetForCandidate(decision.direction, decision.lotSize, decision.slPoints, riskReject))
    {
@@ -7645,7 +7894,8 @@ void PerformAdaptiveOptimization()
       // Outperforming: controlled expansion + SL reversion toward neutral
       g_adaptive.trailAdjustPoints += PipsToPoints(_Symbol, INPUT_ADAPT_OVERPERF_TRAIL_ADD);
       g_adaptive.lotMultiplier += 0.04;
-      g_adaptive.maxPositions += 1;
+      if(INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION)
+         g_adaptive.maxPositions += 1;
       g_adaptive.slAdjustPoints += (baselineSLAdjust - g_adaptive.slAdjustPoints) * 0.35;
       g_adaptive.minConfThreshold += (baselineMinConf - g_adaptive.minConfThreshold) * 0.15;
 
@@ -7659,7 +7909,8 @@ void PerformAdaptiveOptimization()
    g_adaptive.trailAdjustPoints = MathMax(-10.0, MathMin(g_adaptive.trailAdjustPoints, 50.0));
    g_adaptive.threatMultiplier = MathMax(0.80, MathMin(g_adaptive.threatMultiplier, 1.50));
    g_adaptive.minConfThreshold = MathMax(20.0, MathMin(g_adaptive.minConfThreshold, 85.0));
-   g_adaptive.maxPositions = (int)MathMax(1, MathMin(g_adaptive.maxPositions, INPUT_MAX_CONCURRENT_TRADES + 2));
+  int adaptiveMaxCap = INPUT_MAX_CONCURRENT_TRADES + (INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION ? 2 : 0);
+   g_adaptive.maxPositions = (int)MathMax(1, MathMin(g_adaptive.maxPositions, adaptiveMaxCap));
 
    if(INPUT_ENABLE_LOGGING)
       Print("ADAPTIVE BAND RESULT: under=", (isUnderperform ? "true" : "false"),
