@@ -1,12 +1,12 @@
-#property copyright "HumanBrain EA V7.3 - Position Management Fixed"
+#property copyright "HumanBrain EA V7.32 - Position Management Fixed"
 #property link      ""
-#property version   "7.31"
+#property version   "7.33"
 #property strict
-#property description "EA V7.31 HumanBrain Complete - Position Management Bugs Fixed"
+#property description "EA V7.33 HumanBrain Complete - ADVANCED PARTIAL CLOSING SYSTEM"
 #property description "FIXES: 5-min cooldown, same-direction limit, proximity check,"
 #property description "M5 ATR for SL/TP, position age timeout, raised entry thresholds"
 #property description "Q-Learning (108 states), Markov Chains, 9-Factor Threat, 6-Component Confidence"
-#property description "*** V7.31: 11 critical position management bugs fixed (4 major enhancements) ***"
+#property description "*** V7.32: 11 critical position management bugs fixed (4 major enhancements) ***"
 #include <Trade/Trade.mqh>
 #include <Trade/PositionInfo.mqh>
 //+------------------------------------------------------------------+
@@ -302,13 +302,13 @@ input double   INPUT_MIN_TP_POINTS     = 300.0;   // Minimum TP in points (FIXED
 input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
 //--- 50% Lot Close System
 input group    "=== 50% Lot Close System ==="
-input bool     INPUT_ENABLE_50PCT_CLOSE      = true; // Enable 50% lot close
+input bool     INPUT_ENABLE_50PCT_CLOSE      = false; // DISABLED - Use V7.33 new system (was buggy)
 input double   INPUT_50PCT_TRIGGER_LOW       = 45.0; // Trigger zone lower bound %
 input double   INPUT_50PCT_TRIGGER_HIGH      = 55.0; // Trigger zone upper bound %
-input bool     INPUT_CONFIDENCE_BASED_CLOSE  = true; // Use confidence-based close ratio
+input bool     INPUT_CONFIDENCE_BASED_CLOSE  = false; // DISABLED - This caused the 25% bug!
 //--- Partial Close at TP%
 input group    "=== Partial Close at TP ==="
-input bool     INPUT_ENABLE_PARTIAL_CLOSE    = true; // Enable partial close at TP%
+input bool     INPUT_ENABLE_PARTIAL_CLOSE    = false; // DISABLED - Use V7.33 new system
 input double   INPUT_PARTIAL_TP_PERCENT      = 50.0; // Close portion at this % of TP
 input double   INPUT_PARTIAL_CLOSE_RATIO     = 0.5;  // Close this fraction of lots
 input bool     INPUT_MOVE_BE_AFTER_PARTIAL   = true; // Move SL to breakeven after partial
@@ -324,6 +324,29 @@ input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable run
 input double   INPUT_HIGH_SPREAD_CLOSE_PERCENT = 50.0; // Percent of profitable position volume to close on high spread (1..100)
 input bool     INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD = true; // Do not adjust losing-position SL/TP during spread spikes
 input double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
+
+//+------------------------------------------------------------------+
+//| V7.33 NEW: ADVANCED PARTIAL CLOSING SYSTEM                        |
+//+------------------------------------------------------------------+
+input group    "=== V7.33: LOSS-Based Partial Closing ==="
+input bool     INPUT_ENABLE_LOSS_PARTIAL_CLOSE = true;  // Enable loss partial closing
+input double   INPUT_LOSS_CLOSE_PERCENT = 50.0;          // % of lots to close when loss trigger hit
+input int      INPUT_LOSS_PARTS_COUNT = 1;               // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
+input string   INPUT_LOSS_PARTS_PERCENTAGES = "50";      // Close percentages per part (comma-separated, e.g. "33,33,34" for 3 parts)
+input string   INPUT_LOSS_PARTS_TRIGGERS = "50";         // Trigger percentages per part (comma-separated, e.g. "30,60,90")
+
+input group    "=== V7.33: PROFIT-Based Partial Closing ==="
+input bool     INPUT_ENABLE_PROFIT_PARTIAL_CLOSE = true; // Enable profit partial closing
+input double   INPUT_PROFIT_CLOSE_PERCENT = 50.0;         // % of lots to close when profit trigger hit
+input int      INPUT_PROFIT_PARTS_COUNT = 1;              // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
+input string   INPUT_PROFIT_PARTS_PERCENTAGES = "50";     // Close percentages per part (comma-separated, e.g. "33,33,34")
+input string   INPUT_PROFIT_PARTS_TRIGGERS = "50";        // Trigger percentages per part (comma-separated, e.g. "30,60,90")
+
+input group    "=== V7.33: Trailing TP Gap Feature ==="
+input bool     INPUT_ENABLE_TRAILING_TP_GAP = true;       // Enable trailing TP with gap
+input double   INPUT_TRAILING_TP_GAP_POINTS = 100.0;      // Gap between TP and current price (points)
+input double   INPUT_TRAILING_TP_STEP_POINTS = 50.0;      // Minimum movement step (points)
+input double   INPUT_TRAILING_TP_ACTIVATION_POINTS = 200.0; // Activate after this profit (points)
 input group    "=== Money Management / Streak Multiplier ==="
 input bool     INPUT_ENABLE_STREAK_LOT_MULTIPLIER = true; // Enable temporary lot multiplier after win streak
 input int      INPUT_STREAK_TRIGGER_WINS = 2; // Consecutive wins needed to arm streak multiplier
@@ -562,7 +585,19 @@ struct PositionState
    datetime lastRecoveryTime;   // Last recovery order time
    bool     isActive;           // Position still open
    double   maxProfit;          // Max profit seen (for trailing)
-   double   maxLoss;            // Max loss seen (for analysis)
+   double   maxLoss;
+   
+   // V7.33 NEW FIELDS
+   bool     lossPartialLevel1Done;    // First loss partial close done
+   bool     lossPartialLevel2Done;    // Second loss partial close done
+   bool     lossPartialLevel3Done;    // Third loss partial close done
+   bool     lossPartialLevel4Done;    // Fourth loss partial close done
+   bool     profitPartialLevel1Done;  // First profit partial close done
+   bool     profitPartialLevel2Done;  // Second profit partial close done
+   bool     profitPartialLevel3Done;  // Third profit partial close done
+   bool     profitPartialLevel4Done;  // Fourth profit partial close done
+   bool     trailingTPActive;         // Trailing TP activated
+   double   lastTrailingTPPrice;      // Last trailing TP price            // Max loss seen (for analysis)
 };
 struct SignalResult
 {
@@ -781,6 +816,15 @@ double   g_tickValue;
 double   g_lotStep;
 int      g_lotDigits;
 double   g_minLot;
+
+// V7.33: Arrays for multi-part closing
+double   g_lossPartPercentages[10];   // Array to store parsed loss close percentages
+double   g_lossPartTriggers[10];      // Array to store parsed loss trigger percentages
+double   g_profitPartPercentages[10]; // Array to store parsed profit close percentages
+double   g_profitPartTriggers[10];    // Array to store parsed profit trigger percentages
+int      g_lossPartsCount = 0;        // Actual count of loss parts
+int      g_profitPartsCount = 0;      // Actual count of profit parts
+
 double   g_maxLot;
 int      g_digits;
 double   g_contractSize;
@@ -867,9 +911,55 @@ double GetEffectiveLotStep()
    return fallbackStep;
 }
 
+double NormalizeVolumeToStep(double lots)
+{
+   double step = GetEffectiveLotStep();
+   if(!MathIsValidNumber(lots) || lots <= 0.0 || !MathIsValidNumber(step) || step <= 0.0)
+      return 0.0;
+
+   double aligned = MathFloor((lots + 1e-12) / step) * step;
+   return NormalizeDouble(aligned, g_lotDigits);
+}
+
+bool NormalizeAndValidateOrderVolume(double requestedLots, double &normalizedLots, string &reason)
+{
+   reason = "";
+   normalizedLots = NormalizeVolumeToStep(requestedLots);
+   if(normalizedLots <= 0.0)
+   {
+      reason = "non-positive or non-finite normalized lot";
+      return false;
+   }
+
+   normalizedLots = MathMax(normalizedLots, g_risk.minLot);
+   normalizedLots = MathMin(normalizedLots, g_risk.maxLot);
+   normalizedLots = MathMax(normalizedLots, g_minLot);
+   normalizedLots = MathMin(normalizedLots, g_maxLot);
+   normalizedLots = NormalizeVolumeToStep(normalizedLots);
+
+   if(!MathIsValidNumber(normalizedLots) || normalizedLots < g_minLot || normalizedLots > g_maxLot)
+   {
+      reason = "outside broker min/max volume bounds";
+      return false;
+   }
+
+   double volumeLimit = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_LIMIT);
+   if(MathIsValidNumber(volumeLimit) && volumeLimit > 0.0 && normalizedLots > volumeLimit)
+   {
+      double capped = NormalizeVolumeToStep(volumeLimit);
+      if(capped < g_minLot)
+      {
+         reason = "symbol volume limit below minimum tradable lot";
+         return false;
+      }
+      normalizedLots = capped;
+   }
+
+   return true;
+}
+
 
 void ResetAdaptiveParamsToDefaults();
-
 bool IsPlacementEnabled() { return INPUT_TOGGLE_PLACE_ORDERS; }
 bool IsCloseEnabled() { return INPUT_TOGGLE_CLOSE_ORDERS; }
 bool IsStopModifyEnabled() { return INPUT_TOGGLE_MODIFY_STOPS; }
@@ -1308,6 +1398,88 @@ bool ValidateInputsStrict(string &err)
 //+------------------------------------------------------------------+
 //| SECTION 6: INITIALIZATION                                        |
 //+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| V7.33: Parse comma-separated string into double array            |
+//+------------------------------------------------------------------+
+int ParseCSVToArray(string csv, double &outArray[], int maxElements = 10)
+{
+   string parts[];
+   int count = StringSplit(csv, ',', parts);
+   
+   if(count <= 0 || count > maxElements)
+   {
+      Print("ERROR: ParseCSVToArray failed. Count=", count, " Max=", maxElements, " CSV=", csv);
+      return 0;
+   }
+   
+   for(int i = 0; i < count; i++)
+   {
+      StringTrimLeft(parts[i]);
+      StringTrimRight(parts[i]);
+      outArray[i] = StringToDouble(parts[i]);
+      
+      if(outArray[i] <= 0 || outArray[i] > 100)
+      {
+         Print("WARNING: Invalid percentage value: ", outArray[i], " at index ", i);
+         outArray[i] = MathMax(1.0, MathMin(100.0, outArray[i]));
+      }
+   }
+   
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| V7.33: Validate and normalize percentage arrays                  |
+//+------------------------------------------------------------------+
+void ValidatePartialCloseArrays()
+{
+   // Parse loss percentages and triggers
+   g_lossPartsCount = ParseCSVToArray(INPUT_LOSS_PARTS_PERCENTAGES, g_lossPartPercentages, 10);
+   int lossTrigCount = ParseCSVToArray(INPUT_LOSS_PARTS_TRIGGERS, g_lossPartTriggers, 10);
+   
+   if(g_lossPartsCount != lossTrigCount)
+   {
+      Print("WARNING: Loss percentages count (", g_lossPartsCount, ") != triggers count (", lossTrigCount, ")");
+      g_lossPartsCount = MathMin(g_lossPartsCount, lossTrigCount);
+   }
+   
+   if(g_lossPartsCount > INPUT_LOSS_PARTS_COUNT)
+   {
+      Print("WARNING: Parsed loss parts (", g_lossPartsCount, ") > INPUT_LOSS_PARTS_COUNT (", INPUT_LOSS_PARTS_COUNT, ")");
+      g_lossPartsCount = INPUT_LOSS_PARTS_COUNT;
+   }
+   
+   // Parse profit percentages and triggers
+   g_profitPartsCount = ParseCSVToArray(INPUT_PROFIT_PARTS_PERCENTAGES, g_profitPartPercentages, 10);
+   int profitTrigCount = ParseCSVToArray(INPUT_PROFIT_PARTS_TRIGGERS, g_profitPartTriggers, 10);
+   
+   if(g_profitPartsCount != profitTrigCount)
+   {
+      Print("WARNING: Profit percentages count (", g_profitPartsCount, ") != triggers count (", profitTrigCount, ")");
+      g_profitPartsCount = MathMin(g_profitPartsCount, profitTrigCount);
+   }
+   
+   if(g_profitPartsCount > INPUT_PROFIT_PARTS_COUNT)
+   {
+      Print("WARNING: Parsed profit parts (", g_profitPartsCount, ") > INPUT_PROFIT_PARTS_COUNT (", INPUT_PROFIT_PARTS_COUNT, ")");
+      g_profitPartsCount = INPUT_PROFIT_PARTS_COUNT;
+   }
+   
+   // Log configuration
+   Print("=== V7.33 PARTIAL CLOSE CONFIG ===");
+   Print("Loss Parts: ", g_lossPartsCount);
+   for(int i = 0; i < g_lossPartsCount; i++)
+   {
+      Print("  Part ", i+1, ": Close ", g_lossPartPercentages[i], "% at ", g_lossPartTriggers[i], "% loss");
+   }
+   Print("Profit Parts: ", g_profitPartsCount);
+   for(int i = 0; i < g_profitPartsCount; i++)
+   {
+      Print("  Part ", i+1, ": Close ", g_profitPartPercentages[i], "% at ", g_profitPartTriggers[i], "% profit");
+   }
+}
+
 int OnInit()
 {
    //--- Expiry check
@@ -2102,6 +2274,9 @@ void OnTick()
 bool CloseMainPositionsOppositeToSignal(int direction)
 {
    bool allClosed = true;
+   int profitableClosedCount = 0;
+   int skippedLosingCount = 0;
+   
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -2111,30 +2286,58 @@ bool CloseMainPositionsOppositeToSignal(int direction)
       string comment = PositionGetString(POSITION_COMMENT);
       if(StringFind(comment, COMMENT_MAIN_PREFIX) < 0)
          continue;
-         if(!IsMainEntryComment(comment))
+      if(!IsMainEntryComment(comment))
          continue;
 
       int posType = (int)PositionGetInteger(POSITION_TYPE);
       int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+      
+      // Skip positions in the same direction as new signal
       if(posDir == direction)
          continue;
 
-      if(!g_trade.PositionClose(ticket))
+      // ===== V7.32 FIX: CHECK PROFIT BEFORE CLOSING =====
+      // Get current profit/loss of the position
+      double positionProfit = PositionGetDouble(POSITION_PROFIT);
+      
+      // Only close if position is in PROFIT (above 0)
+      if(positionProfit > 0)
       {
-         allClosed = false;
-         Print("FLIP_CLEANUP CLOSE FAILED: ticket=", ticket,
-               " | retcode=", g_trade.ResultRetcode(),
-               " | comment=", g_trade.ResultComment());
+         if(!g_trade.PositionClose(ticket))
+         {
+            allClosed = false;
+            Print("FLIP_CLEANUP CLOSE FAILED: ticket=", ticket,
+                  " | profit=", DoubleToString(positionProfit, 2),
+                  " | retcode=", g_trade.ResultRetcode(),
+                  " | comment=", g_trade.ResultComment());
+         }
+         else
+         {
+            profitableClosedCount++;
+            Print("FLIP_CLEANUP CLOSE (PROFIT): closed ticket=", ticket,
+                  " | profit=", DoubleToString(positionProfit, 2),
+                  " | oldDir=", (posDir == 1 ? "BUY" : "SELL"),
+                  " | newDir=", (direction == 1 ? "BUY" : "SELL"));
+         }
       }
       else
       {
-        Print("FLIP_CLEANUP CLOSE: closed ticket=", ticket,
-               " | oldDir=", (posDir == 1 ? "BUY" : "SELL"),
-               " | newDir=", (direction == 1 ? "BUY" : "SELL"));
+         // Position is in loss or breakeven - keep it running
+         skippedLosingCount++;
+         Print("FLIP_CLEANUP SKIP (LOSS/BE): kept ticket=", ticket,
+               " | profit=", DoubleToString(positionProfit, 2),
+               " | direction=", (posDir == 1 ? "BUY" : "SELL"),
+               " | reason=NOT_PROFITABLE");
       }
+      // ===== END OF V7.32 FIX =====
    }
+   
+   Print("FLIP_CLEANUP SUMMARY: profitableClosed=", profitableClosedCount,
+         " | skippedLosing=", skippedLosingCount);
+   
    return allClosed;
 }
+
 
 bool CancelMainPendingStopsOppositeToDirection(int direction)
 {
@@ -5111,7 +5314,7 @@ g_mtfReadFailureThisTick = false;
          lotSize *= INPUT_HIGH_ADX_LOT_MULTIPLIER;
    }
 
-   if(INPUT_LOT_RISK_PARITY_CAP_ON && INPUT_ENABLE_RISK_PARITY_CAP)
+if(INPUT_LOT_RISK_PARITY_CAP_ON && INPUT_ENABLE_RISK_PARITY_CAP)
    {
       int sess = GetCurrentSession();
       double volRatio = CalculateVolatilityRatio();
@@ -5120,6 +5323,23 @@ g_mtfReadFailureThisTick = false;
       double capLots = INPUT_RISK_PARITY_BASE_CAP_LOTS * sessionWeight / volNorm;
       lotSize = MathMin(lotSize, MathMax(capLots, g_minLot));
    }
+
+   // Final post-transform lot normalization (all multipliers/caps already applied)
+   string volumeReason = "";
+   double normalizedLotSize = 0.0;
+   if(!NormalizeAndValidateOrderVolume(lotSize, normalizedLotSize, volumeReason))
+   {
+      if(INPUT_ENABLE_LOGGING)
+      {
+         Print("LOT NORMALIZATION REJECTED: requested=", DoubleToString(lotSize, g_lotDigits),
+               " | reason=", volumeReason,
+               " | step=", DoubleToString(GetEffectiveLotStep(), g_lotDigits),
+               " | brokerMin=", DoubleToString(g_minLot, g_lotDigits),
+               " | brokerMax=", DoubleToString(g_maxLot, g_lotDigits));
+      }
+      return false;
+   }
+   lotSize = normalizedLotSize;
 
    if(lotSize <= 0)
    {
@@ -6208,13 +6428,27 @@ bool ExecuteOrder(const DecisionResult &decision)
       return false;
    }
 
-   int maxAttempts = INPUT_EXEC_MARKET_RETRY_ON ? 3 : 1;
+  int maxAttempts = INPUT_EXEC_MARKET_RETRY_ON ? 3 : 1;
+   double attemptLot = decision.lotSize;
+   string lotReason = "";
+   double validatedLot = 0.0;
+   if(!NormalizeAndValidateOrderVolume(attemptLot, validatedLot, lotReason))
+   {
+      Print("ORDER REJECTED BEFORE SEND: invalid initial lot | requested=", DoubleToString(attemptLot, g_lotDigits),
+            " | reason=", lotReason,
+            " | step=", DoubleToString(GetEffectiveLotStep(), g_lotDigits),
+            " | min=", DoubleToString(g_minLot, g_lotDigits),
+            " | max=", DoubleToString(g_maxLot, g_lotDigits));
+      return false;
+   }
+   attemptLot = validatedLot;
+
    for(int attempt = 0; attempt < maxAttempts; attempt++)
    {
      g_trade.SetTypeFilling(g_selectedFillingMode);
       g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_MAIN));
 
-      if(g_trade.PositionOpen(_Symbol, orderType, decision.lotSize, price, sl, tp, comment))
+      if(g_trade.PositionOpen(_Symbol, orderType, attemptLot, price, sl, tp, comment))
       {
          ulong orderTicket = g_trade.ResultOrder();
          ulong positionId = ResolveOpenedPositionId(orderTicket, comment);
@@ -6225,7 +6459,7 @@ bool ExecuteOrder(const DecisionResult &decision)
                " -> positionId=", positionId);
 
          Print("ORDER PLACED: ", (decision.direction == 1 ? "BUY" : "SELL"),
-               " | Lot: ", decision.lotSize,
+                 " | Lot: ", attemptLot,
                " | Price: ", price,
                " | SL: ", sl, " | TP: ", tp,
                " | Conf: ", DoubleToString(decision.confidence, 1), "%",
@@ -6236,7 +6470,11 @@ bool ExecuteOrder(const DecisionResult &decision)
                " | PositionId: ", positionId);
 
          // Track position in internal array
-   TrackNewPosition(positionId, decision, comment);
+            DecisionResult trackedDecision = decision;
+         trackedDecision.lotSize = attemptLot;
+
+         // Track position in internal array
+   TrackNewPosition(positionId, trackedDecision, comment);
          // Record RL state?action (if RL active)
          if(INPUT_ENABLE_RL && INPUT_EXEC_RECORD_RL_ON_SUBMIT && INPUT_RL_RECORD_ON)
          {
@@ -6246,7 +6484,7 @@ bool ExecuteOrder(const DecisionResult &decision)
                                           CalculateDrawdownPercent(),
                                           g_consecutiveWins >= 2);
                       RecordStateAction(state, decision.rlAction, orderTicket, positionId,
-                                        price, decision.slPoints * g_point, decision.lotSize,
+                                                 price, decision.slPoints * g_point, attemptLot,
                                         SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE),
                                         decision.confidence, decision.mtfScore,
                                         GetCombinationStrengthSnapshot(decision.signalCombination));
@@ -6264,8 +6502,37 @@ bool ExecuteOrder(const DecisionResult &decision)
          return true;
       }
 
-      Print("Order attempt ", attempt + 1, " failed: ", g_trade.ResultRetcode(),
-            " - ", g_trade.ResultComment());
+       uint retcode = g_trade.ResultRetcode();
+      Print("Order attempt ", attempt + 1, " failed: ", retcode,
+            " - ", g_trade.ResultComment(),
+            " | requestedLot=", DoubleToString(decision.lotSize, g_lotDigits),
+            " | attemptLot=", DoubleToString(attemptLot, g_lotDigits),
+            " | step=", DoubleToString(GetEffectiveLotStep(), g_lotDigits),
+            " | min=", DoubleToString(g_minLot, g_lotDigits),
+            " | max=", DoubleToString(g_maxLot, g_lotDigits));
+
+      if(retcode == TRADE_RETCODE_INVALID_VOLUME)
+      {
+         double nextLot = attemptLot - GetEffectiveLotStep();
+         if(!NormalizeAndValidateOrderVolume(nextLot, validatedLot, lotReason))
+         {
+            Print("RETRY STOPPED: cannot normalize fallback lot after invalid volume",
+                  " | previousLot=", DoubleToString(attemptLot, g_lotDigits),
+                  " | nextRequested=", DoubleToString(nextLot, g_lotDigits),
+                  " | reason=", lotReason);
+            break;
+         }
+
+         if(validatedLot >= attemptLot)
+         {
+            Print("RETRY STOPPED: invalid-volume fallback did not reduce lot",
+                  " | previousLot=", DoubleToString(attemptLot, g_lotDigits),
+                  " | fallbackLot=", DoubleToString(validatedLot, g_lotDigits));
+            break;
+         }
+
+         attemptLot = validatedLot;
+      }
 
       // Refresh price before next attempt
       if(decision.direction == 1)
@@ -6352,196 +6619,227 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
 //+------------------------------------------------------------------+
 void Handle50PercentLotClose()
 {
+   // V7.33: Multi-part LOSS-based partial closing
+   if(!INPUT_ENABLE_LOSS_PARTIAL_CLOSE)
+      return;
+      
    if(!IsCloseEnabled() || !INPUT_CLOSE_50PCT_DEFENSIVE_ON)
       return;
-   static bool loggedDisabled = false;
-   if(!g_effClose50PctDefensive)
-   {
-      if(!loggedDisabled)
-      {
-         Print("50% defensive close disabled (INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE=OFF)");
-         loggedDisabled = true;
-      }
-      return;
-   }
+   
    for(int i = 0; i < g_positionCount; i++)
    {
       if(!g_positions[i].isActive) continue;
-      if(g_positions[i].lotReduced) continue;
-
-      // Skip aux positions
+      
+      // Skip recovery/aux positions
       if(StringFind(g_positions[i].comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
       if(StringFind(g_positions[i].comment, COMMENT_AVG_PREFIX) >= 0) continue;
-
+      
       ulong ticket = g_positions[i].ticket;
-
+      
       if(!PositionSelectByTicket(ticket))
       {
          g_positions[i].isActive = false;
-         g_syncMissingCount++;
-         if(INPUT_ENABLE_LOGGING) Print("SYNC MISSING: tracked ticket not found on broker: ", ticket);
          continue;
       }
-
+      
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double slPrice = PositionGetDouble(POSITION_SL);
       double currentLots = PositionGetDouble(POSITION_VOLUME);
       int posType = (int)PositionGetInteger(POSITION_TYPE);
-
+      
       if(slPrice == 0) continue;
-
+      
       double slDistance = MathAbs(entryPrice - slPrice);
       if(slDistance <= 0) continue;
-
+      
       double currentLoss = 0;
       if(posType == POSITION_TYPE_BUY)
          currentLoss = entryPrice - currentPrice;
       else
          currentLoss = currentPrice - entryPrice;
-
-      if(currentLoss <= 0) continue; // only when in loss
-
+      
+      if(currentLoss <= 0) continue;
+      
       double lossPct = (currentLoss / slDistance) * 100.0;
-
-      if(lossPct >= INPUT_50PCT_TRIGGER_LOW && lossPct <= INPUT_50PCT_TRIGGER_HIGH)
+      
+      // V7.33: Process each loss closing level
+      for(int level = 0; level < g_lossPartsCount; level++)
       {
-         double closeRatio = 0.5; // default
-         if(INPUT_CONFIDENCE_BASED_CLOSE)
-         {
-            double conf = g_positions[i].confidenceAtEntry;
-            if(conf >= 80)      closeRatio = 0.25;
-            else if(conf >= 60) closeRatio = 0.5;
-            else                closeRatio = 0.75;
-         }
-
-         double lotsToClose = currentLots * closeRatio;
-        lotsToClose = MathFloor(lotsToClose / GetEffectiveLotStep()) * GetEffectiveLotStep();
+         bool alreadyClosed = false;
+         if(level == 0) alreadyClosed = g_positions[i].lossPartialLevel1Done;
+         else if(level == 1) alreadyClosed = g_positions[i].lossPartialLevel2Done;
+         else if(level == 2) alreadyClosed = g_positions[i].lossPartialLevel3Done;
+         else if(level == 3) alreadyClosed = g_positions[i].lossPartialLevel4Done;
+         
+         if(alreadyClosed) continue;
+         
+         double triggerPct = g_lossPartTriggers[level];
+         if(lossPct < triggerPct) continue;
+         
+         double originalLots = g_positions[i].originalLots;
+         double closePercent = g_lossPartPercentages[level];
+         double lotsToClose = (originalLots * closePercent) / 100.0;
+         
+         lotsToClose = MathFloor(lotsToClose / GetEffectiveLotStep()) * GetEffectiveLotStep();
          lotsToClose = MathMax(lotsToClose, g_minLot);
-
-         if(lotsToClose < g_minLot || lotsToClose >= currentLots)
+         
+         if(lotsToClose >= currentLots)
          {
-            g_positions[i].lotReduced = true;
-            g_positions[i].halfSLHit = true;
-            continue;
+            lotsToClose = currentLots - g_minLot;
+            if(lotsToClose < g_minLot)
+            {
+               if(level == 0) g_positions[i].lossPartialLevel1Done = true;
+               else if(level == 1) g_positions[i].lossPartialLevel2Done = true;
+               else if(level == 2) g_positions[i].lossPartialLevel3Done = true;
+               else if(level == 3) g_positions[i].lossPartialLevel4Done = true;
+               continue;
+            }
          }
-
+         
          if(g_trade.PositionClosePartial(ticket, lotsToClose))
          {
-            // V7.31 FIX #3: Update state ONLY after successful close
             double remainingLots = PositionGetDouble(POSITION_VOLUME);
-            g_positions[i].currentLots = MathMax(0.0, remainingLots);
-            g_positions[i].lotReduced = true;
-            g_positions[i].halfSLHit = true;
+            g_positions[i].currentLots = remainingLots;
             
-            Print("50% LOT CLOSE SUCCESS: Ticket ", ticket,
-                  " | Closed ", DoubleToString(lotsToClose, 2),
-                  " lots at ", DoubleToString(lossPct, 2), "% SL distance",
-                  " | Remaining ", DoubleToString(g_positions[i].currentLots, 2), " lots");
+            if(level == 0) g_positions[i].lossPartialLevel1Done = true;
+            else if(level == 1) g_positions[i].lossPartialLevel2Done = true;
+            else if(level == 2) g_positions[i].lossPartialLevel3Done = true;
+            else if(level == 3) g_positions[i].lossPartialLevel4Done = true;
+            
+            if(level == 0) 
+            {
+               g_positions[i].lotReduced = true;
+               g_positions[i].halfSLHit = true;
+            }
+            
+            Print("✅ V7.33 LOSS PARTIAL: Ticket ", ticket,
+                  " | Part ", level+1, "/", g_lossPartsCount,
+                  " | Closed ", DoubleToString(lotsToClose, 2), " lots (",
+                  DoubleToString(closePercent, 1), "%)",
+                  " | At ", DoubleToString(lossPct, 1), "% loss",
+                  " | Remaining: ", DoubleToString(remainingLots, 2));
          }
          else
          {
-            // V7.31 FIX #3: Handle failed partial close - keep state unchanged
-            double minValidLot = g_minLot;
-            double fullLotRemainder = currentLots - lotsToClose;
-            bool tooSmallRemainder = (fullLotRemainder < minValidLot);
-            bool invalidCloseVolume = (lotsToClose < minValidLot);
-            
-            if(INPUT_ENABLE_LOGGING)
-            {
-               Print("50% LOT CLOSE FAILED: Ticket ", ticket,
-                     " | Requested ", DoubleToString(lotsToClose, 2), " lots",
-                     " | Current ", DoubleToString(currentLots, 2), " lots",
-                     " | MinLot ", DoubleToString(minValidLot, 2),
-                     " | InvalidVolume=", invalidCloseVolume,
-                     " | TooSmallRemainder=", tooSmallRemainder,
-                     " | LastError=", GetLastError());
-            }
-            // State remains unchanged - no lotReduced/halfSLHit flags set
+            Print("❌ LOSS PARTIAL FAILED: Ticket ", ticket, " | Error: ", GetLastError());
          }
       }
    }
 }
+
 //+------------------------------------------------------------------+
 //| SECTION 24: PARTIAL CLOSE & TRAILING STOP                        |
 //+------------------------------------------------------------------+
 void ManagePartialClose()
 {
+   // V7.33: Multi-part PROFIT-based partial closing
+   if(!INPUT_ENABLE_PROFIT_PARTIAL_CLOSE)
+      return;
+      
    if(!IsCloseEnabled() || !INPUT_CLOSE_PARTIAL_TP_ON)
       return;
-   static bool loggedDisabled = false;
-   if(!g_effClosePartialTP)
-   {
-      if(!loggedDisabled)
-      {
-         Print("PARTIAL CLOSE disabled (INPUT_ENABLE_CLOSE_PARTIAL_TP=OFF or legacy OFF)");
-         loggedDisabled = true;
-      }
-      return;
-   }
-
+   
    for(int i = 0; i < g_positionCount; i++)
    {
       if(!g_positions[i].isActive) continue;
-      if(g_positions[i].partialClosed) continue;
-
+      
       ulong ticket = g_positions[i].ticket;
-
+      
       if(!PositionSelectByTicket(ticket))
       {
          g_positions[i].isActive = false;
          continue;
       }
-
+      
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double tpPrice = PositionGetDouble(POSITION_TP);
       double currentLots = PositionGetDouble(POSITION_VOLUME);
       int posType = (int)PositionGetInteger(POSITION_TYPE);
-
+      
       if(tpPrice == 0) continue;
-
+      
       double tpDistance = MathAbs(tpPrice - entryPrice);
       if(tpDistance <= 0) continue;
-
+      
       double currentProfit = 0;
       if(posType == POSITION_TYPE_BUY)
          currentProfit = currentPrice - entryPrice;
       else
          currentProfit = entryPrice - currentPrice;
-
+      
       if(currentProfit <= 0) continue;
-
+      
       double profitPct = (currentProfit / tpDistance) * 100.0;
-
-      if(profitPct >= INPUT_PARTIAL_TP_PERCENT)
+      
+      // V7.33: Process each profit closing level
+      for(int level = 0; level < g_profitPartsCount; level++)
       {
-         double lotsToClose = currentLots * INPUT_PARTIAL_CLOSE_RATIO;
-          lotsToClose = MathFloor(lotsToClose / GetEffectiveLotStep()) * GetEffectiveLotStep();
+         bool alreadyClosed = false;
+         if(level == 0) alreadyClosed = g_positions[i].profitPartialLevel1Done;
+         else if(level == 1) alreadyClosed = g_positions[i].profitPartialLevel2Done;
+         else if(level == 2) alreadyClosed = g_positions[i].profitPartialLevel3Done;
+         else if(level == 3) alreadyClosed = g_positions[i].profitPartialLevel4Done;
+         
+         if(alreadyClosed) continue;
+         
+         double triggerPct = g_profitPartTriggers[level];
+         if(profitPct < triggerPct) continue;
+         
+         double originalLots = g_positions[i].originalLots;
+         double closePercent = g_profitPartPercentages[level];
+         double lotsToClose = (originalLots * closePercent) / 100.0;
+         
+         lotsToClose = MathFloor(lotsToClose / GetEffectiveLotStep()) * GetEffectiveLotStep();
          lotsToClose = MathMax(lotsToClose, g_minLot);
-
-         if(lotsToClose < g_minLot || lotsToClose >= currentLots)
+         
+         if(lotsToClose >= currentLots)
          {
-            g_positions[i].partialClosed = true;
-            continue;
+            lotsToClose = currentLots - g_minLot;
+            if(lotsToClose < g_minLot)
+            {
+               if(level == 0) g_positions[i].profitPartialLevel1Done = true;
+               else if(level == 1) g_positions[i].profitPartialLevel2Done = true;
+               else if(level == 2) g_positions[i].profitPartialLevel3Done = true;
+               else if(level == 3) g_positions[i].profitPartialLevel4Done = true;
+               continue;
+            }
          }
+         
          if(g_trade.PositionClosePartial(ticket, lotsToClose))
          {
-            g_positions[i].partialClosed = true;
-            g_positions[i].currentLots = currentLots - lotsToClose;
-            Print("PARTIAL CLOSE: Ticket ", ticket, " | Closed ", lotsToClose,
-                  " lots at ", profitPct, "% TP");
-
-            // Move SL to breakeven if enabled
-            if(g_effModifyMoveToBE && !g_positions[i].movedToBreakeven)
+            double remainingLots = PositionGetDouble(POSITION_VOLUME);
+            g_positions[i].currentLots = remainingLots;
+            
+            if(level == 0) g_positions[i].profitPartialLevel1Done = true;
+            else if(level == 1) g_positions[i].profitPartialLevel2Done = true;
+            else if(level == 2) g_positions[i].profitPartialLevel3Done = true;
+            else if(level == 3) g_positions[i].profitPartialLevel4Done = true;
+            
+            if(level == 0) g_positions[i].partialClosed = true;
+            
+            Print("✅ V7.33 PROFIT PARTIAL: Ticket ", ticket,
+                  " | Part ", level+1, "/", g_profitPartsCount,
+                  " | Closed ", DoubleToString(lotsToClose, 2), " lots (",
+                  DoubleToString(closePercent, 1), "%)",
+                  " | At ", DoubleToString(profitPct, 1), "% profit",
+                  " | Remaining: ", DoubleToString(remainingLots, 2));
+            
+            if(level == 0 && g_effModifyMoveToBE && !g_positions[i].movedToBreakeven)
             {
                MoveToBreakeven(ticket, entryPrice, posType);
                g_positions[i].movedToBreakeven = true;
             }
          }
+         else
+         {
+            Print("❌ PROFIT PARTIAL FAILED: Ticket ", ticket, " | Error: ", GetLastError());
+         }
       }
    }
 }
+
 //+------------------------------------------------------------------+
 void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 {
