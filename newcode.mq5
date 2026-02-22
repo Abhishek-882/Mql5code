@@ -99,21 +99,21 @@ input int      INPUT_MAX_CONCURRENT_RECOVERY_TRADES = 3; // Max concurrent recov
 input int      INPUT_MAX_SAME_DIRECTION    = 2;  // Max same-direction trades
 input int      INPUT_SAME_DIRECTION_BLOCK_SECONDS = 360; // Direction-specific re-entry block in seconds (0=disable)
 input double   INPUT_PROXIMITY_POINTS      = 0.0; // Proximity rule disabled (timeout-only pacing)
-input int      INPUT_POSITION_AGE_HOURS    = 24;  // Close stale positions after N hours (0=disabled)
+input int      INPUT_POSITION_AGE_HOURS    = 0;  // Close stale positions after N hours (0=disabled)
 input int      INPUT_MAGIC_NUMBER           = 770700; // Magic Number
 input int      INPUT_ORDER_COOLDOWN_SECONDS = 300; // Cooldown between orders (seconds) FIXED: 5 minutes to prevent clustering
 input ENUM_EXECUTION_MODE INPUT_EXECUTION_MODE = MARKET; // Order execution mode
 input int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset from market (points)
 input int      INPUT_PENDING_EXPIRY_MINUTES = 60; // Pending stop expiry in minutes
 input bool     INPUT_RESET_ALL_PERSISTED_STATE = false; // Delete all persisted symbol+magic files on init
-input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // Close previous position when opposite signal appears
-input bool     INPUT_STRICT_OPPOSITE_FLIP_MODE = true; // When max main=1: force close/cancel opposite exposure before new opposite entry
+input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // deprecated // Close previous position when opposite signal appears
+input bool     INPUT_STRICT_OPPOSITE_FLIP_MODE = false; // deprecated // When max main=1: force close/cancel opposite exposure before new opposite entry
 input bool     INPUT_MAX_MAIN_HARD_CAP_ON = true; // Hard cap: INPUT_MAX_CONCURRENT_TRADES is absolute entry limit (no adaptive expansion in gating)
-input bool     INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON = true; // On opposite flip, cancel opposite-direction MAIN pending stop orders
-input bool     INPUT_FLIP_BYPASS_COOLDOWN_ON = true; // Confirmed opposite flip may bypass global cooldown for replacement entry
+input bool     INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON = false; // deprecated // On opposite flip, cancel opposite-direction MAIN pending stop orders
+input bool     INPUT_FLIP_BYPASS_COOLDOWN_ON = false; // deprecated // Confirmed opposite flip may bypass global cooldown for replacement entry
 input bool     INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION = false; // Allow adaptive max-position expansion above input cap when hard-cap is OFF
 input double   INPUT_FLIP_CLOSE_MAX_SL_PERCENT = 50.0; // Opposite close allowed only if adverse move is below this % of SL distance
-input bool     INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN = false; // Force-close opposite MAIN positions even when SL-loss threshold block would skip
+input bool     INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN = false; // deprecated // Force-close opposite MAIN positions even when SL-loss threshold block would skip
 input bool     INPUT_FLIP_ZERO_TP_ON = true; // Flip TP reset mode: true=zero TP, false=reset to INPUT_FLIP_TP_RESET_PRICE
 input double   INPUT_FLIP_TP_RESET_PRICE = 0.0; // TP value used when INPUT_FLIP_ZERO_TP_ON=false (normalized to symbol digits)
 input bool     INPUT_FLIP_TP_RESET_CLAMP_ON = true; // If TP reset price violates stop distance: true=clamp outward, false=fallback to 0.0/
@@ -334,8 +334,8 @@ input double   INPUT_TRAIL_ATR_MULTIPLIER    = 1.0;  // Trail distance = ATR x t
 input double   INPUT_TRAIL_STEP_POINTS       = 50.0; // Min improvement step (points)
 input double   INPUT_TRAIL_ACTIVATION_POINTS = 200.0;// Activate after this profit (points)
 input bool     INPUT_ENABLE_TRAILING_TP      = true; // Enable trailing TP logic
-input bool     INPUT_ENABLE_HIGH_SPREAD_PROTECT = true; // Enable high-spread protective behavior
-input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable running positions when spread spikes
+input bool     INPUT_ENABLE_HIGH_SPREAD_PROTECT = false; // deprecated // Enable high-spread protective behavior
+input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = false; // deprecated // Close profitable running positions when spread spikes
 input double   INPUT_HIGH_SPREAD_CLOSE_PERCENT = 50.0; // Percent of profitable position volume to close on high spread (1..100)
 input bool     INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD = true; // Do not adjust losing-position SL/TP during spread spikes
 input double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
@@ -376,7 +376,7 @@ input bool     INPUT_ENABLE_CONSEC_WIN_CONF_DECAY = true;
 input int      INPUT_CONSEC_WIN_CONF_DECAY_AFTER_TRADES = 3;
 //--- Recovery Averaging System
 input group    "=== Recovery Averaging System ==="
-input bool     INPUT_ENABLE_RECOVERY         = false; // Master recovery gate
+input bool     INPUT_ENABLE_RECOVERY         = false; // deprecated // Master recovery gate
 input ENUM_RECOVERY_MODE INPUT_RECOVERY_MODE = RECOVERY_AVERAGING; // Recovery mode selector
 input int      INPUT_RECOVERY_THREAT_MIN     = 60;   // Minimum threat to trigger recovery
 input int      INPUT_MAX_RECOVERY_PER_POS    = 2;    // Max recovery orders per position
@@ -993,19 +993,7 @@ bool ComputePartialCloseLots(double currentLots, double originalLots, double clo
 {
    lotsToClose = 0.0;
    fullExit = false;
-   if(currentLots <= 0.0 || closePercent <= 0.0)
-      return false;
-   double basisLots = (mode == CLOSE_BASIS_ORIGINAL) ? originalLots : currentLots;
-   double candidate = basisLots * (closePercent / 100.0);
-   lotsToClose = FloorVolumeToStep(candidate);
-   if(lotsToClose < g_minLot)
-      lotsToClose = NormalizeVolumeToStep(g_minLot);
-   if(lotsToClose >= currentLots)
-   {
-      fullExit = true;
-      return false;
-   }
-   return (lotsToClose >= g_minLot && lotsToClose < currentLots);
+   return false;
 }
 void ResetManagedTicketsThisTick()
 {
@@ -1326,9 +1314,9 @@ bool g_effCloseHighSpreadProfit = false;
 bool g_effClose50PctDefensive = false;
 bool g_effClosePartialTP = false;
 bool g_effCloseMultiLevelPartial = false;
-bool g_effModifyMoveToBE = false;
-bool g_effModifyTrailingSL = false;
-bool g_effModifyTrailingTP = false;
+bool g_effModifyMoveToBE = false; // permanently disabled
+bool g_effModifyTrailingSL = false; // permanently disabled
+bool g_effModifyTrailingTP = false; // permanently disabled
 bool g_effModifySkipLossOnHighSpread = false;
 struct EffectiveConfig
 {
@@ -2301,139 +2289,13 @@ void OnTick()
 }
 bool ZeroTPForMainPositionsOppositeToSignal(int direction)
 {
-   // V7.35: flip TP reset is now configurable (zero TP or custom reset TP with broker-distance handling).
-   bool allModified = true;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
-         continue;
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
-      if(posDir == direction)
-         continue;
-      string symbol = PositionGetString(POSITION_SYMBOL);
-      double currentSL = PositionGetDouble(POSITION_SL);
-      double previousTP = PositionGetDouble(POSITION_TP);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double minDist = (double)MathMax(g_stopLevel, g_freezeLevel) * g_point;
-      double targetTP = INPUT_FLIP_ZERO_TP_ON ? 0.0 : NormalizeDouble(INPUT_FLIP_TP_RESET_PRICE, g_digits);
-      string mode = INPUT_FLIP_ZERO_TP_ON ? "ZERO" : "RESET_PRICE";
-      if(!INPUT_FLIP_ZERO_TP_ON && targetTP != 0.0 && minDist > 0.0)
-      {
-         double distToCurrent = MathAbs(targetTP - currentPrice);
-         if(distToCurrent < minDist)
-         {
-            if(INPUT_FLIP_TP_RESET_CLAMP_ON)
-            {
-               targetTP = (posDir == 1) ? NormalizeDouble(currentPrice - minDist, g_digits)
-                                        : NormalizeDouble(currentPrice + minDist, g_digits);
-               if(INPUT_ENABLE_LOGGING)
-                  Print("FLIP_TP_RESET CLAMPED: ticket=", ticket,
-                        " | symbol=", symbol,
-                        " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                        " | mode=", mode,
-                        " | current=", DoubleToString(currentPrice, g_digits),
-                        " | prevTP=", DoubleToString(previousTP, g_digits),
-                        " | chosenTP=", DoubleToString(targetTP, g_digits),
-                        " | minDist=", DoubleToString(minDist, g_digits));
-            }
-            else
-            {
-               if(INPUT_ENABLE_LOGGING)
-                  Print("FLIP_TP_RESET TOO_CLOSE -> FALLBACK_ZERO: ticket=", ticket,
-                        " | symbol=", symbol,
-                        " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                        " | mode=", mode,
-                        " | requestedTP=", DoubleToString(INPUT_FLIP_TP_RESET_PRICE, g_digits),
-                        " | normalizedTP=", DoubleToString(targetTP, g_digits),
-                        " | current=", DoubleToString(currentPrice, g_digits),
-                        " | minDist=", DoubleToString(minDist, g_digits));
-               targetTP = 0.0;
-               mode = "FALLBACK_ZERO";
-            }
-         }
-      }
-      if(previousTP == targetTP)
-      {
-         if(INPUT_ENABLE_LOGGING)
-            Print("FLIP_TP_RESET NOOP: ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                  " | mode=", mode,
-                  " | prevTP=", DoubleToString(previousTP, g_digits),
-                  " | targetTP=", DoubleToString(targetTP, g_digits));
-         continue;
-      }
-      bool modified = g_trade.PositionModify(ticket, currentSL, targetTP);
-      if(modified)
-      {
-         ResetTPFailureTracker(ticket);
-         if(INPUT_ENABLE_LOGGING)
-            Print("FLIP_TP_RESET OK: ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                  " | mode=", mode,
-                  " | prevTP=", DoubleToString(previousTP, g_digits),
-                  " | newTP=", DoubleToString(targetTP, g_digits),
-                  " | FORCE_OVERRIDE=YES");
-      }
-      else
-      {
-         allModified = false;
-         if(INPUT_ENABLE_LOGGING)
-            Print("FLIP_TP_RESET FAILED: ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                  " | mode=", mode,
-                  " | prevTP=", DoubleToString(previousTP, g_digits),
-                  " | targetTP=", DoubleToString(targetTP, g_digits),
-                  " | retcode=", g_trade.ResultRetcode(),
-                  " | comment=", g_trade.ResultComment());
-      }
-   }
-   return allModified;
+   // disabled: do not modify TP after entry
+   return true;
 }
 bool CloseMainPositionsOppositeToSignal(int direction)
 {
-   // V7.34 FIX: Opposite signal FORCE OVERRIDE - closes ALL opposite positions unconditionally.
-   // The user requirement is that opposite signals have absolute authority to override everything.
-   // Removed: SL loss threshold check, INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN dependency.
-   // Now: Any opposite main position is closed immediately, no exceptions.
-   bool allClosed = true;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
-         continue;
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
-      if(posDir == direction)
-         continue;
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double slPrice = PositionGetDouble(POSITION_SL);
-      double slDistance = MathAbs(entryPrice - slPrice);
-      double adverse = (posType == POSITION_TYPE_BUY) ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
-      double lossPctToSL = (slDistance > 0.0) ? (MathMax(adverse, 0.0) / slDistance) * 100.0 : 0.0;
-      Print("FLIP_FORCE_CLOSE: ticket=", ticket,
-            " | direction=", (posDir == 1 ? "BUY" : "SELL"),
-            " | lossPctToSL=", DoubleToString(lossPctToSL, 2),
-            " | FORCE_OVERRIDE=YES");
-      if(g_trade.PositionClose(ticket))
-      {
-         Print("FLIP_FORCE_CLOSE OK: ticket=", ticket,
-               " | lossPctToSL=", DoubleToString(lossPctToSL, 2));
-      }
-      else
-      {
-         allClosed = false;
-         Print("FLIP_FORCE_CLOSE FAILED: ticket=", ticket,
-               " | retcode=", g_trade.ResultRetcode(),
-               " | comment=", g_trade.ResultComment());
-      }
-   }
-   return allClosed;
+   // disabled: opposite signal never force-closes existing exposure
+   return true;
 }
 bool CancelMainPendingStopsOppositeToDirection(int direction)
 {
@@ -2479,51 +2341,8 @@ bool CancelMainPendingStopsOppositeToDirection(int direction)
 }
 bool CleanupOppositeExposureForFlip(int direction)
 {
-   if(g_flipCleanupInProgress)
-      return true;
-   g_flipCleanupInProgress = true;
-   bool allOk = true;
-   int openMainBefore = CountMainPositionsFromBroker();
-   int pendingBuyBefore = CountMainPendingStopsByDirection(1);
-   int pendingSellBefore = CountMainPendingStopsByDirection(-1);
-   Print("FLIP_CLEANUP PRE: targetDir=", (direction == 1 ? "BUY" : "SELL"),
-         " | openMain=", openMainBefore,
-         " | pendingBuy=", pendingBuyBefore,
-         " | pendingSell=", pendingSellBefore);
- bool tpZeroOk = ZeroTPForMainPositionsOppositeToSignal(direction); // Always clear opposite TP before close attempts.
-   if(!tpZeroOk)
-      Print("FLIP_CLEANUP WARNING: one or more opposite MAIN TP zeroing attempts failed.");
-   if(!CloseMainPositionsOppositeToSignal(direction))
-      allOk = false;
-   if(INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON)
-   {
-      if(!CancelMainPendingStopsOppositeToDirection(direction))
-         allOk = false;
-   }
-   int openMainAfter = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket))
-         continue;
-      string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, COMMENT_MAIN_PREFIX) < 0 || !IsMainEntryComment(comment))
-         continue;
-      int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
-      if(posDir != direction)
-         openMainAfter++;
-   }
-   int pendingBuyAfter = CountMainPendingStopsByDirection(1);
-   int pendingSellAfter = CountMainPendingStopsByDirection(-1);
-   if(openMainAfter > 0)
-      allOk = false;
-   Print("FLIP_CLEANUP POST: targetDir=", (direction == 1 ? "BUY" : "SELL"),
-         " | oppositeOpenAfter=", openMainAfter,
-         " | pendingBuy=", pendingBuyAfter,
-         " | pendingSell=", pendingSellAfter,
-         " | status=", (allOk ? "OK" : "FAILED"));
-   g_flipCleanupInProgress = false;
-   return allOk;
+   // disabled: no forced cleanup on flips
+   return true;
 }
 void OnTimer()
 {
@@ -5319,7 +5138,7 @@ bool IsPositionProfitable(ulong ticket)
 // V8.0: HandleHighSpreadOpenPositions REMOVED. Spread is entry-gate only, never closes positions.
 void HandleHighSpreadOpenPositions()
 {
-   return; // V8.0: disabled
+   // disabled: spread only filters new entries
 }
 //+------------------------------------------------------------------+
 bool ShouldSkipStopAdjustmentsForTicket(ulong ticket)
@@ -6134,7 +5953,7 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
 // V8.0: Handle50PercentLotClose REMOVED. No fractional volume close.
 void Handle50PercentLotClose()
 {
-   return; // V8.0: disabled
+   // disabled: no fractional volume closes
 }
 //+------------------------------------------------------------------+
 //| SECTION 24: PARTIAL CLOSE & TRAILING STOP                        |
@@ -6179,97 +5998,12 @@ void ManagePartialClose()
 // V8.0: MoveToBreakeven REMOVED. SL/TP are static after placement.
 void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 {
-   return; // V8.0: disabled - SL stays fixed at order placement value
-   double currentSL = PositionGetDouble(POSITION_SL);
-   double currentTP = PositionGetDouble(POSITION_TP);
-   if(posType == POSITION_TYPE_BUY)
-   {
-      if(currentSL >= entryPrice && currentSL > 0)
-      {
-         return;
-      }
-   }
-   else
-   {
-      if(currentSL <= entryPrice && currentSL > 0)
-      {
-         if(INPUT_ENABLE_LOGGING)
-            Print("BREAKEVEN GUARD: SELL position ticket ", ticket, 
-                  " SL already at or better than breakeven | currentSL=", 
-                  DoubleToString(currentSL, g_digits), 
-                  " | entryPrice=", DoubleToString(entryPrice, g_digits));
-         return;
-      }
-   }
-   double newSL = NormalizeDouble(entryPrice, g_digits);
-   double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-   double minDist = g_stopLevel * g_point;
-   if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY)
-   {
-      if(currentPrice - newSL < minDist)
-         newSL = currentPrice - minDist;
-   }
-   else
-   {
-      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && newSL - currentPrice < minDist)
-         newSL = currentPrice + minDist;
-   }
-   if(g_trade.PositionModify(ticket, newSL, currentTP))
-      Print("BREAKEVEN: Ticket ", ticket, " SL moved to ", newSL);
+   // disabled: SL/TP remain static after placement
 }
 //+------------------------------------------------------------------+
 void ManageTrailingStops()
 {
-  
-   if(!g_effModifyTrailingSL)
-  
-      return;
-   if(!IsStopModifyEnabled())
-      return;
-   static datetime lastTrailCheck = 0;
-   if(TimeCurrent() - lastTrailCheck < 5) return; // throttle to every 5?sec
-   lastTrailCheck = TimeCurrent();
-   double atr[];
-   if(CopyBuffer(g_hATR_M1, 0, 0, 1, atr) < 1 || atr[0] <= 0)
-      return;
-   double trailDistance = atr[0] * INPUT_TRAIL_ATR_MULTIPLIER +
-                          g_adaptive.trailAdjustPoints * g_point;
-   int total = PositionsTotal();
-   for(int i = 0; i < total; i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!IsOurPosition(ticket)) continue;
-      if(ShouldSkipStopAdjustmentsForTicket(ticket)) continue;
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double currentSL = PositionGetDouble(POSITION_SL);
-      double currentTP = PositionGetDouble(POSITION_TP);
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      double profit = (posType == POSITION_TYPE_BUY) ?
-                      currentPrice - entryPrice :
-                      entryPrice - currentPrice;
-      if(profit < INPUT_TRAIL_ACTIVATION_POINTS * g_point)
-         continue;
-      double newSL;
-      if(posType == POSITION_TYPE_BUY)
-         newSL = currentPrice - trailDistance;
-      else
-         newSL = currentPrice + trailDistance;
-      newSL = NormalizeDouble(newSL, g_digits);
-      double minDist = g_stopLevel * g_point;
-      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY && currentPrice - newSL < minDist)
-         continue;
-      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_SELL && newSL - currentPrice < minDist)
-         continue;
-      bool shouldMove = false;
-      if(posType == POSITION_TYPE_BUY && newSL > currentSL + INPUT_TRAIL_STEP_POINTS * g_point)
-         shouldMove = true;
-      else if(posType == POSITION_TYPE_SELL && newSL < currentSL - INPUT_TRAIL_STEP_POINTS * g_point)
-         shouldMove = true;
-      if(shouldMove && g_trade.PositionModify(ticket, newSL, currentTP))
-         Print("TRAILING: Ticket ", ticket, " SL moved from ", currentSL, " to ", newSL);
-   }
+   // disabled: SL/TP remain static after placement
 }
 //+------------------------------------------------------------------+
 bool CanModifyPosition(ulong ticket)
@@ -6299,111 +6033,26 @@ bool HasEnoughMargin(double lots, double price, ENUM_ORDER_TYPE orderType)
 //+------------------------------------------------------------------+
 //| SECTION 25: RECOVERY MODE DISPATCHER (Part 9)                    |
 //+------------------------------------------------------------------+
-void MonitorRecoveryAveragingMode() { g_activeRecoveryPrefix = COMMENT_AVG_PREFIX; g_activeRecoverySubtype = SUBTYPE_AVERAGING; MonitorRecoveryAveraging(); }
+void MonitorRecoveryAveragingMode() {
+   // disabled: recovery removed
+}
 void MonitorRecoveryHedgingMode()
 {
-   g_activeRecoveryPrefix = COMMENT_HEDGE_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
+   // disabled: recovery removed
 }
 void MonitorRecoveryGridMode()
 {
-   g_activeRecoveryPrefix = COMMENT_GRID_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
+   // disabled: recovery removed
 }
 void MonitorRecoveryMartingaleMode()
 {
-   g_activeRecoveryPrefix = COMMENT_RECOVERY_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
+   // disabled: recovery removed
 }
 //| SECTION 25: RECOVERY AVERAGING SYSTEM (Part 9)                   |
 //+------------------------------------------------------------------+
 void MonitorRecoveryAveraging()
 {
-   double threat = CalculateMarketThreat();
-   ENUM_THREAT_ZONE zone = GetThreatZone(threat);
-   double baseTriggerDepth = INPUT_RECOVERY_TRIGGER_DEPTH;
-   double triggerDepth = baseTriggerDepth;
-   if(zone == THREAT_RED)
-      triggerDepth -= 10.0;
-   else if(zone == THREAT_ORANGE)
-      triggerDepth -= 5.0;
-   if(threat >= 70.0)
-      triggerDepth -= 5.0;
-   triggerDepth = MathMax(5.0, MathMin(95.0, triggerDepth));
-   for(int i = 0; i < g_positionCount; i++)
-   {
-      if(!g_positions[i].isActive) continue;
-      if(g_positions[i].recoveryCount >= INPUT_MAX_RECOVERY_PER_POS) continue;
-      // Skip non-main positions
-      if(StringFind(g_positions[i].comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
-      if(StringFind(g_positions[i].comment, COMMENT_AVG_PREFIX)      >= 0) continue;
-      if(threat < INPUT_RECOVERY_THREAT_MIN) continue;
-      if(g_positions[i].lastRecoveryTime > 0 &&
-         TimeCurrent() - g_positions[i].lastRecoveryTime < INPUT_RECOVERY_COOLDOWN_SECONDS)
-         continue;
-      ulong ticket = g_positions[i].ticket;
-      if(!PositionSelectByTicket(ticket))
-      {
-         g_positions[i].isActive = false;
-         continue;
-      }
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double slPrice = PositionGetDouble(POSITION_SL);
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      if(slPrice == 0) continue;
-      double slDist = MathAbs(entryPrice - slPrice);
-      if(slDist <= 0) continue;
-      double loss = 0;
-      if(posType == POSITION_TYPE_BUY)
-         loss = entryPrice - currentPrice;
-      else
-         loss = currentPrice - entryPrice;
-      if(loss <= 0) continue;
-      double depthPct = (loss / slDist) * 100.0;
-      if(depthPct >= triggerDepth && depthPct <= 70)
-      {
-         double lotRatio = INPUT_RECOVERY_LOT_RATIO_MOD;
-         if(threat < 50)
-            lotRatio = INPUT_RECOVERY_LOT_RATIO_SAFE;
-         else if(threat >= 70)
-            lotRatio = INPUT_RECOVERY_LOT_RATIO_HIGH;
-         if(INPUT_ENABLE_LOGGING)
-         {
-            Print("RECOVERY CHECK: ticket=", ticket,
-                  " depthPct=", DoubleToString(depthPct, 2),
-                  " triggerDepth=", DoubleToString(triggerDepth, 2),
-                  " lotRatio=", DoubleToString(lotRatio, 2),
-                  " threat=", DoubleToString(threat, 2));
-         }
-         double recLots = g_positions[i].originalLots * lotRatio;
- double validatedRecoveryLot = 0.0;
-         string recoveryReason = "";
-         if(!NormalizeAndValidateOrderVolume(recLots, validatedRecoveryLot, recoveryReason))
-         {
-            Print("RECOVERY ORDER ABORTED: invalid recovery lot",
-                  " | parentTicket=", ticket,
-                  " | originalLots=", DoubleToString(g_positions[i].originalLots, g_lotDigits),
-                  " | ratio=", DoubleToString(lotRatio, 4),
-                  " | requested=", DoubleToString(recLots, g_lotDigits),
-                  " | reason=", recoveryReason);
-            continue;
-         }
-                 PlaceRecoveryOrder(ticket, posType, validatedRecoveryLot, slPrice, entryPrice);
-         g_positions[i].recoveryCount++;
-         g_positions[i].lastRecoveryTime = TimeCurrent();
-      }
-      else if(INPUT_ENABLE_LOGGING)
-      {
-         Print("RECOVERY SKIP: ticket=", ticket,
-               " depthPct=", DoubleToString(depthPct, 2),
-               " triggerDepth=", DoubleToString(triggerDepth, 2),
-               " lotRatio=0.00");
-      }
-   }
+   // disabled: recovery removed
 }
 //+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
@@ -6474,7 +6123,7 @@ bool BuildValidRecoveryTP(int parentType, double price, double sl,
 void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
                         double parentSL, double parentEntry)
 {
-   return; // V8.0: disabled
+   // disabled: recovery removed
 }
 //+------------------------------------------------------------------+
 // V8.0: CheckRecoveryTimeouts REMOVED. No recovery system.
@@ -7572,8 +7221,7 @@ void UpdateAverageSpread()
 // V8.0: CloseAllPositions REMOVED. No emergency/forced liquidation.
 void CloseAllPositions(string reason)
 {
-   Print("V8.0: CloseAllPositions disabled. reason=", reason);
-   return; // V8.0: disabled
+   // disabled: no emergency liquidation path
 }
 //+------------------------------------------------------------------+
 void ArchiveRecentlyClosedPositionContext(const PositionState &state)
@@ -8533,227 +8181,12 @@ void CheckPositionAgeTimeout()
 // V8.0: ManageTrailingTP REMOVED. SL/TP are static after placement.
 void ManageTrailingTP_DISABLED()
 {
-   if(!g_effModifyTrailingTP)
-      return;
-   // V7.34 FIX: Trailing TP modifies SL (not TP), so we check SL modify permission, NOT TP.
-   // Removed IsTpModifyEnabled() gate - trailing TP is an SL-based trailing mechanism.
-   if(!INPUT_ENABLE_TRAILING_TP_GAP)
-      return;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) continue;
-      // V7.34 FIX: Removed ShouldSkipStopAdjustmentsForTicket - trailing TP only fires on profitable
-      // positions, so the high-spread-loss skip is never applicable.
-      // V7.34 FIX: Removed CanAttemptTPModify - exponential backoff from TP failures should not
-      // permanently block the trailing SL mechanism. We still check CanModifyPosition for freeze level.
-      if(!CanModifyPosition(ticket)) continue;
-      if(IsTicketManagedThisTick(ticket)) continue;
-      int idx = -1;
-      for(int j = 0; j < g_positionCount; j++) if(g_positions[j].isActive && g_positions[j].ticket == ticket) { idx = j; break; }
-      if(idx < 0) continue;
-      string symbol = PositionGetString(POSITION_SYMBOL);
-      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-      int dir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
-      double sl = PositionGetDouble(POSITION_SL);
-      double current = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double newSL = NormalizeDouble(current - dir * INPUT_TRAILING_TP_GAP_POINTS * _Point, g_digits);
-      double stepPrice = INPUT_TRAILING_TP_STEP_POINTS * _Point;
-      double minDist = g_stopLevel * g_point;
-      // --- ACTIVATION CHECK (two modes: pips or % TP progress) ---
-      if(!g_positions[idx].trailingTPActive)
-      {
-         double entry = PositionGetDouble(POSITION_PRICE_OPEN);
-         double tp = PositionGetDouble(POSITION_TP);
-         double profitPoints = (dir == 1) ? ((current - entry) / _Point) : ((entry - current) / _Point);
-         if(profitPoints < 0.0)
-            profitPoints = 0.0;
-         bool activateTrailingTP = false;
-         if(INPUT_TRAILING_TP_ACTIVATION_MODE == TRAILING_TP_ACTIVATE_BY_PIPS)
-         {
-            // Mode 1: Activate by pips profit
-            double pipPoints = (_Digits == 3 || _Digits == 5) ? 10.0 : 1.0;
-            double activationPoints = INPUT_TRAILING_TP_ACTIVATION_PIPS * pipPoints;
-            activateTrailingTP = (profitPoints >= activationPoints);
-            if(!activateTrailingTP && INPUT_ENABLE_LOGGING && profitPoints > 0)
-               Print("TRAILING_TP SKIP: reason=activation_not_reached",
-                     " | ticket=", ticket,
-                     " | symbol=", symbol,
-                     " | dir=", (dir == 1 ? "BUY" : "SELL"),
-                     " | current=", DoubleToString(current, g_digits),
-                     " | sl=", DoubleToString(sl, g_digits),
-                     " | newSL=", DoubleToString(newSL, g_digits),
-                     " | profitPts=", DoubleToString(profitPoints, 1),
-                     " | activationPts=", DoubleToString(activationPoints, 1),
-                     " | stepPrice=", DoubleToString(stepPrice, g_digits));
-         }
-         else
-         {
-            // Mode 2: Activate by % of TP distance reached
-            if(tp != 0.0)
-            {
-               double tpDistancePoints = MathAbs(tp - entry) / _Point;
-               if(tpDistancePoints > 0.0)
-               {
-                  double progressPct = (profitPoints / tpDistancePoints) * 100.0;
-                  activateTrailingTP = (progressPct >= INPUT_TRAILING_TP_ACTIVATION_PERCENT);
-                  if(!activateTrailingTP && INPUT_ENABLE_LOGGING && profitPoints > 0)
-                     Print("TRAILING_TP SKIP: reason=activation_not_reached",
-                           " | ticket=", ticket,
-                           " | symbol=", symbol,
-                           " | dir=", (dir == 1 ? "BUY" : "SELL"),
-                           " | current=", DoubleToString(current, g_digits),
-                           " | sl=", DoubleToString(sl, g_digits),
-                           " | newSL=", DoubleToString(newSL, g_digits),
-                           " | progressPct=", DoubleToString(progressPct, 1),
-                           " | thresholdPct=", DoubleToString(INPUT_TRAILING_TP_ACTIVATION_PERCENT, 1),
-                           " | tpDistPts=", DoubleToString(tpDistancePoints, 1));
-               }
-            }
-            else if(INPUT_ENABLE_LOGGING)
-            {
-               Print("TRAILING_TP CHECK: ticket=", ticket,
-                     " | mode=TP_PROGRESS skipped because TP is zero. Set a non-zero TP or switch activation mode to PIPS.");
-            }
-         }
-         if(!activateTrailingTP)
-            continue;
-         g_positions[idx].trailingTPActive = true;
-         g_positions[idx].closePathState = CLOSE_PATH_TRAILING_TP_MODE;
-         if(INPUT_ENABLE_LOGGING)
-            Print("TRAILING_TP ACTIVATED: ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (dir == 1 ? "BUY" : "SELL"),
-                  " | mode=", (INPUT_TRAILING_TP_ACTIVATION_MODE == TRAILING_TP_ACTIVATE_BY_PIPS ? "PIPS" : "TP_PROGRESS_PERCENT"));
-      }
-      // --- TRAILING LOGIC: Move SL behind price with gap, zero out TP ---
-      if(g_positions[idx].lastTrailingTPPrice > 0.0)
-      {
-         double advance = (dir == 1) ? (newSL - g_positions[idx].lastTrailingTPPrice)
-                                     : (g_positions[idx].lastTrailingTPPrice - newSL);
-         if(advance < stepPrice)
-         {
-            if(INPUT_ENABLE_LOGGING)
-               Print("TRAILING_TP SKIP: reason=step_not_reached",
-                     " | ticket=", ticket,
-                     " | symbol=", symbol,
-                     " | dir=", (dir == 1 ? "BUY" : "SELL"),
-                     " | current=", DoubleToString(current, g_digits),
-                     " | sl=", DoubleToString(sl, g_digits),
-                     " | newSL=", DoubleToString(newSL, g_digits),
-                     " | lastTrail=", DoubleToString(g_positions[idx].lastTrailingTPPrice, g_digits),
-                     " | advance=", DoubleToString(advance, g_digits),
-                     " | stepPrice=", DoubleToString(stepPrice, g_digits));
-            continue;
-         }
-      }
-      // V7.34 FIX: Only move SL in the favorable direction
-      bool shouldMove = (dir == 1) ? (newSL > sl) : (newSL < sl);
-      if(!shouldMove)
-      {
-         if(INPUT_ENABLE_LOGGING)
-            Print("TRAILING_TP SKIP: reason=not_favorable_direction",
-                  " | ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (dir == 1 ? "BUY" : "SELL"),
-                  " | current=", DoubleToString(current, g_digits),
-                  " | sl=", DoubleToString(sl, g_digits),
-                  " | newSL=", DoubleToString(newSL, g_digits),
-                  " | shouldMove=false");
-         continue;
-      }
-      bool brokerGuardBlocked = false;
-      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && dir == 1 && (current - newSL) < minDist)
-         brokerGuardBlocked = true;
-      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && dir == -1 && (newSL - current) < minDist)
-         brokerGuardBlocked = true;
-      if(brokerGuardBlocked)
-      {
-         if(INPUT_ENABLE_LOGGING)
-            Print("TRAILING_TP SKIP: reason=broker_distance_guard",
-                  " | ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (dir == 1 ? "BUY" : "SELL"),
-                  " | current=", DoubleToString(current, g_digits),
-                  " | sl=", DoubleToString(sl, g_digits),
-                  " | newSL=", DoubleToString(newSL, g_digits),
-                  " | minDist=", DoubleToString(minDist, g_digits),
-                  " | stopLevelPts=", DoubleToString((double)g_stopLevel, 1));
-         continue;
-      }
-      if(g_trade.PositionModify(ticket, newSL, 0.0))
-      {
-         ResetTPFailureTracker(ticket);
-         g_positions[idx].lastTrailingTPPrice = newSL;
-         MarkTicketManagedThisTick(ticket);
-         if(INPUT_ENABLE_LOGGING)
-            Print("TRAILING_TP MOVED: ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (dir == 1 ? "BUY" : "SELL"),
-                  " | current=", DoubleToString(current, g_digits),
-                  " | prevSL=", DoubleToString(sl, g_digits),
-                  " | newSL=", DoubleToString(newSL, g_digits),
-                  " | gapPts=", DoubleToString(INPUT_TRAILING_TP_GAP_POINTS, 1),
-                  " | stepPts=", DoubleToString(INPUT_TRAILING_TP_STEP_POINTS, 1));
-      }
-      else if(INPUT_ENABLE_LOGGING)
-      {
-         // V7.34 FIX: Log failure but don't use exponential backoff for trailing TP
-         Print("TRAILING_TP MODIFY FAILED: ticket=", ticket,
-               " | symbol=", symbol,
-               " | dir=", (dir == 1 ? "BUY" : "SELL"),
-               " | current=", DoubleToString(current, g_digits),
-               " | sl=", DoubleToString(sl, g_digits),
-               " | newSL=", DoubleToString(newSL, g_digits),
-               " | retcode=", g_trade.ResultRetcode(),
-               " | comment=", g_trade.ResultComment());
-      }
-   }
+   // disabled: SL/TP remain static after placement
 }
 //+------------------------------------------------------------------+
 //| V7.6 FIX: Multi-Level Partial Close (Missing Feature 12)        |
 //+------------------------------------------------------------------+
 void HandleMultiLevelPartial(ulong ticket)
 {
-   
-   if(!g_effCloseMultiLevelPartial)
-      return;
-       if(!IsCloseEnabled())
-      return;
-   if(ticket == 0 || IsTicketManagedThisTick(ticket)) return;
-   if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) return;
-   int idx = -1;
-   for(int i = 0; i < g_positionCount; i++) if(g_positions[i].isActive && g_positions[i].ticket == ticket) { idx = i; break; }
-   if(idx < 0 || g_positions[idx].closePathState == CLOSE_PATH_TERMINAL || g_positions[idx].trailingTPActive) return;
-   double vol = PositionGetDouble(POSITION_VOLUME);
-   double open = PositionGetDouble(POSITION_PRICE_OPEN);
-   double tp = PositionGetDouble(POSITION_TP);
-   double current = PositionGetDouble(POSITION_PRICE_CURRENT);
-   ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   double totalDist = MathAbs(tp - open);
-   if(totalDist <= 0) return;
-   double progress = (posType == POSITION_TYPE_BUY && tp > open) ? ((current - open) / (tp - open)) : ((posType == POSITION_TYPE_SELL && tp < open) ? ((open - current) / (open - tp)) : 0.0);
-   if(progress <= 0) return;
-   bool level2 = (progress >= 0.60 && !g_positions[idx].multiPartialLevel2Done);
-   bool level1 = (progress >= 0.30 && !g_positions[idx].multiPartialLevel1Done);
-   if(!level1 && !level2) return;
-   double lotsToClose = 0.0;
-   bool fullExit = false;
-   if(!ComputePartialCloseLots(vol, g_positions[idx].originalLots, 25.0, CLOSE_BASIS_REMAINING, lotsToClose, fullExit))
-   {
-      if(fullExit)
-      {
-         g_trade.PositionClose(ticket);
-         g_positions[idx].closePathState = CLOSE_PATH_TERMINAL;
-         MarkTicketManagedThisTick(ticket);
-      }
-      return;
-   }
-   if(g_trade.PositionClosePartial(ticket, lotsToClose))
-   {
-      g_positions[idx].currentLots = PositionGetDouble(POSITION_VOLUME);
-      if(level2) { g_positions[idx].multiPartialLevel2Done = true; g_positions[idx].multiPartialLevel1Done = true; }
-      else if(level1) g_positions[idx].multiPartialLevel1Done = true;
-      MarkTicketManagedThisTick(ticket);
-   }
+   // disabled: no fractional volume closes
 }
