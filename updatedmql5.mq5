@@ -1,12 +1,12 @@
-#property copyright "HumanBrain EA V7.34 - Trailing TP + Opposite Signal Fix"
+#property copyright "HumanBrain EA V8.0 - Clean Signal-Only Edition"
 #property link      ""
-#property version   "7.34"
+#property version   "8.00"
 #property strict
-#property description "EA V7.34 HumanBrain Complete - TRAILING TP FIX + OPPOSITE SIGNAL FORCE OVERRIDE"
-#property description "FIXES: 5-min cooldown, same-direction limit, proximity check,"
-#property description "M5 ATR for SL/TP, position age timeout, raised entry thresholds"
+#property description "EA V8.0 HumanBrain - CLEAN BUILD: Signal entries with FIXED SL/TP only"
+#property description "REMOVED: Opposite flip override, partial closes, trailing SL/TP, breakeven,"
+#property description "         recovery/averaging/hedging/grid/martingale, protective liquidation"
 #property description "Q-Learning (108 states), Markov Chains, 9-Factor Threat, 6-Component Confidence"
-#property description "*** V7.32: 11 critical position management bugs fixed (4 major enhancements) ***"
+#property description "Positions close ONLY by broker SL/TP hit or manual operator action."
 #include <Trade/Trade.mqh>
 #include <Trade/PositionInfo.mqh>
 //+------------------------------------------------------------------+
@@ -180,10 +180,8 @@ enum ENUM_TOGGLE_RESOLUTION_MODE
    TOGGLE_RESOLUTION_NEW_AUTH  = 1, // new is authoritative
    TOGGLE_RESOLUTION_STRICT_NEW = 2 // legacy mapping ignored + strict mismatch warnings
 };
-
 enum ENUM_TRAILING_TP_ACTIVATION_MODE
 {
-
      TRAILING_TP_ACTIVATE_BY_PIPS = 0,
    TRAILING_TP_ACTIVATE_BY_TP_PROGRESS = 1
 };
@@ -213,7 +211,6 @@ input bool     INPUT_TOGGLE_MODIFY_TPS = true;
 input bool     INPUT_TOGGLE_PENDING_ORDERS = true;
 input bool     INPUT_TOGGLE_MARKET_ORDERS = true;
 input bool     INPUT_PENDING_EXPIRY_CLEANUP_ON = true;
-
 input group    "=== Gate Toggles (Entry / Risk) ==="
 input bool     INPUT_GATE_TERMINAL_CONNECTED_ON = true;
 input bool     INPUT_GATE_AUTOTRADING_ALLOWED_ON = true;
@@ -238,7 +235,6 @@ input bool     INPUT_GATE_THREAT_HARD_BLOCK_ON = true;
 input bool     INPUT_GATE_THREAT_EXTREME_BLOCK_ON = true;
 input bool     INPUT_GATE_CONFIDENCE_MIN_ON = true;
 input bool     INPUT_GATE_EFFECTIVE_RR_ON = true;
-
 input group    "=== Threat Factor Toggles ==="
 input bool     INPUT_THREAT_FACTOR_LOSING_COUNT_ON = true;
 input bool     INPUT_THREAT_FACTOR_MAJORITY_LOSING_ON = true;
@@ -252,7 +248,6 @@ input bool     INPUT_THREAT_FRIDAY_LATE_PENALTY_ON = true;
 input bool     INPUT_THREAT_END_OF_MONTH_PENALTY_ON = true;
 input bool     INPUT_THREAT_SOFT_LOT_SHRINK_ON = true;
 input bool     INPUT_THREAT_HARD_ENTRY_BLOCK_ON = true;
-
 input group    "=== Lot Sizing Toggles ==="
 input bool     INPUT_LOT_BASE_RISK_ON = true;
 input bool     INPUT_LOT_RL_SCALING_ON = true;
@@ -261,7 +256,6 @@ input bool     INPUT_LOT_STREAK_BOOST_ON = true;
 input bool     INPUT_LOT_HIGH_ADX_BOOST_ON = true;
 input bool     INPUT_LOT_RISK_PARITY_CAP_ON = true;
 input bool     INPUT_LOT_MARGIN_DOWNSCALE_ON = true;
-
 input group    "=== Execution Path Toggles ==="
 input bool     INPUT_EXEC_MARKET_PATH_ON = true;
 input bool     INPUT_EXEC_PENDING_PATH_ON = true;
@@ -269,7 +263,6 @@ input bool     INPUT_EXEC_PENDING_DUPLICATE_BLOCK_ON = true;
 input bool     INPUT_EXEC_PENDING_EXPIRY_ON = true;
 input bool     INPUT_EXEC_MARKET_RETRY_ON = true;
 input bool     INPUT_EXEC_RECORD_RL_ON_SUBMIT = true;
-
 input group    "=== Close Trigger Toggles ==="
 input bool     INPUT_CLOSE_EQUITY_FLOOR_ON = true;
 input bool     INPUT_CLOSE_HIGH_SPREAD_PROFIT_ON = true;
@@ -278,20 +271,17 @@ input bool     INPUT_CLOSE_PARTIAL_TP_ON = true;
 input bool     INPUT_CLOSE_MULTI_LEVEL_PARTIAL_ON = true;
 input bool     INPUT_CLOSE_AGE_TIMEOUT_ON = true;
 input bool     INPUT_CLOSE_RECOVERY_TIMEOUT_ON = true;
-
 input group    "=== Modify SL/TP Toggles ==="
 input bool     INPUT_MODIFY_BREAKEVEN_ON = true;
 input bool     INPUT_MODIFY_TRAILING_SL_ON = true;
 input bool     INPUT_MODIFY_TRAILING_TP_ON = true;
 input bool     INPUT_MODIFY_SUPPRESS_ON_HIGH_SPREAD_LOSS_ON = true;
 input bool     INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON = true; // WARNING: disable only for diagnostics
-
 input group    "=== Session Sub-Toggles ==="
 input bool     INPUT_SESSION_ASIAN_ON = true;
 input bool     INPUT_SESSION_LONDON_ON = true;
 input bool     INPUT_SESSION_NY_ON = true;
 input bool     INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES = true;
-
 input group    "=== Learning / Inference Sub-Toggles ==="
 input bool     INPUT_RL_INFERENCE_ON = true;
 input bool     INPUT_RL_LEARNING_ON = true;
@@ -349,7 +339,6 @@ input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable run
 input double   INPUT_HIGH_SPREAD_CLOSE_PERCENT = 50.0; // Percent of profitable position volume to close on high spread (1..100)
 input bool     INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD = true; // Do not adjust losing-position SL/TP during spread spikes
 input double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
-
 //+------------------------------------------------------------------+
 //| V7.33 NEW: ADVANCED PARTIAL CLOSING SYSTEM                        |
 //+------------------------------------------------------------------+
@@ -359,7 +348,6 @@ input double   INPUT_LOSS_CLOSE_PERCENT = 50.0;          // % of lots to close w
 input int      INPUT_LOSS_PARTS_COUNT = 1;               // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
 input string   INPUT_LOSS_PARTS_PERCENTAGES = "50";      // Close percentages per part (comma-separated, e.g. "33,33,34" for 3 parts)
 input string   INPUT_LOSS_PARTS_TRIGGERS = "50";         // Trigger percentages per part (comma-separated, e.g. "30,60,90")
-
 input group    "=== V7.33: PROFIT-Based Partial Closing ==="
 input bool     INPUT_ENABLE_PROFIT_PARTIAL_CLOSE = true; // Enable profit partial closing
 input double   INPUT_PROFIT_CLOSE_PERCENT = 50.0;         // % of lots to close when profit trigger hit
@@ -367,7 +355,6 @@ input int      INPUT_PROFIT_PARTS_COUNT = 1;              // Number of closing p
 input string   INPUT_PROFIT_PARTS_PERCENTAGES = "50";     // Close percentages per part (comma-separated, e.g. "33,33,34")
 input string   INPUT_PROFIT_PARTS_TRIGGERS = "50";        // Trigger percentages per part (comma-separated, e.g. "30,60,90")
 input ENUM_PARTIAL_CLOSE_BASIS INPUT_PARTIAL_CLOSE_BASIS = CLOSE_BASIS_ORIGINAL; // Percent basis for partial close sizing
-
 input group    "=== V7.33: Trailing TP Gap Feature ==="
 input bool     INPUT_ENABLE_TRAILING_TP_GAP = true;       // Enable trailing TP with gap
 input double   INPUT_TRAILING_TP_GAP_POINTS = 100.0;      // Gap between TP and current price (points)
@@ -549,7 +536,6 @@ input int      INPUT_CLOSED_DEALS_MAX_ROWS = 5000; // Max rows to keep in closed
 #define EA_VERSION_LABEL          "V7.3"
 #define QTABLE_HASH_SENTINEL      0x51424C31
 #define RUNTIME_HASH_SENTINEL     0x52554E31
-
 enum ENUM_POSITION_SUBTYPE
 {
    SUBTYPE_MAIN      = 0,
@@ -557,7 +543,6 @@ enum ENUM_POSITION_SUBTYPE
    SUBTYPE_AVERAGING = 2,
    SUBTYPE_AUX       = 3
 };
-
 const long MAGIC_SUBTYPE_MULTIPLIER = 100000000;
 const long MAGIC_BASE_MIN = 1;
 const long MAGIC_BASE_MAX = MAGIC_SUBTYPE_MULTIPLIER - 1;
@@ -844,7 +829,6 @@ double   g_tickValue;
 double   g_lotStep;
 int      g_lotDigits;
 double   g_minLot;
-
 // V7.33: Arrays for multi-part closing
 double   g_lossPartPercentages[10];   // Array to store parsed loss close percentages
 double   g_lossPartTriggers[10];      // Array to store parsed loss trigger percentages
@@ -853,7 +837,6 @@ double   g_profitPartTriggers[10];    // Array to store parsed profit trigger pe
 int      g_lossPartsCount = 0;        // Actual count of loss parts
 int      g_profitPartsCount = 0;      // Actual count of profit parts
 bool     g_partialConfigInvalid = false;
-
 double   g_maxLot;
 int      g_digits;
 double   g_contractSize;
@@ -866,12 +849,10 @@ bool     g_mtfReadFailureThisTick = false;
 bool     g_lastMtfAlignmentHadReadFailure = false;
 bool     g_lastMtfConsensusHadReadFailure = false;
 ENUM_ORDER_TYPE_FILLING g_selectedFillingMode = ORDER_FILLING_IOC;
-
 //--- Persistence / validation schema
 #define FP_SCHEMA_VERSION         2
 #define TRAINING_SCHEMA_VERSION   3
 #define ADAPTIVE_SCHEMA_VERSION   2
-
 double GetPipSize(const string symbol)
 {
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
@@ -879,7 +860,6 @@ double GetPipSize(const string symbol)
       return SymbolInfoDouble(symbol, SYMBOL_POINT) * 10.0;
    return SymbolInfoDouble(symbol, SYMBOL_POINT);
 }
-
 double PipsToPoints(const string symbol, double pips)
 {
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
@@ -888,7 +868,6 @@ double PipsToPoints(const string symbol, double pips)
       return 0.0;
    return pips * (pipSize / point);
 }
-
 void RegisterDataWarning(const string context)
 {
    datetime now = TimeCurrent();
@@ -898,18 +877,15 @@ void RegisterDataWarning(const string context)
       g_dataWarningWindowStart = now;
       g_dataIntegrityWarnings = 0;
    }
-
    g_dataIntegrityWarnings++;
    Print("DATA WARNING: ", context, " | rollingWarnings=", g_dataIntegrityWarnings);
 }
-
 void RefreshSymbolTradeConstraints()
 {
    long stopNow = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    long freezeNow = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL);
    if(stopNow < 0) stopNow = 0;
    if(freezeNow < 0) freezeNow = 0;
-
    if(stopNow != g_stopLevel || freezeNow != g_freezeLevel)
    {
       if(INPUT_ENABLE_LOGGING)
@@ -926,12 +902,10 @@ void RefreshSymbolEconomics()
    if(lastRefresh != 0 && (now - lastRefresh) < 3600)
       return;
    lastRefresh = now;
-
    double tickValueNow = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    double tickSizeNow = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    double pointNow = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    double contractSizeNow = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_CONTRACT_SIZE);
-
    bool changed = false;
    if(MathIsValidNumber(tickValueNow) && tickValueNow > 0.0 && MathAbs(tickValueNow - g_tickValue) > 1e-12)
    {
@@ -940,7 +914,6 @@ void RefreshSymbolEconomics()
       g_tickValue = tickValueNow;
       changed = true;
    }
-
    if(MathIsValidNumber(tickSizeNow) && tickSizeNow > 0.0 && MathAbs(tickSizeNow - g_tickSize) > 1e-12)
    {
       if(INPUT_ENABLE_LOGGING)
@@ -948,7 +921,6 @@ void RefreshSymbolEconomics()
       g_tickSize = tickSizeNow;
       changed = true;
    }
-
    if(MathIsValidNumber(pointNow) && pointNow > 0.0 && MathAbs(pointNow - g_point) > 1e-12)
    {
       if(INPUT_ENABLE_LOGGING)
@@ -956,7 +928,6 @@ void RefreshSymbolEconomics()
       g_point = pointNow;
       changed = true;
    }
-
    if(MathIsValidNumber(contractSizeNow) && contractSizeNow > 0.0 && MathAbs(contractSizeNow - g_contractSize) > 1e-8)
    {
       if(INPUT_ENABLE_LOGGING)
@@ -964,7 +935,6 @@ void RefreshSymbolEconomics()
       g_contractSize = contractSizeNow;
       changed = true;
    }
-
    if(changed)
       RegisterDataWarning("Symbol economics refreshed due to broker value change");
 }
@@ -972,12 +942,10 @@ bool IsFiniteInRange(double value, double minValue, double maxValue)
 {
    return (MathIsValidNumber(value) && value >= minValue && value <= maxValue);
 }
-
 double GetEffectiveLotStep()
 {
    if(MathIsValidNumber(g_lotStep) && g_lotStep > 0.0)
       return g_lotStep;
-
    double fallbackStep = (MathIsValidNumber(g_minLot) && g_minLot > 0.0) ? g_minLot : 0.01;
    if(!g_lotStepFallbackLogged)
    {
@@ -987,19 +955,14 @@ double GetEffectiveLotStep()
    }
    return fallbackStep;
 }
-
 double NormalizeVolumeToStep(double lots)
 {
    double step = GetEffectiveLotStep();
    if(!MathIsValidNumber(lots) || lots <= 0.0 || !MathIsValidNumber(step) || step <= 0.0)
       return 0.0;
-
-
     double aligned = MathRound((lots + 1e-10) / step) * step;
    return NormalizeDouble(aligned, g_lotDigits);
 }
-
-
 double FloorVolumeToStep(double lots)
 {
    double step = GetEffectiveLotStep();
@@ -1007,7 +970,6 @@ double FloorVolumeToStep(double lots)
    double floored = MathFloor((lots + 1e-12) / step) * step;
    return NormalizeDouble(floored, g_lotDigits);
 }
-
 void ResetPositionRuntimeState(PositionState &p)
 {
    for(int k = 0; k < 10; k++)
@@ -1027,21 +989,17 @@ void ResetPositionRuntimeState(PositionState &p)
    p.lastLossTriggerIndex = -1;
    p.lastProfitTriggerIndex = -1;
 }
-
 bool ComputePartialCloseLots(double currentLots, double originalLots, double closePercent, ENUM_PARTIAL_CLOSE_BASIS mode, double &lotsToClose, bool &fullExit)
 {
    lotsToClose = 0.0;
    fullExit = false;
    if(currentLots <= 0.0 || closePercent <= 0.0)
       return false;
-
    double basisLots = (mode == CLOSE_BASIS_ORIGINAL) ? originalLots : currentLots;
    double candidate = basisLots * (closePercent / 100.0);
    lotsToClose = FloorVolumeToStep(candidate);
-
    if(lotsToClose < g_minLot)
       lotsToClose = NormalizeVolumeToStep(g_minLot);
-
    if(lotsToClose >= currentLots)
    {
       fullExit = true;
@@ -1049,13 +1007,11 @@ bool ComputePartialCloseLots(double currentLots, double originalLots, double clo
    }
    return (lotsToClose >= g_minLot && lotsToClose < currentLots);
 }
-
 void ResetManagedTicketsThisTick()
 {
    ArrayResize(g_managedThisTickTickets, 0);
    ArrayResize(g_managedThisTickFlags, 0);
 }
-
 bool IsTicketManagedThisTick(ulong ticket)
 {
    for(int i = 0; i < ArraySize(g_managedThisTickTickets); i++)
@@ -1063,7 +1019,6 @@ bool IsTicketManagedThisTick(ulong ticket)
          return true;
    return false;
 }
-
 void MarkTicketManagedThisTick(ulong ticket)
 {
    for(int i = 0; i < ArraySize(g_managedThisTickTickets); i++)
@@ -1080,71 +1035,55 @@ void MarkTicketManagedThisTick(ulong ticket)
    g_managedThisTickTickets[n] = ticket;
    g_managedThisTickFlags[n] = true;
 }
-
 bool NormalizeAndValidateOrderVolume(double requestedLots, double &normalizedLots, string &reason)
 {
    reason = "";
    normalizedLots = 0.0;
-
    // Pull effective broker limits
    double step      = GetEffectiveLotStep();
    double brokerMin = g_minLot;
    double brokerMax = g_maxLot;
-
    // Defensive defaults if something wasn't initialized
    if(!MathIsValidNumber(step) || step <= 0.0) step = 0.01;
    if(!MathIsValidNumber(brokerMin) || brokerMin <= 0.0) brokerMin = 0.01;
    if(!MathIsValidNumber(brokerMax) || brokerMax <= 0.0) brokerMax = 100.0;
-
    // EA-configured caps (inputs)
    double eaMin = (INPUT_MIN_LOT_SIZE > 0.0 ? INPUT_MIN_LOT_SIZE : brokerMin);
    double eaMax = (INPUT_MAX_LOT_SIZE > 0.0 ? INPUT_MAX_LOT_SIZE : brokerMax);
-
    // Ensure EA limits don't violate broker constraints
    if(eaMin < brokerMin) eaMin = brokerMin;
    if(eaMax > brokerMax) eaMax = brokerMax;
    if(eaMax < eaMin) eaMax = eaMin;
-
    // 1) Sanitize requestedLots (NEVER block signals due to 0/NaN; fallback instead)
    if(!MathIsValidNumber(requestedLots) || requestedLots <= 0.0)
    {
       reason = "requested lot invalid -> fallback to min";
       requestedLots = eaMin;
    }
-
    // 2) Clamp into [eaMin..eaMax]
    double lots = requestedLots;
    if(lots < eaMin) lots = eaMin;
    if(lots > eaMax) lots = eaMax;
-
    // 3) Normalize to step (floor is safer to avoid accidental oversize)
    lots = MathFloor(lots / step) * step;
-
    // Sometimes floor can push below min because of floating error
    if(lots < eaMin) lots = eaMin;
-
    // 4) Final numeric normalization
    lots = NormalizeDouble(lots, g_lotDigits);
-
    // Final guard
    if(!MathIsValidNumber(lots) || lots < eaMin || lots > eaMax)
    {
       reason = "normalization failed after clamp";
       return false;
    }
-
    normalizedLots = lots;
    return true;
 }
-
-
-
 void ResetAdaptiveParamsToDefaults();
 bool IsPlacementEnabled() { return INPUT_TOGGLE_PLACE_ORDERS; }
 bool IsCloseEnabled() { return INPUT_TOGGLE_CLOSE_ORDERS; }
 bool IsStopModifyEnabled() { return INPUT_TOGGLE_MODIFY_STOPS; }
 bool IsTpModifyEnabled() { return INPUT_TOGGLE_MODIFY_TPS; }
-
 bool IsFeatureEnabled(string featureId)
 {
    if(featureId == "market_orders") return (IsPlacementEnabled() && INPUT_TOGGLE_MARKET_ORDERS && INPUT_EXEC_MARKET_PATH_ON);
@@ -1154,7 +1093,6 @@ bool IsFeatureEnabled(string featureId)
    if(featureId == "modify_tp") return IsTpModifyEnabled();
    return true;
 }
-
 bool ReplaceFileAtomic(const string tmpName, const string finalName)
 {
    if(!FileIsExist(tmpName))
@@ -1162,7 +1100,6 @@ bool ReplaceFileAtomic(const string tmpName, const string finalName)
       Print("ERROR: ReplaceFileAtomic missing temp file: ", tmpName, " -> ", finalName);
       return false;
    }
-
    int testHandle = FileOpen(tmpName, FILE_READ | FILE_BIN);
    if(testHandle == INVALID_HANDLE)
       testHandle = FileOpen(tmpName, FILE_READ | FILE_CSV | FILE_ANSI, ',');
@@ -1172,14 +1109,12 @@ bool ReplaceFileAtomic(const string tmpName, const string finalName)
       return false;
    }
    FileClose(testHandle);
-
    string backupName = finalName + ".bak";
    if(FileIsExist(backupName) && !FileDelete(backupName))
    {
       Print("ERROR: ReplaceFileAtomic failed deleting stale backup: ", backupName);
       return false;
    }
-
    bool hadDestination = FileIsExist(finalName);
    if(hadDestination)
    {
@@ -1189,7 +1124,6 @@ bool ReplaceFileAtomic(const string tmpName, const string finalName)
          return false;
       }
    }
-
    if(!FileMove(tmpName, 0, finalName, 0))
    {
       Print("ERROR: ReplaceFileAtomic failed moving temp to destination: ", tmpName, " -> ", finalName);
@@ -1202,17 +1136,12 @@ bool ReplaceFileAtomic(const string tmpName, const string finalName)
       }
       return false;
    }
-
    if(hadDestination && FileIsExist(backupName) && !FileDelete(backupName))
       Print("WARNING: ReplaceFileAtomic success but could not delete backup: ", backupName);
-
    return true;
 }
-
 void ResetRuntimeLinkedInMemoryState();
-
 bool ResetAllPersistedStateFiles();
-
 //--- Risk
 RiskParams g_risk;
 AdaptiveParams g_adaptive;
@@ -1304,7 +1233,6 @@ int      g_markovTradesRecorded = 0;
 MarkovTransitionEvent g_markovQueue[];
 int      g_markovQueueCount = 0;
 int      g_markovQueueHead = 0;
-
 ulong    g_tickMsHistory = 0;
 ulong    g_tickMsManagePositions = 0;
 ulong    g_tickMsDecision = 0;
@@ -1353,7 +1281,6 @@ struct ModifyFailureTracker
 ModifyFailureTracker g_tpModifyFailures[];
 ulong g_managedThisTickTickets[];
 bool  g_managedThisTickFlags[];
-
 // EXTREME_RISK_TOGGLE_COVERAGE_CHECKLIST
 // - UpdateEAState
 // - OnTick extreme branch
@@ -1372,7 +1299,6 @@ bool  g_managedThisTickFlags[];
 // - ManageTrailingTP
 // - MoveToBreakeven
 // - ShouldSkipStopAdjustmentsForTicket
-
 bool g_effExtremeByThreat = false;
 bool g_effExtremeByDrawdown = false;
 bool g_effExtremeHysteresisExit = false;
@@ -1404,7 +1330,6 @@ bool g_effModifyMoveToBE = false;
 bool g_effModifyTrailingSL = false;
 bool g_effModifyTrailingTP = false;
 bool g_effModifySkipLossOnHighSpread = false;
-
 struct EffectiveConfig
 {
    bool entry;
@@ -1420,12 +1345,8 @@ struct EffectiveConfig
    bool mlRecord;
    bool mlInfer;
 };
-
 EffectiveConfig g_effectiveConfig;
-
 bool ResolveRuntimeToggleDetailed(const string feature, bool legacyFlag, bool newToggle, string &decisionSource);
-
-
 void ResetAdaptiveParamsToDefaults()
 {
    g_adaptive.lotMultiplier = 1.0;
@@ -1439,13 +1360,11 @@ void ResetAdaptiveParamsToDefaults()
    g_adaptive.lastOptimization = 0;
    g_adaptive.tradesAtLastOpt = 0;
 }
-
 bool ResolveRuntimeToggle(bool legacyFlag, bool newToggle)
 {
    string ignoredSource = "";
    return ResolveRuntimeToggleDetailed("(legacy-call)", legacyFlag, newToggle, ignoredSource);
 }
-
 bool ResolveRuntimeToggleDetailed(const string feature, bool legacyFlag, bool newToggle, string &decisionSource)
 {
    if(INPUT_TOGGLE_RESOLUTION_MODE == TOGGLE_RESOLUTION_MIGRATION)
@@ -1459,7 +1378,6 @@ bool ResolveRuntimeToggleDetailed(const string feature, bool legacyFlag, bool ne
          decisionSource = "new";
       return effective;
    }
-
    if(INPUT_TOGGLE_RESOLUTION_MODE == TOGGLE_RESOLUTION_STRICT_NEW && legacyFlag != newToggle)
       Print("STRICT TOGGLE MISMATCH: legacy=", (legacyFlag ? "ON" : "OFF"), " new=", (newToggle ? "ON" : "OFF"), " effective uses NEW toggle.");
 decisionSource = "new";
@@ -1467,7 +1385,6 @@ decisionSource = "new";
       return newToggle;
    return newToggle;
 }
-
 void BuildEffectiveConfig()
 {
    g_effectiveConfig.entry = INPUT_TOGGLE_PLACE_ORDERS && (INPUT_TOGGLE_MARKET_ORDERS || INPUT_TOGGLE_PENDING_ORDERS);
@@ -1485,7 +1402,6 @@ void BuildEffectiveConfig()
    g_effectiveConfig.mlInfer = ((INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON) ||
                                (INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_INFERENCE_ON));
 }
-
 bool ValidateAndReportEffectiveConfig()
 {
    BuildEffectiveConfig();
@@ -1497,17 +1413,14 @@ bool ValidateAndReportEffectiveConfig()
          " markov[infer/update]=", (g_effectiveConfig.markovInfer?"ON":"OFF"), "/", (g_effectiveConfig.markovUpdate?"ON":"OFF"),
          " rl[record/learn/infer]=", (g_effectiveConfig.rlRecord?"ON":"OFF"), "/", (g_effectiveConfig.rlLearn?"ON":"OFF"), "/", (g_effectiveConfig.rlInfer?"ON":"OFF"),
          " ml[record/infer]=", (g_effectiveConfig.mlRecord?"ON":"OFF"), "/", (g_effectiveConfig.mlInfer?"ON":"OFF"));
-
    bool contradiction = false;
    if(!INPUT_TOGGLE_PLACE_ORDERS && (INPUT_TOGGLE_MARKET_ORDERS || INPUT_TOGGLE_PENDING_ORDERS)) contradiction = true;
    if(!INPUT_ENABLE_MARKOV && (INPUT_MARKOV_INFERENCE_ON || INPUT_MARKOV_UPDATE_ON)) contradiction = true;
    if(!INPUT_ENABLE_ML && INPUT_ML_RECORD_ON) contradiction = true;
    if(!INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON) contradiction = true;
    if(!INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_RECORD_ON || INPUT_COMBO_ADAPTIVE_INFERENCE_ON)) contradiction = true;
-
    if(contradiction)
       Print("WARNING: Effective configuration contradictions detected (master OFF with sub-feature ON).");
-
    if(INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION && contradiction)
    {
       Print("STRICT VALIDATION: rejecting init due to contradictory effective config.");
@@ -1515,7 +1428,6 @@ bool ValidateAndReportEffectiveConfig()
    }
    return true;
 }
-
 void LogToggleMatrix(const string feature, bool legacyFlag, bool newToggle, bool effective)
 {
 string decisionSource = "new";
@@ -1526,7 +1438,6 @@ string decisionSource = "new";
          " | new=", (newToggle ? "ON" : "OFF"),
          " | effective=", (effective ? "ON" : "OFF"));
 }
-
 void BuildDeterministicComboUniverse();
 void SaveCombinationStatsSnapshot();
 int BuildCanonicalComboSubsets(const string rawCombination, int k, string &subsets[]);
@@ -1537,8 +1448,6 @@ bool ResolveRuntimeToggleDetailed(const string feature, bool legacyFlag, bool ne
 double CalculateTPProgressPercent(int posType, double entryPrice, double currentPrice, double tpPrice);
 void HandleProgressMilestoneActions(ulong ticket, int idx, double progressPct);
 void ProcessProgressMilestoneActions();
-
-
 bool ValidateInputsStrict(string &err)
 {
    int totalSignals = MathMin(INPUT_TOTAL_SIGNALS, INPUT_TOTAL_SIGNAL_FACTORS);
@@ -1601,11 +1510,9 @@ bool ValidateInputsStrict(string &err)
    if(INPUT_MIN_SIGNALS < 1 || INPUT_MIN_SIGNALS > totalSignals) { err = "INPUT_MIN_SIGNALS must be within 1..total_signals"; return false; }
    return true;
 }
-
 //+------------------------------------------------------------------+
 //| SECTION 6: INITIALIZATION                                        |
 //+------------------------------------------------------------------+
-
 //+------------------------------------------------------------------+
 //| V7.33: Parse comma-separated string into double array            |
 //+------------------------------------------------------------------+
@@ -1635,7 +1542,6 @@ int ParseCSVToArray(string csv, double &outArray[], int maxElements = 10)
    
     return count;
 }
-
 //+------------------------------------------------------------------+
 //| V7.33: Convert part arrays to readable log text                  |
 //+------------------------------------------------------------------+
@@ -1643,17 +1549,14 @@ string FormatDoubleArray(const double &values[], int count)
 {
    if(count <= 0)
       return "[]";
-
    int safeCount = MathMin(count, ArraySize(values));
    string result = "[";
-
    for(int i = 0; i < safeCount; i++)
    {
       if(i > 0)
          result += ",";
       result += DoubleToString(values[i], 2);
    }
-
    result += "]";
    return result;
 }
@@ -1668,26 +1571,22 @@ void ValidatePartialCloseArrays()
    if(g_lossPartsCount != lossTrigCount)
       g_lossPartsCount = MathMin(g_lossPartsCount, lossTrigCount);
    g_lossPartsCount = MathMin(g_lossPartsCount, MathMin(INPUT_LOSS_PARTS_COUNT, 10));
-
    g_profitPartsCount = ParseCSVToArray(INPUT_PROFIT_PARTS_PERCENTAGES, g_profitPartPercentages, 10);
    int profitTrigCount = ParseCSVToArray(INPUT_PROFIT_PARTS_TRIGGERS, g_profitPartTriggers, 10);
    if(g_profitPartsCount != profitTrigCount)
       g_profitPartsCount = MathMin(g_profitPartsCount, profitTrigCount);
    g_profitPartsCount = MathMin(g_profitPartsCount, MathMin(INPUT_PROFIT_PARTS_COUNT, 10));
-
    if(INPUT_PARTIAL_CLOSE_BASIS == CLOSE_BASIS_ORIGINAL)
    {
       double sumLoss = 0.0;
       for(int i = 0; i < g_lossPartsCount; i++) sumLoss += g_lossPartPercentages[i];
       if(sumLoss > 100.0 && g_lossPartsCount > 0)
          g_lossPartPercentages[g_lossPartsCount - 1] = MathMax(1.0, g_lossPartPercentages[g_lossPartsCount - 1] - (sumLoss - 100.0));
-
       double sumProfit = 0.0;
       for(int i = 0; i < g_profitPartsCount; i++) sumProfit += g_profitPartPercentages[i];
       if(sumProfit > 100.0 && g_profitPartsCount > 0)
          g_profitPartPercentages[g_profitPartsCount - 1] = MathMax(1.0, g_profitPartPercentages[g_profitPartsCount - 1] - (sumProfit - 100.0));
    }
-
    if(INPUT_ENABLE_LOSS_PARTIAL_CLOSE && g_lossPartsCount == 0)
    {
       if(INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION)
@@ -1718,12 +1617,10 @@ void ValidatePartialCloseArrays()
          Print("PARTIAL CONFIG FALLBACK (PROFIT): using 50@50");
       }
    }
-
    double sumLossEff = 0.0;
    for(int i = 0; i < g_lossPartsCount; i++) sumLossEff += g_lossPartPercentages[i];
    double sumProfitEff = 0.0;
    for(int i = 0; i < g_profitPartsCount; i++) sumProfitEff += g_profitPartPercentages[i];
-
    Print("PARTIAL CONFIG EFFECTIVE: lossCount=", g_lossPartsCount,
          " | lossTriggers=", FormatDoubleArray(g_lossPartTriggers, g_lossPartsCount),
          " | lossPerc=", FormatDoubleArray(g_lossPartPercentages, g_lossPartsCount),
@@ -1735,7 +1632,6 @@ void ValidatePartialCloseArrays()
          " | basis=", EnumToString(INPUT_PARTIAL_CLOSE_BASIS),
          " | example(1lot:33/33/34)=", (INPUT_PARTIAL_CLOSE_BASIS == CLOSE_BASIS_ORIGINAL ? "0.33+0.33+remainder" : "0.33 then 33% of remaining then 34% of remaining"));
 }
-
 int OnInit()
 {
    //--- Expiry check
@@ -1745,7 +1641,6 @@ int OnInit()
       Alert("EA V7 HumanBrain has expired!");
       return INIT_FAILED;
    }
-
    //--- Validate inputs
    string strictErr = "";
    if(!ValidateInputsStrict(strictErr))
@@ -1763,7 +1658,6 @@ int OnInit()
       Print("ERROR: INPUT_MIN_CONFIDENCE must be 0-100");
       return INIT_PARAMETERS_INCORRECT;
    }
-
    if(!g_rngSeeded)
    {
       int seed = (int)(TimeLocal() ^ (datetime)GetTickCount());
@@ -1772,7 +1666,6 @@ int OnInit()
       if(INPUT_ENABLE_RL)
          Print("RNG SEEDED: RL random generator initialized once at startup | seed=", seed);
    }
-
    if(INPUT_GATE_SESSION_WINDOW_ON)
    {
       string sessionErr = "";
@@ -1783,13 +1676,11 @@ int OnInit()
             Print("ERROR: ", sessionErr, " | strict session validation enabled.");
             return INIT_PARAMETERS_INCORRECT;
          }
-
          ValidateSessionHourInputs();
          Print("WARNING: Invalid session window configuration detected: ", sessionErr,
                " | Non-strict fallback enabled; runtime session gate may block all entries.");
       }
    }
-
    if(INPUT_AI_MODE != AI_OFF && StringLen(INPUT_AI_API_KEY) < 3)
    {
       Print("WARNING: AI mode enabled but API key not configured. AI will be disabled.");
@@ -1798,7 +1689,6 @@ int OnInit()
    {
       Print("WARNING: DeepSeek API key should start with 'sk-'. Current key may be invalid.");
    }
-
    //--- Initialize symbol specs
    g_point        = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    g_tickSize     = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -1833,7 +1723,6 @@ int OnInit()
    bool invalidTickSize     = (!MathIsValidNumber(g_tickSize)     || g_tickSize <= 0.0);
    bool invalidContractSize = (!MathIsValidNumber(g_contractSize) || g_contractSize <= 0.0);
    bool invalidPoint        = (!MathIsValidNumber(g_point)        || g_point <= 0.0);
-
    //--- Tick value fallback (XAUUSD, indices, etc.) for internal what-if calculations only
    double fallbackTickValue = g_tickValue;
    if(invalidTickValue)
@@ -1851,7 +1740,6 @@ int OnInit()
       else
          fallbackTickValue = 1.0;
    }
-
    if(invalidTickValue || invalidTickSize || invalidContractSize || invalidPoint)
    {
       g_tickValue = fallbackTickValue;
@@ -1886,11 +1774,9 @@ int OnInit()
                " | stopLevelPts=", DoubleToString((double)g_stopLevel, 1), " | freezeLevelPts=", DoubleToString((double)g_freezeLevel, 1),
                " | symbol=", _Symbol);
    }
-
    ValidatePartialCloseArrays();
    if(g_partialConfigInvalid)
       return INIT_PARAMETERS_INCORRECT;
-
    //--- Initialize risk profile
    switch(INPUT_RISK_PROFILE)
    {
@@ -1905,7 +1791,6 @@ int OnInit()
    g_risk.maxLot      = INPUT_MAX_LOT_SIZE;
    g_risk.minLot      = INPUT_MIN_LOT_SIZE;
    g_risk.maxTotalRisk = INPUT_MAX_TOTAL_RISK_PERCENT;
-
    //--- Initialize adaptive parameters
    ResetAdaptiveParamsToDefaults();
    ZeroMemory(g_gateDiagnostics);
@@ -1915,21 +1800,17 @@ int OnInit()
   g_selectedFillingMode = GetFillingMode();
    g_trade.SetTypeFilling(g_selectedFillingMode);
    g_trade.SetAsyncMode(false);
-
    if(INPUT_ENABLE_LOGGING)
       Print("MTF SETTINGS: minScore=", INPUT_MIN_MTF_SCORE,
             " | consensusWeight=", DoubleToString(INPUT_MTF_CONSENSUS_VOTE_WEIGHT, 2));
-
    if(INPUT_ENABLE_LOGGING)
       Print("FILL MODE SELECTED: ", EnumToString(g_selectedFillingMode));
-
    //--- Initialize ALL indicator handles
    if(!InitializeIndicators())
    {
       Print("ERROR: Failed to create indicator handles");
       return INIT_FAILED;
    }
-
    //--- Initialize arrays
    ArrayResize(g_positions, MAX_POSITIONS);
    g_positionCount = 0;
@@ -1950,11 +1831,9 @@ int OnInit()
    ArrayResize(g_markovQueue, 0);
    g_markovQueueCount = 0;
    ArrayResize(g_tpModifyFailures, 0);
-
    //--- Initialize Q-table (all zeros - neutral start)
    ArrayInitialize(g_qTable, 0);
    ArrayInitialize(g_qVisits, 0);
-
    //--- Initialize Markov transitions (uniform prior)
    for(int i = 0; i < MARKOV_STATES; i++)
    {
@@ -1964,7 +1843,6 @@ int OnInit()
          g_markovCounts[i][j] = 1; // Laplace smoothing
       }
    }
-
    //--- Initialize AI response
    g_aiResponse.marketBias = "neutral";
    g_aiResponse.confidenceScore = 50.0;
@@ -1974,17 +1852,14 @@ int OnInit()
    g_lastValidAIResponse = g_aiResponse;
    ArrayResize(g_positionCloseAccumulators, 0);
    g_positionCloseAccumulatorCount = 0;
-
    if(INPUT_RESET_ALL_PERSISTED_STATE)
    {
       bool resetOk = ResetAllPersistedStateFiles();
       Print("RESET PERSISTENCE ON INIT: ", (resetOk ? "SUCCESS" : "FAILED"));
    }
-
    //--- Load persisted learning data (only if effective feature paths need it)
    if(INPUT_ENABLE_FINGERPRINT)
       LoadFingerprintData();
-
    bool needTrainingData = ((INPUT_ENABLE_ML && (INPUT_ML_INFERENCE_ON || INPUT_ML_RECORD_ON)) ||
                             (INPUT_ENABLE_COMBINATION_ADAPTIVE && (INPUT_COMBO_ADAPTIVE_INFERENCE_ON || INPUT_COMBO_ADAPTIVE_RECORD_ON)));
    if(needTrainingData)
@@ -2007,22 +1882,16 @@ int OnInit()
       }
       RecalculateCombinationStats();
    }
-
    if(INPUT_ENABLE_RL)
       LoadQTable();
-
    bool markovLoadSaveEnabled = (INPUT_ENABLE_MARKOV && (INPUT_MARKOV_INFERENCE_ON || INPUT_MARKOV_UPDATE_ON));
    if(markovLoadSaveEnabled)
       LoadMarkovData();
-
    if(INPUT_ENABLE_ADAPTIVE)
       LoadAdaptiveParams();
-
    if(INPUT_ENABLE_COMBINATION_ADAPTIVE && !INPUT_ENABLE_ML)
       Print("WARNING: Combination-adaptive enabled while ML disabled. Using training-data only mode.");
-
    LoadRuntimeState();
-
    g_effExtremeByThreat = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_BY_THREAT);
    g_effExtremeByDrawdown = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_BY_DRAWDOWN);
    g_effExtremeHysteresisExit = ResolveRuntimeToggle(false, INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT);
@@ -2060,7 +1929,6 @@ int OnInit()
    g_effModifyTrailingSL = ResolveRuntimeToggleDetailed("ManageTrailingStops", INPUT_ENABLE_TRAILING, INPUT_MODIFY_TRAILING_SL_ON, srcTrailingSL);
    g_effModifyTrailingTP = ResolveRuntimeToggleDetailed("ManageTrailingTP", INPUT_ENABLE_TRAILING_TP, INPUT_MODIFY_TRAILING_TP_ON, srcTrailingTP);
       g_effModifySkipLossOnHighSpread = ResolveRuntimeToggle(INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD, INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD);
-
    LogToggleMatrix("UpdateEAState.ExtremeByThreat", false, INPUT_ENABLE_EXTREME_BY_THREAT, g_effExtremeByThreat);
    LogToggleMatrix("UpdateEAState.ExtremeByDrawdown", false, INPUT_ENABLE_EXTREME_BY_DRAWDOWN, g_effExtremeByDrawdown);
    LogToggleMatrix("UpdateEAState.HysteresisExit", false, INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT, g_effExtremeHysteresisExit);
@@ -2095,7 +1963,6 @@ int OnInit()
          (INPUT_TRAILING_TP_ACTIVATION_MODE == TRAILING_TP_ACTIVATE_BY_PIPS ? " pips" : "% TP progress"));
    Print("TOGGLE DECISION: MoveToBreakeven effective decided by ", srcMoveToBE, " toggle path.");
      LogToggleMatrix("ShouldSkipStopAdjustmentsForTicket", INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD, INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD, g_effModifySkipLossOnHighSpread);
-
    if(INPUT_USE_LEGACY_BEHAVIOR_MAPPING && INPUT_TOGGLE_RESOLUTION_MODE == TOGGLE_RESOLUTION_MIGRATION)
    {
       bool legacyOverrideFound = false;
@@ -2112,10 +1979,8 @@ int OnInit()
    }
       if(INPUT_ENABLE_TRAILING_TP && !INPUT_MODIFY_TRAILING_TP_ON)
       Print("WARNING: TrailingTP toggle mismatch detected (legacy INPUT_ENABLE_TRAILING_TP=ON while new INPUT_MODIFY_TRAILING_TP_ON=OFF). Effective behavior depends on INPUT_TOGGLE_RESOLUTION_MODE.");
-
 if(!ValidateAndReportEffectiveConfig())
       return INIT_FAILED;
-
    Print("CHECKLIST GUARD UpdateEAState=", (g_effExtremeByThreat || g_effExtremeByDrawdown || g_effDrawdownProtectState ? "ON" : "OFF"));
    Print("CHECKLIST GUARD OnTick extreme branch=", ((g_effExtremeOnTickHandler || g_effExtremeOnTickEarlyReturn) ? "ON" : "OFF"));
    Print("CHECKLIST GUARD HandleExtremeRisk=", (g_effExtremeCloseOldest ? "ON" : "OFF"));
@@ -2133,7 +1998,6 @@ if(!ValidateAndReportEffectiveConfig())
    Print("CHECKLIST GUARD ManageTrailingTP=", (g_effModifyTrailingTP ? "ON" : "OFF"));
    Print("CHECKLIST GUARD MoveToBreakeven=", (g_effModifyMoveToBE ? "ON" : "OFF"));
    Print("CHECKLIST GUARD ShouldSkipStopAdjustmentsForTicket=", (g_effModifySkipLossOnHighSpread ? "ON" : "OFF"));
-
    //--- Master toggle compatibility matrix
    Print("FEATURE MATRIX [Placement]: place=", (INPUT_TOGGLE_PLACE_ORDERS?"ON":"OFF"),
          " market=", (INPUT_TOGGLE_MARKET_ORDERS?"ON":"OFF"),
@@ -2149,24 +2013,19 @@ if(!ValidateAndReportEffectiveConfig())
          " ML[infer/record]=", (INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON?"ON":"OFF"), "/", (INPUT_ENABLE_ML && INPUT_ML_RECORD_ON?"ON":"OFF"),
          " Combo[infer/record]=", (INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_INFERENCE_ON?"ON":"OFF"), "/", (INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_RECORD_ON?"ON":"OFF"),
          " AI=", (INPUT_AI_MODE != AI_OFF && INPUT_AI_QUERY_ON?"ON":"OFF"));
-
    if(!INPUT_TOGGLE_PLACE_ORDERS && (INPUT_TOGGLE_MARKET_ORDERS || INPUT_TOGGLE_PENDING_ORDERS))
       Print("WARNING: Placement master OFF overrides market/pending sub-toggles.");
    if(!INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON)
       Print("WARNING: Broker-distance modify guard is OFF (diagnostics only; unsafe live).");
-
    //--- Initialize daily stats
    g_startingBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_peakEquity      = AccountInfoDouble(ACCOUNT_EQUITY);
    ResetDailyCounters();
-
    //--- Sync existing positions - FIXED: Reset count first
    g_positionCount = 0;
    SyncExistingPositions();
-
    //--- Calculate initial average ATR
    CalculateAverageATR();
-
    Print("=== EA "+EA_VERSION_LABEL+" HumanBrain Complete - INITIALIZED ===");
    Print("Symbol: ", _Symbol, " | Magic: ", INPUT_MAGIC_NUMBER);
    Print("Risk: ", g_risk.riskPercent, "% | MaxTrades: ", g_adaptive.maxPositions);
@@ -2194,7 +2053,6 @@ if(!ValidateAndReportEffectiveConfig())
          " 50pct=", (INPUT_ENABLE_50PCT_CLOSE?"ON":"OFF"),
          " TrailSL=", (INPUT_ENABLE_TRAILING?"ON":"OFF"),
          " TrailTP=", (INPUT_ENABLE_TRAILING_TP?"ON":"OFF"));
-
    EventSetTimer(AI_TIMER_SECONDS);
    return INIT_SUCCEEDED;
 }
@@ -2203,10 +2061,8 @@ bool ValidateIndicatorHandle(int handle, const string name, bool required)
 {
    if(!required)
       return true;
-
    if(handle != INVALID_HANDLE)
       return true;
-
    Print("ERROR: Required indicator handle invalid: ", name);
    return false;
 }
@@ -2225,28 +2081,22 @@ bool InitializeIndicators()
    g_hADX_M1      = iADX(_Symbol, PERIOD_M1, INPUT_ADX_PERIOD);
    g_hBB_M1       = iBands(_Symbol, PERIOD_M1, INPUT_BB_PERIOD, 0, INPUT_BB_DEVIATION, PRICE_CLOSE);
    g_hVolume_M1   = iVolumes(_Symbol, PERIOD_M1, VOLUME_TICK);
-
    // M5 indicators
    g_hEmaFast_M5  = iMA(_Symbol, PERIOD_M5, INPUT_EMA_FAST, 0, MODE_EMA, PRICE_CLOSE);
    g_hEmaSlow_M5  = iMA(_Symbol, PERIOD_M5, INPUT_EMA_SLOW, 0, MODE_EMA, PRICE_CLOSE);
    g_hATR_M5      = iATR(_Symbol, PERIOD_M5, INPUT_ATR_PERIOD);
-
    // H1 indicators
    g_hEmaFast_H1  = iMA(_Symbol, PERIOD_H1, INPUT_EMA_FAST, 0, MODE_EMA, PRICE_CLOSE);
    g_hEmaSlow_H1  = iMA(_Symbol, PERIOD_H1, INPUT_EMA_SLOW, 0, MODE_EMA, PRICE_CLOSE);
    g_hATR_H1      = iATR(_Symbol, PERIOD_H1, INPUT_ATR_PERIOD);
    g_hADX_H1      = iADX(_Symbol, PERIOD_H1, INPUT_ADX_PERIOD);
-
    // H4 indicators
    g_hEmaFast_H4  = iMA(_Symbol, PERIOD_H4, INPUT_EMA_FAST, 0, MODE_EMA, PRICE_CLOSE);
    g_hEmaSlow_H4  = iMA(_Symbol, PERIOD_H4, INPUT_EMA_SLOW, 0, MODE_EMA, PRICE_CLOSE);
-
    // D1 indicators
    g_hEmaFast_D1  = iMA(_Symbol, PERIOD_D1, INPUT_EMA_FAST, 0, MODE_EMA, PRICE_CLOSE);
    g_hEmaSlow_D1  = iMA(_Symbol, PERIOD_D1, INPUT_EMA_SLOW, 0, MODE_EMA, PRICE_CLOSE);
-
    bool allValid = true;
-
    // Core M1 indicators (always required)
    allValid &= ValidateIndicatorHandle(g_hEmaFast_M1,  "M1 EMA Fast", true);
    allValid &= ValidateIndicatorHandle(g_hEmaSlow_M1,  "M1 EMA Slow", true);
@@ -2259,7 +2109,6 @@ bool InitializeIndicators()
    allValid &= ValidateIndicatorHandle(g_hADX_M1,      "M1 ADX", true);
    allValid &= ValidateIndicatorHandle(g_hBB_M1,       "M1 Bollinger Bands", true);
    allValid &= ValidateIndicatorHandle(g_hVolume_M1,   "M1 Volume", true);
-
    // M5/H1/H4/D1 handles used by MTF, regime, and SL/TP logic
    allValid &= ValidateIndicatorHandle(g_hEmaFast_M5,  "M5 EMA Fast", true);
    allValid &= ValidateIndicatorHandle(g_hEmaSlow_M5,  "M5 EMA Slow", true);
@@ -2272,16 +2121,13 @@ bool InitializeIndicators()
    allValid &= ValidateIndicatorHandle(g_hEmaSlow_H4,  "H4 EMA Slow", true);
    allValid &= ValidateIndicatorHandle(g_hEmaFast_D1,  "D1 EMA Fast", true);
    allValid &= ValidateIndicatorHandle(g_hEmaSlow_D1,  "D1 EMA Slow", true);
-
    // Optional feature-gated validations can be added here for ML/RL extras.
-
    return allValid;
 }
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-
    //--- Save all learning data
    if(INPUT_ENABLE_FINGERPRINT)
       SaveFingerprintData();
@@ -2296,15 +2142,11 @@ void OnDeinit(const int reason)
       SaveMarkovData();
    if(INPUT_ENABLE_ADAPTIVE)
       SaveAdaptiveParams();
-
    SaveRuntimeState();
-
    //--- Release indicator handles
    ReleaseIndicators();
-
    //--- Remove chart objects
    ObjectsDeleteAll(0, "V7_");
-
    if((bool)MQLInfoInteger(MQL_TESTER))
    {
       int openPositions = CountAllOurPositions();
@@ -2320,7 +2162,6 @@ void OnDeinit(const int reason)
                " OpenP/L=", DoubleToString(openPL, 2));
       }
    }
-
       Print("Gate diagnostics summary | session=", g_gateDiagnostics.sessionRejects,
          " cooldown=", g_gateDiagnostics.cooldownRejects,
          " signals=", g_gateDiagnostics.signalsRejects,
@@ -2385,9 +2226,7 @@ void OnTick()
       Print("EA EXPIRED. No new trades will be placed.");
       expiryWarned = true;
    }
-
    SyncPositionStates();
-
    ulong t0 = GetTickCount();
    int adaptiveIntervalSec = MathMax(1, INPUT_HEAVY_BASE_INTERVAL_SECONDS);
    if(g_lastHeavyHistoryRun == 0 || (now - g_lastHeavyHistoryRun) >= adaptiveIntervalSec)
@@ -2400,73 +2239,18 @@ void OnTick()
       g_lastHeavyHistoryRun = now;
    }
    g_tickMsHistory = GetTickCount() - t0;
-
-   HandleHighSpreadOpenPositions();
-
+   // V8.0: All position management removed (no trailing, partial, recovery, high-spread close)
+   // Positions close ONLY by broker SL/TP hit.
    if(INPUT_ENABLE_ADAPTIVE)
       CheckAdaptiveOptimization();
-
    t0 = GetTickCount();
-  ProcessProgressMilestoneActions();
-   if(g_effModifyTrailingTP)
-      ManageTrailingTP();
-   CheckPositionAgeTimeout();
    CleanupExpiredPendingStopOrders();
-    if(g_effModifyTrailingSL)
-      ManageTrailingStops();
-   if(g_effClosePartialTP)
-      ManagePartialClose();
-   if(g_effCloseMultiLevelPartial)
-   {
-     for(int i = 0; i < PositionsTotal(); i++)
-      {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket == 0) continue;
-         HandleMultiLevelPartial(ticket);
-          }
-   }
-   if(g_effClose50PctDefensive)
-      Handle50PercentLotClose();
-   if(INPUT_ENABLE_RECOVERY && !expired && INPUT_RECOVERY_MODE != RECOVERY_OFF)
-   {
-      if(INPUT_RECOVERY_MODE == RECOVERY_AVERAGING) MonitorRecoveryAveragingMode();
-      else if(INPUT_RECOVERY_MODE == RECOVERY_HEDGING) MonitorRecoveryHedgingMode();
-      else if(INPUT_RECOVERY_MODE == RECOVERY_GRID) MonitorRecoveryGridMode();
-      else if(INPUT_RECOVERY_MODE == RECOVERY_MARTINGALE) MonitorRecoveryMartingaleMode();
-   }
-   CheckRecoveryTimeouts();
    g_tickMsManagePositions = GetTickCount() - t0;
-
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(equity > g_peakEquity) g_peakEquity = equity;
-
-   if(INPUT_CLOSE_EQUITY_FLOOR_ON && g_effEquityFloorTrigger)
-   {
-      double equityFloor = g_startingBalance * (INPUT_EQUITY_FLOOR_PERCENT / 100.0);
-      if(equity < equityFloor)
-      {
-         bool acted = false;
-         Print("EQUITY FLOOR BREACH DETECTED: ", equity, " < ", equityFloor);
-         if(g_effEquityFloorForceState)
-         {
-            g_eaState = STATE_EXTREME_RISK;
-            acted = true;
-         }
-         if(g_effEquityFloorCloseAll)
-         {
-            CloseAllPositions("EQUITY_FLOOR");
-            acted = true;
-         }
-         if(!acted && ShouldPrintOncePerWindow("equity_floor_actions_disabled", 60))
-            Print("EQUITY FLOOR WARNING: breach detected but all configured actions are disabled.");
-         if(g_effEquityFloorReturn)
-            return;
-      }
-   }
-
+   // V8.0: Equity floor forced close REMOVED. Positions close only by SL/TP.
    CheckDailyReset();
    UpdateEAState();
-
    if(g_prevEaState == STATE_EXTREME_RISK && g_eaState != STATE_EXTREME_RISK)
    {
       if(ShouldPrintOncePerWindow("extreme_risk_resolved", 60))
@@ -2475,20 +2259,7 @@ void OnTick()
          Print("Extreme risk resolved. Resuming normal operation.");
       }
    }
-
-   if(g_eaState == STATE_EXTREME_RISK)
-   {
-      if(g_effExtremeOnTickHandler)
-         HandleExtremeRisk();
-      else if(ShouldPrintOncePerWindow("extreme_handler_disabled", 60))
-         Print("EXTREME_ON_TICK: HandleExtremeRisk disabled (EXTREME_HANDLER_DISABLED)");
-
-      if(g_effExtremeOnTickEarlyReturn)
-         return;
-      if(ShouldPrintOncePerWindow("extreme_early_return_disabled", 60))
-         Print("EXTREME_ON_TICK: early return disabled (EXTREME_EARLY_RETURN_DISABLED)");
-   }
-
+   // V8.0: Extreme risk forced close REMOVED. No protective liquidation.
    t0 = GetTickCount();
    datetime currentBarTime = iTime(_Symbol, PERIOD_M1, 0);
    if(currentBarTime != g_lastBarTime)
@@ -2503,62 +2274,12 @@ void OnTick()
          ZeroMemory(decision);
          if(RunDecisionPipeline(decision) && decision.shouldTrade)
          {
-            bool canExecuteOrder = true;
-            int oppositeOpenCount = 0;
-            int oppositePendingCount = 0;
-
-            for(int i = PositionsTotal() - 1; i >= 0; i--)
-            {
-               ulong posTicket = PositionGetTicket(i);
-                  if(posTicket == 0 || !PositionSelectByTicket(posTicket) || !IsOurMainPosition(posTicket))
-                  continue;
-               int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
-               if(posDir != decision.direction)
-                 oppositeOpenCount++;
-            }
-
-            oppositePendingCount = CountMainPendingStopsByDirection(decision.direction * -1);
-            bool isFlipEvent = (oppositeOpenCount > 0 || oppositePendingCount > 0);
-
-            // V7.34 FIX: Opposite signal FORCE OVERRIDE - always attempt cleanup when opposite detected.
-            // Previously only ran when INPUT_CLOSE_ON_OPPOSITE_SIGNAL was true.
-            // Now: if ANY opposite exposure exists, always force-clean it regardless of toggle.
-            if(isFlipEvent)
-            {
-               // V7.34: Force cleanup regardless of INPUT_CLOSE_ON_OPPOSITE_SIGNAL
-               bool cleanupOk = CleanupOppositeExposureForFlip(decision.direction);
-               if(!cleanupOk)
-               {
-                  // V7.34 FIX: Even if cleanup partially fails, still allow the new entry.
-                  // The old behavior blocked new entries when cleanup failed - this defeats the purpose.
-                  Print("FLIP_OVERRIDE WARNING: cleanup partially failed but allowing entry anyway");
-               }
-               Print("FLIP_OVERRIDE: forced cleanup of opposite exposure | cleanupResult=", (cleanupOk ? "OK" : "PARTIAL_FAIL"));
-            }
-
-            Print("FLIP ENTRY DIAG: signalDir=", (decision.direction == 1 ? "BUY" : "SELL"),
-                  " | closeOnOpposite=", (INPUT_CLOSE_ON_OPPOSITE_SIGNAL ? "ON" : "OFF"),
-                  " | oppositeOpen=", oppositeOpenCount,
-                  " | oppositePending=", oppositePendingCount,
-                  " | FORCE_OVERRIDE=", (isFlipEvent ? "YES" : "N/A"),
-                  " | canExecuteOrder=", (canExecuteOrder ? "YES" : "NO"));
-
-            // V7.34 FIX: Always mark as flip when opposite exposure existed, bypass cooldowns
-            g_currentEntryIsFlip = isFlipEvent;
-            g_flipCooldownBypassLogged = false;
-            if(INPUT_ENABLE_LOGGING)
-               Print("ENTRY CONTEXT: ", (g_currentEntryIsFlip ? "FORCE_FLIP" : "normal"),
-                     " | direction=", (decision.direction == 1 ? "BUY" : "SELL"));
-
-            if(canExecuteOrder)
-               ExecuteOrder(decision);
-
-            g_currentEntryIsFlip = false;
+            // V8.0: No opposite-signal cleanup. Pure signal-triggered entries only.
+            ExecuteOrder(decision);
             }
       }
    }
    g_tickMsDecision = GetTickCount() - t0;
-
    t0 = GetTickCount();
    if(INPUT_SHOW_PANEL && (g_lastPanelRun == 0 || (now - g_lastPanelRun) >= 2))
    {
@@ -2566,7 +2287,6 @@ void OnTick()
       g_lastPanelRun = now;
    }
    g_tickMsPanel = GetTickCount() - t0;
-
    t0 = GetTickCount();
    if(INPUT_STATE_CHECKPOINT_MINUTES > 0 &&
       (g_lastCheckpointTime == 0 || now - g_lastCheckpointTime >= INPUT_STATE_CHECKPOINT_MINUTES * 60) &&
@@ -2588,12 +2308,10 @@ bool ZeroTPForMainPositionsOppositeToSignal(int direction)
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
          continue;
-
       int posType = (int)PositionGetInteger(POSITION_TYPE);
       int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
       if(posDir == direction)
          continue;
-
       string symbol = PositionGetString(POSITION_SYMBOL);
       double currentSL = PositionGetDouble(POSITION_SL);
       double previousTP = PositionGetDouble(POSITION_TP);
@@ -2601,7 +2319,6 @@ bool ZeroTPForMainPositionsOppositeToSignal(int direction)
       double minDist = (double)MathMax(g_stopLevel, g_freezeLevel) * g_point;
       double targetTP = INPUT_FLIP_ZERO_TP_ON ? 0.0 : NormalizeDouble(INPUT_FLIP_TP_RESET_PRICE, g_digits);
       string mode = INPUT_FLIP_ZERO_TP_ON ? "ZERO" : "RESET_PRICE";
-
       if(!INPUT_FLIP_ZERO_TP_ON && targetTP != 0.0 && minDist > 0.0)
       {
          double distToCurrent = MathAbs(targetTP - currentPrice);
@@ -2637,7 +2354,6 @@ bool ZeroTPForMainPositionsOppositeToSignal(int direction)
             }
          }
       }
-
       if(previousTP == targetTP)
       {
          if(INPUT_ENABLE_LOGGING)
@@ -2649,7 +2365,6 @@ bool ZeroTPForMainPositionsOppositeToSignal(int direction)
                   " | targetTP=", DoubleToString(targetTP, g_digits));
          continue;
       }
-
       bool modified = g_trade.PositionModify(ticket, currentSL, targetTP);
       if(modified)
       {
@@ -2679,8 +2394,6 @@ bool ZeroTPForMainPositionsOppositeToSignal(int direction)
    }
    return allModified;
 }
-
-
 bool CloseMainPositionsOppositeToSignal(int direction)
 {
    // V7.34 FIX: Opposite signal FORCE OVERRIDE - closes ALL opposite positions unconditionally.
@@ -2693,24 +2406,20 @@ bool CloseMainPositionsOppositeToSignal(int direction)
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
          continue;
-
       int posType = (int)PositionGetInteger(POSITION_TYPE);
       int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
       if(posDir == direction)
          continue;
-
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double slPrice = PositionGetDouble(POSITION_SL);
       double slDistance = MathAbs(entryPrice - slPrice);
       double adverse = (posType == POSITION_TYPE_BUY) ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
       double lossPctToSL = (slDistance > 0.0) ? (MathMax(adverse, 0.0) / slDistance) * 100.0 : 0.0;
-
       Print("FLIP_FORCE_CLOSE: ticket=", ticket,
             " | direction=", (posDir == 1 ? "BUY" : "SELL"),
             " | lossPctToSL=", DoubleToString(lossPctToSL, 2),
             " | FORCE_OVERRIDE=YES");
-
       if(g_trade.PositionClose(ticket))
       {
          Print("FLIP_FORCE_CLOSE OK: ticket=", ticket,
@@ -2724,11 +2433,8 @@ bool CloseMainPositionsOppositeToSignal(int direction)
                " | comment=", g_trade.ResultComment());
       }
    }
-
    return allClosed;
 }
-
-
 bool CancelMainPendingStopsOppositeToDirection(int direction)
 {
    bool allCanceled = true;
@@ -2739,23 +2445,19 @@ bool CancelMainPendingStopsOppositeToDirection(int direction)
          continue;
       if(!IsOurMainPendingStopOrder(ticket))
          continue;
-
       ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
       int orderDir = (type == ORDER_TYPE_BUY_STOP) ? 1 : -1;
       if(orderDir == direction)
          continue;
-
       MqlTradeRequest request;
       MqlTradeResult result;
       ZeroMemory(request);
       ZeroMemory(result);
-
       request.action = TRADE_ACTION_REMOVE;
       request.order = ticket;
       request.symbol = _Symbol;
       request.magic = BuildMagicForSubtype(SUBTYPE_MAIN);
       request.comment = "FLIP_CANCEL_OPPOSITE_PENDING";
-
       bool sent = OrderSend(request, result);
       if(sent && result.retcode == TRADE_RETCODE_DONE)
       {
@@ -2775,15 +2477,12 @@ bool CancelMainPendingStopsOppositeToDirection(int direction)
    }
    return allCanceled;
 }
-
 bool CleanupOppositeExposureForFlip(int direction)
 {
    if(g_flipCleanupInProgress)
       return true;
-
    g_flipCleanupInProgress = true;
    bool allOk = true;
-
    int openMainBefore = CountMainPositionsFromBroker();
    int pendingBuyBefore = CountMainPendingStopsByDirection(1);
    int pendingSellBefore = CountMainPendingStopsByDirection(-1);
@@ -2796,13 +2495,11 @@ bool CleanupOppositeExposureForFlip(int direction)
       Print("FLIP_CLEANUP WARNING: one or more opposite MAIN TP zeroing attempts failed.");
    if(!CloseMainPositionsOppositeToSignal(direction))
       allOk = false;
-
    if(INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON)
    {
       if(!CancelMainPendingStopsOppositeToDirection(direction))
          allOk = false;
    }
-
    int openMainAfter = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -2816,218 +2513,64 @@ bool CleanupOppositeExposureForFlip(int direction)
       if(posDir != direction)
          openMainAfter++;
    }
-
    int pendingBuyAfter = CountMainPendingStopsByDirection(1);
    int pendingSellAfter = CountMainPendingStopsByDirection(-1);
    if(openMainAfter > 0)
       allOk = false;
-
    Print("FLIP_CLEANUP POST: targetDir=", (direction == 1 ? "BUY" : "SELL"),
          " | oppositeOpenAfter=", openMainAfter,
          " | pendingBuy=", pendingBuyAfter,
          " | pendingSell=", pendingSellAfter,
          " | status=", (allOk ? "OK" : "FAILED"));
-
    g_flipCleanupInProgress = false;
    return allOk;
 }
-
 void OnTimer()
 {
    if(INPUT_AI_MODE == AI_OFF || !INPUT_AI_QUERY_ON)
       return;
-
    ulong timerStart = GetTickCount();
    QueryDeepSeekAI();
    g_tickMsAIRequest = GetTickCount() - timerStart;
 }
-
+// V8.0: OnTradeTransaction flip logic REMOVED. No opposite-signal cleanup on pending activation.
 void OnTradeTransaction(const MqlTradeTransaction &trans,
                         const MqlTradeRequest &request,
                         const MqlTradeResult &result)
 {
+   // V8.0: No flip cleanup. Pending stop activations proceed without closing opposite positions.
    if(trans.type != TRADE_TRANSACTION_DEAL_ADD)
       return;
    if(trans.deal == 0)
       return;
    if(!HistoryDealSelect(trans.deal))
       return;
-
    if((string)HistoryDealGetString(trans.deal, DEAL_SYMBOL) != _Symbol)
       return;
-
    long magic = HistoryDealGetInteger(trans.deal, DEAL_MAGIC);
    if(!IsOurMagic(magic))
       return;
-
-   long entryType = HistoryDealGetInteger(trans.deal, DEAL_ENTRY);
-   if(entryType != DEAL_ENTRY_IN)
-      return;
-
-   if(trans.order == 0 || !HistoryOrderSelect(trans.order))
-      return;
-   ENUM_ORDER_TYPE activatedOrderType = (ENUM_ORDER_TYPE)HistoryOrderGetInteger(trans.order, ORDER_TYPE);
-   if(activatedOrderType != ORDER_TYPE_BUY_STOP && activatedOrderType != ORDER_TYPE_SELL_STOP)
-      return;
-
-   long dealType = HistoryDealGetInteger(trans.deal, DEAL_TYPE);
-   int activatedDirection = 0;
-   if(dealType == DEAL_TYPE_BUY)
-      activatedDirection = 1;
-   else if(dealType == DEAL_TYPE_SELL)
-      activatedDirection = -1;
-   else
-      return;
-
-   bool ok = CleanupOppositeExposureForFlip(activatedDirection);
-   Print("FLIP_ON_ACTIVATION: direction=", (activatedDirection == 1 ? "BUY" : "SELL"),
-         " | cleanup=", (ok ? "OK" : "FAILED"),
-         " | deal=", trans.deal,
-         " | order=", trans.order,
-         " | reqAction=", request.action,
-         " | resultRetcode=", result.retcode);
+   // Entry deals are tracked via ProcessEntryDeals(). No flip action needed.
 }
-
 //+------------------------------------------------------------------+
 //| SECTION 9: EA STATE MANAGEMENT                                   |
 //+------------------------------------------------------------------+
+// V8.0: Simplified state machine - no recovery, reduced, extreme, or drawdown-protect states.
 void UpdateEAState()
 {
    ENUM_EA_STATE previousState = g_eaState;
-
    int mainCount = CountMainPositionsFromBroker();
-   int totalCount = CountAllOurPositions();
-   double threat = CalculateMarketThreat();
-   double drawdownPct = CalculateDrawdownPercent();
-
-   bool causeThreat = (g_effExtremeByThreat && threat > INPUT_EXTREME_ENTER_THREAT);
-   bool causeDrawdown = (g_effExtremeByDrawdown && drawdownPct > INPUT_EXTREME_ENTER_DRAWDOWN);
-   bool enterExtreme = (causeThreat || causeDrawdown);
-
-   bool canExitExtreme = (threat < INPUT_EXTREME_EXIT_THREAT &&
-                          drawdownPct < INPUT_EXTREME_EXIT_DRAWDOWN &&
-                          totalCount <= INPUT_EXTREME_EXIT_MAX_TOTAL_POSITIONS);
-
-   if(g_effExtremeHysteresisExit)
-   {
-      if(previousState == STATE_EXTREME_RISK)
-      {
-         if(!canExitExtreme)
-         {
-            g_eaState = STATE_EXTREME_RISK;
-            g_prevEaState = previousState;
-            return;
-         }
-      }
-      else if(enterExtreme)
-      {
-         g_eaState = STATE_EXTREME_RISK;
-         g_prevEaState = previousState;
-         return;
-      }
-   }
-   else
-   {
-      if(enterExtreme)
-      {
-         g_eaState = STATE_EXTREME_RISK;
-         g_prevEaState = previousState;
-         return;
-      }
-   }
-
-   if(g_effDrawdownProtectState && drawdownPct > INPUT_EXTREME_EXIT_DRAWDOWN)
-      g_eaState = STATE_DRAWDOWN_PROTECT;
-   else if(CountRecoveryPositions() > 0)
-      g_eaState = STATE_RECOVERY_ACTIVE;
-   else if(Count50PctReducedPositions() > 0)
-      g_eaState = STATE_POSITION_REDUCED;
-   else if(mainCount > 0)
+   if(mainCount > 0)
       g_eaState = STATE_POSITION_ACTIVE;
    else
       g_eaState = STATE_IDLE;
-
    g_prevEaState = previousState;
 }
 //+------------------------------------------------------------------+
+// V8.0: HandleExtremeRisk REMOVED. No protective liquidation.
 void HandleExtremeRisk()
 {
-   static datetime lastCloseAttempt = 0;
-   if(!g_effExtremeCloseOldest)
-   {
-      if(ShouldPrintOncePerWindow("extreme_close_oldest_disabled", 60))
-         Print("EXTREME_RISK: no-op (EXTREME_CLOSE_OLDEST_DISABLED)");
-      return;
-   }
-
-   if(g_effExtremeThrottle)
-   {
-      int intervalSec = MathMax(1, INPUT_EXTREME_CLOSE_INTERVAL_SECONDS);
-      if(TimeCurrent() - lastCloseAttempt < intervalSec)
-      {
-         if(ShouldPrintOncePerWindow("extreme_throttle_active", 60))
-            Print("EXTREME_RISK: throttle active (EXTREME_THROTTLE_ACTIVE)");
-         return;
-      }
-   }
-   else if(ShouldPrintOncePerWindow("extreme_throttle_disabled", 60))
-      Print("EXTREME_RISK: throttle disabled (EXTREME_THROTTLE_DISABLED)");
-
-   lastCloseAttempt = TimeCurrent();
-
-   int maxCloses = MathMax(1, INPUT_EXTREME_MAX_CLOSES_PER_CALL);
-   int closedCount = 0;
-   for(int k = 0; k < maxCloses; k++)
-   {
-      ulong oldestTicket = 0;
-      datetime oldestTime = TimeCurrent();
-
-      int total = PositionsTotal();
-      for(int i = 0; i < total; i++)
-      {
-         ulong ticket = PositionGetTicket(i);
-         if(ticket == 0) continue;
-         if(!PositionSelectByTicket(ticket)) continue;
-
-         if(g_effExtremeFilterSymbol)
-         {
-            if(PositionGetString(POSITION_SYMBOL) != _Symbol) continue;
-         }
-         else if(ShouldPrintOncePerWindow("extreme_filter_symbol_disabled", 60))
-            Print("EXTREME_RISK: symbol filter disabled (EXTREME_FILTER_SYMBOL_DISABLED)");
-
-         if(g_effExtremeFilterMagic)
-         {
-            if(!IsOurMagic(PositionGetInteger(POSITION_MAGIC))) continue;
-         }
-         else if(ShouldPrintOncePerWindow("extreme_filter_magic_disabled", 60))
-            Print("EXTREME_RISK: magic filter disabled (EXTREME_FILTER_MAGIC_DISABLED)");
-
-         datetime posTime = (datetime)PositionGetInteger(POSITION_TIME);
-         if(posTime < oldestTime)
-         {
-            oldestTime = posTime;
-            oldestTicket = ticket;
-         }
-      }
-
-      if(oldestTicket == 0)
-         break;
-
-      if(g_trade.PositionClose(oldestTicket))
-      {
-         closedCount++;
-         Print("EXTREME RISK: Closed oldest position ", oldestTicket, " (EXTREME_CLOSE_OLDEST)");
-      }
-      else
-      {
-         Print("EXTREME RISK: Close failed for ", oldestTicket, " (EXTREME_CLOSE_OLDEST_FAILED)");
-         break;
-      }
-   }
-
-   if(closedCount == 0 && ShouldPrintOncePerWindow("extreme_no_candidates", 60))
-      Print("EXTREME_RISK: no matching positions to close (EXTREME_NO_CANDIDATES)");
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
 //| SECTION 10: POSITION COUNTING - FIXED!                           |
@@ -3051,7 +2594,6 @@ uint FNV1aUpdateDouble(uint hash, double value)
    long scaled=(long)MathRound(value*1000000.0);
    return FNV1aUpdateLong(hash, scaled);
 }
-
 int BuildMagicForSubtype(ENUM_POSITION_SUBTYPE subtype)
 {
    long subtypeValue = (long)((int)subtype);
@@ -3060,7 +2602,6 @@ int BuildMagicForSubtype(ENUM_POSITION_SUBTYPE subtype)
       Print("MAGIC ERROR: invalid subtype value=", subtypeValue, " | fallback to base magic");
       return (int)INPUT_MAGIC_NUMBER;
    }
-
    long composed = (long)INPUT_MAGIC_NUMBER + (subtypeValue * MAGIC_SUBTYPE_MULTIPLIER);
    if(composed <= 0 || composed > 2147483647)
    {
@@ -3074,15 +2615,12 @@ bool IsOurMagic(const long magic)
 {
    if(magic <= 0)
       return false;
-
    long subtype = magic / MAGIC_SUBTYPE_MULTIPLIER;
    if(subtype < 0 || subtype > 9)
       return false;
-
    long base = magic - (subtype * MAGIC_SUBTYPE_MULTIPLIER);
    if(base < MAGIC_BASE_MIN || base > MAGIC_BASE_MAX)
       return false;
-
    return (base == (long)INPUT_MAGIC_NUMBER);
 }
 ENUM_POSITION_SUBTYPE InferSubtypeFromComment(const string &comment)
@@ -3095,11 +2633,9 @@ bool IsAuxSubtypeByMagic(long magic)
 {
    if(!IsOurMagic(magic))
       return false;
-
    long subtype=(magic/MAGIC_SUBTYPE_MULTIPLIER);
    return (subtype==SUBTYPE_RECOVERY || subtype==SUBTYPE_AVERAGING || subtype==SUBTYPE_AUX);
 }
-
 //--- Helper: returns true only if the position belongs to this EA
 bool IsOurPosition(ulong ticket)
 {
@@ -3120,11 +2656,9 @@ bool IsOurPendingOrder(ulong ticket)
       return false;
    if(!IsOurMagic(OrderGetInteger(ORDER_MAGIC)))
       return false;
-
    ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
    if(type != ORDER_TYPE_BUY_STOP && type != ORDER_TYPE_SELL_STOP)
       return false;
-
    return true;
 }
 bool IsMainEntryComment(const string &comment)
@@ -3140,28 +2674,22 @@ bool IsOurMainPosition(ulong ticket)
 {
    if(!IsOurPosition(ticket))
       return false;
-
    long magic = PositionGetInteger(POSITION_MAGIC);
    if(IsAuxSubtypeByMagic(magic))
       return false;
-
    string comment = PositionGetString(POSITION_COMMENT);
    return IsMainEntryComment(comment);
 }
-
 bool IsOurMainPendingStopOrder(ulong ticket)
 {
    if(!IsOurPendingOrder(ticket))
       return false;
-
    long magic = OrderGetInteger(ORDER_MAGIC);
    if(IsAuxSubtypeByMagic(magic))
       return false;
-
    string comment = OrderGetString(ORDER_COMMENT);
    return IsMainEntryComment(comment);
 }
-
 int CountMainPendingStopsByDirection(int direction)
 {
    int count = 0;
@@ -3171,7 +2699,6 @@ int CountMainPendingStopsByDirection(int direction)
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
        if(!IsOurMainPendingStopOrder(ticket)) continue;
-
       ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
       int orderDir = (type == ORDER_TYPE_BUY_STOP) ? 1 : -1;
       if(orderDir == direction)
@@ -3179,18 +2706,15 @@ int CountMainPendingStopsByDirection(int direction)
    }
    return count;
 }
-
 int CountMainPendingStopsAllDirections()
 {
    return CountMainPendingStopsByDirection(1) + CountMainPendingStopsByDirection(-1);
 }
-
 //--- Count existing pending stop orders by direction (1=BUY, -1=SELL)
 int CountPendingStopsByDirection(int direction)
 {
    return CountMainPendingStopsByDirection(direction);
 }
-
 int GetEffectiveMainExposureCount()
 {
    int openMain = CountMainPositionsFromBroker();
@@ -3210,28 +2734,23 @@ void CleanupExpiredPendingStopOrders()
       ulong ticket = OrderGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPendingOrder(ticket)) continue;
-
       datetime expiry = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
       if(expiry <= 0 || expiry > now)
          continue;
-
       ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
       Print("PENDING STOP EXPIRED: Ticket=", ticket,
             " | Type=", EnumToString(type),
             " | Expiry=", TimeToString(expiry, TIME_DATE|TIME_SECONDS),
             " | Now=", TimeToString(now, TIME_DATE|TIME_SECONDS));
-
       MqlTradeRequest request;
       MqlTradeResult result;
       ZeroMemory(request);
       ZeroMemory(result);
-
       request.action = TRADE_ACTION_REMOVE;
       request.order = ticket;
       request.symbol = _Symbol;
       request.magic = BuildMagicForSubtype(SUBTYPE_MAIN);
       request.comment = "PENDING_EXPIRED_CLEANUP";
-
       bool sent = OrderSend(request, result);
       if(sent && result.retcode == TRADE_RETCODE_DONE)
       {
@@ -3290,29 +2809,15 @@ double GetOpenProfitLoss()
    }
    return openProfitLoss;
 }
-//--- Count recovery/averaging positions (used for state machine)
+// V8.0: Recovery system removed. Always returns 0.
 int CountRecoveryPositions()
 {
-   int count = 0;
-   int total = PositionsTotal();
-   for(int i = 0; i < total; i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!IsOurPosition(ticket)) continue;
-
-      long magic = PositionGetInteger(POSITION_MAGIC);
-      string comment = PositionGetString(POSITION_COMMENT);
-      if(IsAuxSubtypeByMagic(magic) ||
-         StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
-         StringFind(comment, COMMENT_AVG_PREFIX)      >= 0)
-         count++;
-   }
-   return count;
+   return 0;
 }
-//--- Count positions that already performed the 50%?lot close
+// V8.0: 50% lot close system removed. Always returns 0.
 int Count50PctReducedPositions()
 {
+   return 0;
    int count = 0;
    for(int i = 0; i < g_positionCount; i++)
    {
@@ -3327,19 +2832,16 @@ int Count50PctReducedPositions()
 double CalculateMarketThreat()
 {
    double threat = 0;
-
    //--- FACTOR 1: Position Loss Count (0-75 points, 15 per losing position)
    int losingCount = 0;
    int totalPositions = 0;
    double totalUnrealizedLoss = 0;
-
    int total = PositionsTotal();
    for(int p = 0; p < total; p++)
    {
       ulong ticket = PositionGetTicket(p);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-
       totalPositions++;
       double profit = PositionGetDouble(POSITION_PROFIT);
       if(profit < 0)
@@ -3351,12 +2853,10 @@ double CalculateMarketThreat()
    // V7.2 FIX (BUG 7): Reduced from 15 pts/position (max 75) to 8 pts (max 40)
    if(INPUT_THREAT_FACTOR_LOSING_COUNT_ON)
       threat += MathMin(losingCount * 8.0, 40.0);
-
    // V7.2 FIX (BUG 8): Only apply majority check with 3+ positions (1 losing out of 1 = 100% but meaningless)
    //--- FACTOR 2: Majority Losing (+25 if >50% positions losing, only with 3+ positions)
    if(INPUT_THREAT_FACTOR_MAJORITY_LOSING_ON && totalPositions >= 3 && (double)losingCount / totalPositions > 0.5)
       threat += 25.0;
-
    //--- FACTOR 3: Account Drawdown (graduated: 0-45 points)
    double drawdownPct = CalculateDrawdownPercent();
    if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 10.0)     threat += 45.0;
@@ -3364,20 +2864,17 @@ double CalculateMarketThreat()
    else if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 4.0) threat += 15.0;
    else if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 2.0) threat += 5.0;
    else if(INPUT_THREAT_FACTOR_DRAWDOWN_ON && drawdownPct >= 1.0) threat += 3.0;
-
    //--- FACTOR 4: Consecutive Loss Streak (non-linear: 0-25 points)
    if(INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= 5)      threat += 20.0 + (g_consecutiveLosses - 5) * 2;
    else if(INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= 4) threat += 15.0;
    else if(INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= 3) threat += 8.0;
    else if(INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= 2) threat += 3.0;
-
    //--- FACTOR 5: Volatility Spike (ATR ratio: 0-30 points)
    double volRatio = CalculateVolatilityRatio();
    if(INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON && volRatio >= 2.0)      threat += 30.0;
    else if(INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON && volRatio >= 1.6) threat += 20.0;
    else if(INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON && volRatio >= 1.4) threat += 12.0;
    else if(INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON && volRatio >= 1.2) threat += 5.0;
-
    //--- FACTOR 6: News Event Proximity (0-25 points)
    // Simplified: Use time?based heuristic for major news windows
    MqlDateTime dt;
@@ -3388,7 +2885,6 @@ double CalculateMarketThreat()
    // ECB/Fed typical announcement times
    if(INPUT_THREAT_FACTOR_NEWS_WINDOW_ON && dt.hour >= 12 && dt.hour <= 14 && (dt.day_of_week == 3 || dt.day_of_week == 4))
       threat += 8.0;
-
    //--- FACTOR 7: Calendar Liquidity Effects (0-15 points)
    // Rationale:
    // - Removed Sunday penalty because many brokers have shortened/reopened sessions with unstable timestamps,
@@ -3397,28 +2893,19 @@ double CalculateMarketThreat()
    // - End-of-month penalty remains configurable with a lower default to reduce over-filtering.
    if(INPUT_THREAT_FRIDAY_LATE_PENALTY_ON && dt.day_of_week == 5 && dt.hour >= INPUT_FRIDAY_LATE_HOUR_UTC)
       threat += INPUT_FRIDAY_LATE_PENALTY;
-
    if(INPUT_ENABLE_END_OF_MONTH_PENALTY && INPUT_THREAT_END_OF_MONTH_PENALTY_ON && dt.day >= INPUT_END_OF_MONTH_START_DAY)
       threat += INPUT_END_OF_MONTH_PENALTY;
-
-   //--- FACTOR 8: Recovery Order Presence (capped to avoid outsized impact)
-   int recoveryCount = CountRecoveryPositions();
-   if(INPUT_THREAT_FACTOR_RECOVERY_POSITION_ON && recoveryCount > 0)
-      threat += MathMin(recoveryCount * 4.0 + 2.0, 15.0);
-
+   // V8.0: FACTOR 8 (Recovery presence) REMOVED - no recovery system.
    //--- FACTOR 9: Win Streak Complacency
    if(INPUT_THREAT_FACTOR_WIN_STREAK_ON && g_consecutiveWins >= 5)
       threat += 5.0;  // Complacency warning
    else if(INPUT_THREAT_FACTOR_WIN_STREAK_ON && g_consecutiveWins >= 2)
       threat -= 2.0;  // Slight confidence boost
-
    //--- Apply adaptive multiplier
    threat *= g_adaptive.threatMultiplier;
-
    //--- Clamp to 0-100
    if(threat < 0) threat = 0;
    if(threat > 100) threat = 100;
-
    return threat;
 }
 //+------------------------------------------------------------------+
@@ -3443,10 +2930,8 @@ double CalculateVolatilityRatio()
    double atr[];
    if(CopyBuffer(g_hATR_M1, 0, 0, 1, atr) < 1 || atr[0] <= 0)
       return 1.0;
-
    if(g_averageATR <= 0)
       return 1.0;
-
    return atr[0] / g_averageATR;
 }
 //+------------------------------------------------------------------+
@@ -3456,11 +2941,9 @@ void CalculateAverageATR()
    ArraySetAsSeries(atr, true);
    if(CopyBuffer(g_hATR_M5, 0, 0, 100, atr) < 50)
       return;
-
    double sum = 0;
    for(int i = 0; i < 50; i++)
       sum += atr[i];
-
    g_averageATR = sum / 50.0;
 }
 //+------------------------------------------------------------------+
@@ -3471,47 +2954,37 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
 {
    //--- BASE CONFIDENCE: 50% (neutral starting point)
    double conf = 50.0;
-
    //--- COMPONENT 1: TREND STRENGTH (0 to +35)
    double trendComponent = CalculateTrendStrengthComponent(direction);
    conf += trendComponent;
-
    //--- COMPONENT 2: MOMENTUM CONFIRMATION (0 to +21)
    double momentumComponent = CalculateMomentumComponent(direction);
    conf += momentumComponent;
-
    //--- COMPONENT 3: SUPPORT/RESISTANCE LEVELS (-8 to +8)
    double srComponent = CalculateSRComponent(direction);
    conf += srComponent;
-
    //--- COMPONENT 4: VOLATILITY ADJUSTMENT (-10 to 0) - FIXED: Reduced penalty
    double volComponent = CalculateVolatilityComponent();
    conf += volComponent * 0.5; // FIXED: Halved impact
-
    //--- COMPONENT 5: TIME/SESSION ANALYSIS (0 to +13)
    double timeComponent = CalculateTimeComponent();
    conf += timeComponent;
-
    //--- COMPONENT 6: DIVERGENCE/PATTERN DETECTION (0 to +14)
    double divergenceComponent = CalculateDivergenceComponent(direction);
    conf += divergenceComponent;
-
    //--- FIXED: Add signal count bonus (+5 per signal above minimum)
    int extraSignals = signals.totalSignals - INPUT_MIN_SIGNALS;
    if(extraSignals > 0)
       conf += extraSignals * 5.0;
-
    //--- Clamp raw confidence
    if(conf < 0) conf = 0;
    if(conf > 100) conf = 100;
-
    bool mlApplied = false;
    bool mlNonNeutral = false;
    double appliedMLMultiplier = 1.0;
    bool comboApplied = false;
    bool comboNonNeutral = false;
    double appliedComboMultiplier = 1.0;
-
    //--- Apply ML multiplier from signal combination stats (only if enabled)
    if(INPUT_ENABLE_ML && INPUT_ML_INFERENCE_ON && g_trainingDataCount >= INPUT_MIN_TRADES_FOR_ML)
    {
@@ -3522,32 +2995,27 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
       mlNonNeutral = (MathAbs(mlMultiplier - 1.0) > 0.00001);
       conf *= mlMultiplier;
    }
-
    //--- Apply fingerprint boost (only if enabled)
    if(INPUT_ENABLE_FINGERPRINT)
    {
       double fpBoost = GetFingerprintBoost(fpId, combination);
       conf += fpBoost; // Add boost (not multiply)
    }
-
    //--- Apply AI adjustment (only if enabled)
    if(INPUT_AI_MODE != AI_OFF && INPUT_AI_BLEND_ON && g_aiResponse.lastUpdate > 0)
    {
       double aiAdjustment = (g_aiResponse.confidenceScore - 50.0) * INPUT_AI_WEIGHT;
       conf += aiAdjustment;
-
       // Risk alert penalty
       if(g_aiResponse.riskAlert)
          conf -= 10.0;
    }
-
    //--- Apply Markov streak adjustment (only if enabled)
    if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_INFERENCE_ON)
    {
       double markovAdj = GetMarkovConfidenceAdjustment();
       conf += markovAdj;
    }
-
    //--- Priority 1: High ADX risk mode (optional)
    if(INPUT_LOT_HIGH_ADX_BOOST_ON && INPUT_ENABLE_HIGH_ADX_RISK_MODE)
    {
@@ -3555,7 +3023,6 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
       if(CopyBuffer(g_hADX_M1, 0, 0, 1, adxNow) == 1 && adxNow[0] >= INPUT_HIGH_ADX_THRESHOLD)
          conf += INPUT_HIGH_ADX_CONFIDENCE_BOOST;
    }
-
    //--- Priority 2: Combination-adaptive confidence (optional)
    bool allowComboAdaptive = (!mlNonNeutral);
    if(INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_INFERENCE_ON && allowComboAdaptive)
@@ -3587,7 +3054,6 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
          comboNonNeutral = (MathAbs(comboMultiplier - 1.0) > 0.00001);
       }
    }
-
    double consecBoostApplied = 0.0;
    if(INPUT_ENABLE_CONSEC_WIN_CONF_BOOST && g_consecutiveWins >= INPUT_CONSEC_WIN_CONF_TRIGGER)
    {
@@ -3598,10 +3064,8 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
          consecBoostApplied *= 0.5;
       conf += consecBoostApplied;
    }
-
    double treeAdj = GetTreeConfidenceAdjustment(combination);
    conf += treeAdj;
-
    if(INPUT_ENABLE_LOGGING)
    {
       Print("CONF DEBUG: combo=", combination,
@@ -3623,15 +3087,12 @@ double CalculateConfidence(const SignalResult &signals, int direction, int mtfSc
             " treeAdj=", DoubleToString(treeAdj, 3),
             " consecBoost=", DoubleToString(consecBoostApplied, 2));
    }
-
    //--- Canonical threat penalty budget: keep a single confidence penalty path
    if(threat > 60)
       conf -= (threat - 60) * 0.12;
-
    //--- Final clamp
    if(conf < 0) conf = 0;
    if(conf > 100) conf = 100;
-
    return conf;
 }
 //+------------------------------------------------------------------+
@@ -3642,16 +3103,13 @@ double CalculateTrendStrengthComponent(int direction)
    double component = 0;
    double emaFast[], emaSlow[], emaTrend[];
    double adx[], plusDI[], minusDI[];
-
    if(CopyBuffer(g_hEmaFast_M1, 0, 0, 10, emaFast) < 10) return 5.0; // FIXED: Default positive
    if(CopyBuffer(g_hEmaSlow_M1, 0, 0, 10, emaSlow) < 10) return 5.0;
    if(CopyBuffer(g_hEmaTrend_M1, 0, 0, 5, emaTrend) < 5) return 5.0;
    if(CopyBuffer(g_hADX_M1, 0, 0, 3, adx) < 3) return 5.0;
    if(CopyBuffer(g_hADX_M1, 1, 0, 3, plusDI) < 3) return 5.0;
    if(CopyBuffer(g_hADX_M1, 2, 0, 3, minusDI) < 3) return 5.0;
-
    double currentPrice = iClose(_Symbol, PERIOD_M1, 1);
-
    //--- EMA Alignment (+0 to +15)
    if(direction == 1) // BUY
    {
@@ -3671,32 +3129,27 @@ double CalculateTrendStrengthComponent(int direction)
       else if(emaFast[1] < emaSlow[1])
          component += 5.0;
    }
-
    //--- EMA Slope (+0 to +8), normalized by ATR to stay symbol-agnostic.
    // Convert 4-bar EMA change into per-bar slope, then compare against ATR fractions.
    double atrSlope[];
    if(CopyBuffer(g_hATR_M1, 0, 0, 2, atrSlope) < 2 || atrSlope[1] <= 0)
       return MathMin(component + 2.0, 35.0); // minimal credit if ATR unavailable
-
    double emaSlopePerBar = (emaFast[1] - emaFast[5]) / 4.0;
    double normalizedSlope = emaSlopePerBar / atrSlope[1];
    const double EMA_SLOPE_WEAK_THRESHOLD = INPUT_EMA_SLOPE_ATR_WEAK;   // e.g. 0.5% ATR/bar
    const double EMA_SLOPE_STRONG_THRESHOLD = INPUT_EMA_SLOPE_ATR_STRONG; // e.g. 1.0% ATR/bar
-
    if(direction == 1 && normalizedSlope > EMA_SLOPE_STRONG_THRESHOLD) component += 8.0;
    else if(direction == 1 && normalizedSlope > EMA_SLOPE_WEAK_THRESHOLD) component += 4.0;
    else if(direction == 1 && normalizedSlope > 0) component += 2.0;
    else if(direction == -1 && normalizedSlope < -EMA_SLOPE_STRONG_THRESHOLD) component += 8.0;
    else if(direction == -1 && normalizedSlope < -EMA_SLOPE_WEAK_THRESHOLD) component += 4.0;
    else if(direction == -1 && normalizedSlope < 0) component += 2.0;
-
    //--- ADX Confirmation (+0 to +12) - FIXED: Reduced penalties
    if(adx[1] >= 40) component += 12.0;
    else if(adx[1] >= 25) component += 8.0;
    else if(adx[1] >= 20) component += 4.0; // FIXED: Added points
    else if(adx[1] >= 15) component += 2.0; // FIXED: Added points
    // FIXED: Removed negative penalty for low ADX
-
    return MathMin(component, 35.0); // Cap at +35
 }
 //+------------------------------------------------------------------+
@@ -3704,13 +3157,11 @@ double CalculateMomentumComponent(int direction)
 {
    double component = 0;
    double rsi[], macdMain[], macdSignal[], stochK[], stochD[];
-
    if(CopyBuffer(g_hRSI_M1, 0, 0, 5, rsi) < 5) return 5.0; // FIXED: Default positive
    if(CopyBuffer(g_hMACD_M1, 0, 0, 5, macdMain) < 5) return 5.0;
    if(CopyBuffer(g_hMACD_M1, 1, 0, 5, macdSignal) < 5) return 5.0;
    if(CopyBuffer(g_hStoch_M1, 0, 0, 3, stochK) < 3) return 5.0;
    if(CopyBuffer(g_hStoch_M1, 1, 0, 3, stochD) < 3) return 5.0;
-
    //--- RSI Analysis (-4 to +6) FIXED: Reduced penalties
    if(direction == 1) // BUY
    {
@@ -3728,7 +3179,6 @@ double CalculateMomentumComponent(int direction)
       else if(rsi[1] < 30) component -= 4.0;  // FIXED: Reduced
       else if(rsi[1] < 40) component -= 1.0;  // FIXED: Reduced
    }
-
    //--- MACD Analysis (-5 to +10) FIXED: Reduced penalties
    if(direction == 1)
    {
@@ -3742,7 +3192,6 @@ double CalculateMomentumComponent(int direction)
       else if(macdMain[1] < macdSignal[1]) component += 5.0;
       else if(macdMain[1] > macdSignal[1] && macdMain[1] > 0) component -= 5.0;
    }
-
    //--- Histogram acceleration (+0 to +5) - FIXED: Removed penalty
    double histNow = macdMain[1] - macdSignal[1];
    double histPrev = macdMain[2] - macdSignal[2];
@@ -3750,20 +3199,17 @@ double CalculateMomentumComponent(int direction)
       (direction == -1 && histNow < histPrev))
       component += 5.0;
    // FIXED: Removed else penalty
-
    //--- Stochastic (-3 to +6) FIXED: Reduced penalties
    if(direction == 1 && stochK[1] < 20) component += 6.0;
    else if(direction == 1 && stochK[1] > 80) component -= 3.0; // FIXED: Reduced from -6
    else if(direction == -1 && stochK[1] > 80) component += 6.0;
    else if(direction == -1 && stochK[1] < 20) component -= 3.0;
-
    return MathMax(MathMin(component, 21.0), -5.0); // FIXED: Limit downside
 }
 //+------------------------------------------------------------------+
 double CalculateSRComponent(int direction)
 {
    double component = 0;
-
    // Calculate recent high/low
    double highestHigh = iHigh(_Symbol, PERIOD_M1, 2);
    double lowestLow = iLow(_Symbol, PERIOD_M1, 2);
@@ -3774,15 +3220,12 @@ double CalculateSRComponent(int direction)
       if(h > highestHigh) highestHigh = h;
       if(l < lowestLow) lowestLow = l;
    }
-
    double currentPrice = iClose(_Symbol, PERIOD_M1, 1);
    double range = highestHigh - lowestLow;
    if(range <= 0) return 0;
-
    double distToResistance = highestHigh - currentPrice;
    double distToSupport = currentPrice - lowestLow;
    double nearThreshold = range * 0.1; // Within 10% of level
-
    if(direction == 1) // BUY
    {
       if(distToSupport < nearThreshold)
@@ -3797,7 +3240,6 @@ double CalculateSRComponent(int direction)
       else if(distToSupport < nearThreshold)
          component -= 4.0; // FIXED: Reduced from -8
    }
-
    return component;
 }
 //+------------------------------------------------------------------+
@@ -3805,15 +3247,12 @@ double CalculateVolatilityComponent()
 {
    double component = 0;
    double volRatio = CalculateVolatilityRatio();
-
    // FIXED: Reduced all penalties
    if(volRatio < 0.7) component -= 4.0; // FIXED: Reduced from -8
    else if(volRatio >= 0.7 && volRatio < 1.2) component += 2.0; // FIXED: Added bonus
    else if(volRatio >= 1.2 && volRatio < 1.5) component -= 1.0; // FIXED: Reduced from -3
    else if(volRatio >= 1.5) component -= 5.0; // FIXED: Reduced from -10
-
    // (BB width check removed - was causing too many rejections)
-
    return MathMax(component, -5.0); // FIXED: Limit downside
 }
 //+------------------------------------------------------------------+
@@ -3821,39 +3260,31 @@ double CalculateTimeComponent()
 {
    double component = 0;
    int session = GetCurrentSession();
-
    // Session bonus
    if(session == 1) component += 8.0;      // London
    else if(session == 2) component += 5.0; // NY
    else if(session == 0) component += 3.0; // Asian - FIXED: Increased from 2
    else component += 1.0; // FIXED: Added default instead of 0
-
    // Day of week - FIXED: Reduced penalties
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
-
    if(dt.day_of_week == 5)      component -= 1.0; // FIXED: Reduced from -3
    else if(dt.day_of_week >= 1 && dt.day_of_week <= 4)
       component += 2.0; // Mon-Thu
-
    // (micro?timing penalties removed)
-
    return MathMin(component, 13.0);
 }
 //+------------------------------------------------------------------+
 double CalculateDivergenceComponent(int direction)
 {
    double component = 0;
-
    //--- RSI Divergence detection (simplified)
    double rsi[];
    if(CopyBuffer(g_hRSI_M1, 0, 0, 20, rsi) < 20) return 0;
-
    double high1 = iHigh(_Symbol, PERIOD_M1, 1);
    double high10 = iHigh(_Symbol, PERIOD_M1, 10);
    double low1 = iLow(_Symbol, PERIOD_M1, 1);
    double low10 = iLow(_Symbol, PERIOD_M1, 10);
-
    // Bearish divergence: price higher high, RSI lower high
    if(high1 > high10 && rsi[1] < rsi[10])
    {
@@ -3866,18 +3297,15 @@ double CalculateDivergenceComponent(int direction)
       if(direction == 1) component += 8.0; // Good for buys
       // FIXED: Removed penalty for sells
    }
-
    //--- Pin bar pattern detection
    double open1 = iOpen(_Symbol, PERIOD_M1, 1);
    double close1 = iClose(_Symbol, PERIOD_M1, 1);
    double range1 = high1 - low1;
    double body1 = MathAbs(close1 - open1);
-
    if(range1 > 0 && body1 < range1 * 0.3) // Pin bar (small body, long wicks)
    {
       double upperWick = high1 - MathMax(open1, close1);
       double lowerWick = MathMin(open1, close1) - low1;
-
       // Bullish pin bar (long lower wick)
       if(lowerWick > upperWick * 2 && direction == 1)
          component += 6.0;
@@ -3885,7 +3313,6 @@ double CalculateDivergenceComponent(int direction)
       else if(upperWick > lowerWick * 2 && direction == -1)
          component += 6.0;
    }
-
    return MathMin(component, 14.0);
 }
 //+------------------------------------------------------------------+
@@ -3894,7 +3321,6 @@ double CalculateDivergenceComponent(int direction)
 bool DetectSignals(SignalResult &signals)
 {
    ZeroMemory(signals);
-
    //--- Get indicator values
    double emaFast[], emaSlow[];
    double rsi[];
@@ -3904,7 +3330,6 @@ bool DetectSignals(SignalResult &signals)
    double atr[];
    double bbUpper[], bbLower[], bbMiddle[];
    double volume[];
-
    if(CopyBuffer(g_hEmaFast_M1, 0, 0, 5, emaFast) < 5) return false;
    if(CopyBuffer(g_hEmaSlow_M1, 0, 0, 5, emaSlow) < 5) return false;
    if(CopyBuffer(g_hRSI_M1, 0, 0, 5, rsi) < 5) return false;
@@ -3918,11 +3343,9 @@ bool DetectSignals(SignalResult &signals)
    if(CopyBuffer(g_hBB_M1, 2, 0, 3, bbLower) < 3) return false;
    if(CopyBuffer(g_hBB_M1, 0, 0, 3, bbMiddle) < 3) return false;
    if(CopyBuffer(g_hVolume_M1, 0, 0, 5, volume) < 5) return false;
-
    int b = 1;   // completed bar index
    int b2 = 2;  // previous bar
    int b3 = 3;  // 2?bars?ago (used for look?back crossovers)
-
    //--- Get OHLC of required bars
    double open1 = iOpen(_Symbol, PERIOD_M1, 1);
    double close1 = iClose(_Symbol, PERIOD_M1, 1);
@@ -3932,7 +3355,6 @@ bool DetectSignals(SignalResult &signals)
    double close2 = iClose(_Symbol, PERIOD_M1, 2);
    double high2 = iHigh(_Symbol, PERIOD_M1, 2);
    double low2 = iLow(_Symbol, PERIOD_M1, 2);
-
    //--- Signal 1: EMA Crossover (current or last 2 bars)
    if(emaFast[b] > emaSlow[b] && emaFast[b2] <= emaSlow[b2])
    {
@@ -3960,7 +3382,6 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): REMOVED fallback EMA alignment - it used to fire every bar.
-
    //--- Signal 2: RSI Oversold/Overbought (tightened zones)
    if(rsi[b] < 35) // FIXED: Changed from 30
    {
@@ -3975,7 +3396,6 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): Removed mid?range RSI signals.
-
    //--- Signal 3: Stochastic Crossover in OS/OB zones (tightened)
    if(stochK[b] < 25 && stochK[b] > stochD[b]) // FIXED: Changed from 20
    {
@@ -3990,11 +3410,9 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): Removed mid?range stochastic signals.
-
    //--- Signal 4: Engulfing Pattern (plus strong candle)
    bool bullEngulfing = (close2 < open2) && (close1 > open1) && (close1 > open2) && (open1 < close2);
    bool bearEngulfing = (close2 > open2) && (close1 < open1) && (close1 < open2) && (open1 > close2);
-
    if(bullEngulfing)
    {
       signals.engulfingSignal = true;
@@ -4020,7 +3438,6 @@ bool DetectSignals(SignalResult &signals)
       signals.bearVotes++;
       signals.totalSignals++;
    }
-
    //--- Signal 5: Breakout (excluding the signal bar itself)
    double highestHigh = iHigh(_Symbol, PERIOD_M1, 2);
    double lowestLow   = iLow(_Symbol, PERIOD_M1, 2);
@@ -4031,7 +3448,6 @@ bool DetectSignals(SignalResult &signals)
       if(h > highestHigh) highestHigh = h;
       if(l < lowestLow)   lowestLow = l;
    }
-
    if(close1 > highestHigh)
    {
       signals.breakoutSignal = true;
@@ -4057,7 +3473,6 @@ bool DetectSignals(SignalResult &signals)
       signals.bearVotes++;
       signals.totalSignals++;
    }
-
    //--- Signal 6: Volume Spike (threshold lowered)
    double avgVolume = 0;
    double volArr[];
@@ -4066,7 +3481,6 @@ bool DetectSignals(SignalResult &signals)
       for(int v = 0; v < INPUT_VOLUME_AVG_PERIOD; v++)
          avgVolume += volArr[v];
       avgVolume /= INPUT_VOLUME_AVG_PERIOD;
-
       if(volume[b] > avgVolume * 2.0) // FIXED: Changed from 2.0
       {
          signals.volumeSignal = true;
@@ -4083,7 +3497,6 @@ bool DetectSignals(SignalResult &signals)
          // V7.2 FIX (BUG 11): REMOVED neutral volume signal (no direction ? no vote)
       }
    }
-
    //--- Signal 7: MACD Crossover (no fallback)
    if(macdMain[b] > macdSignal[b] && macdMain[b2] <= macdSignal[b2])
    {
@@ -4098,7 +3511,6 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): Removed fallback alignment.
-
    //--- Signal 8: Williams %R (tightened zones)
    if(wpr[b] < -75) // FIXED: Changed from -80
    {
@@ -4113,17 +3525,14 @@ bool DetectSignals(SignalResult &signals)
       signals.totalSignals++;
    }
    // V7.2 FIX (BUG 10): Removed mid?range WPR signals.
-
    //--- Generate combination string
    signals.combinationString = GenerateSignalCombinationString(signals);
-
    return true;
 }
 //+------------------------------------------------------------------+
 string GenerateSignalCombinationString(const SignalResult &signals)
 {
    string combo = "";
-
    if(signals.emaSignal)      combo += "EMA_";
    if(signals.rsiSignal)      combo += "RSI_";
    if(signals.stochSignal)    combo += "STOCH_";
@@ -4132,10 +3541,8 @@ string GenerateSignalCombinationString(const SignalResult &signals)
    if(signals.volumeSignal)   combo += "VOL_";
    if(signals.macdSignal)    combo += "MACD_";
    if(signals.wprSignal)     combo += "WPR_";
-
    if(StringLen(combo) > 0)
       combo = StringSubstr(combo, 0, StringLen(combo) - 1); // Remove trailing underscore
-
    return combo;
 }
 //+------------------------------------------------------------------+
@@ -4156,7 +3563,6 @@ int CalculateMTFAlignment(int direction)
          (direction == -1 && m5Fast[0] < m5Slow[0]))
          score += 1;
    }
-
  else
    {
       g_lastMtfAlignmentHadReadFailure = true;
@@ -4166,7 +3572,6 @@ int CalculateMTFAlignment(int direction)
          LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment M5 fastRead=" + IntegerToString(m5FastRead) +
                              " slowRead=" + IntegerToString(m5SlowRead));
    }
-
    // Closed candles for higher timeframes prevent intrabar flips (start_pos=1).
    //--- H1 (weight: 2)
    double h1Fast[], h1Slow[];
@@ -4235,7 +3640,6 @@ int GetTimeframeDirectionConsensus(int &agreeingFrames)
    agreeingFrames = 0;
    int bullishFrames = 0;
    int bearishFrames = 0;
-
  g_lastMtfConsensusHadReadFailure = false;
  
    // Consensus is intentionally based on higher-timeframe structure only.
@@ -4304,7 +3708,6 @@ else
       agreeingFrames = bearishFrames;
       return -1;
    }
-
    agreeingFrames = MathMax(bullishFrames, bearishFrames);
    return 0;
 }
@@ -4320,25 +3723,20 @@ int DetermineRLState(double confidence, double threat, int positions,
    // Positions: FEW(0), SEVERAL(1), MANY(2)
    // Drawdown: HEALTHY(0), STRESSED(1)
    // Performance: LOSING(0), WINNING(1)
-
    int confBucket = 0;
    if(confidence >= 75) confBucket = 2;      // HIGH
    else if(confidence >= 55) confBucket = 1; // MEDIUM
    // else LOW = 0
-
    int threatBucket = 0;
    if(threat > 70) threatBucket = 2;      // DANGEROUS
    else if(threat > 40) threatBucket = 1; // MODERATE
    // else SAFE = 0
-
    int posBucket = 0;
    if(positions >= 4) posBucket = 2;      // MANY
    else if(positions >= 2) posBucket = 1; // SEVERAL
    // else FEW = 0
-
    int ddBucket = (drawdown >= 2.0) ? 1 : 0;
    int perfBucket = winStreak ? 1 : 0;
-
    // Calculate state index
    int state = confBucket * 36 + threatBucket * 12 + posBucket * 4 + ddBucket * 2 + perfBucket;
    return MathMin(state, Q_TABLE_STATES - 1);
@@ -4348,7 +3746,6 @@ ENUM_RL_ACTION GetRLAction(int state)
 {
    if(!INPUT_ENABLE_RL || g_rlTradesCompleted < INPUT_RL_MIN_TRADES)
       return RL_FULL_SIZE; // Default before learning
-
    if(!g_rngSeeded)
    {
       int seed = (int)(TimeLocal() ^ (datetime)GetTickCount());
@@ -4356,10 +3753,8 @@ ENUM_RL_ACTION GetRLAction(int state)
       g_rngSeeded = true;
       Print("RNG SEEDED LATE: applied defensive seed in GetRLAction | seed=", seed);
    }
-
    // Epsilon?greedy: explore with probability epsilon
    double rand = (double)MathRand() / 32767.0;
-
    if(rand < INPUT_RL_EPSILON)
    {
       // Explore: random action
@@ -4371,7 +3766,6 @@ ENUM_RL_ACTION GetRLAction(int state)
       // Exploit: best known action
       double maxQ = g_qTable[state][0];
       int bestAction = 0;
-
       for(int a = 1; a < Q_TABLE_ACTIONS; a++)
       {
          if(g_qTable[state][a] > maxQ)
@@ -4389,7 +3783,6 @@ double GetCombinationStrengthSnapshot(const string &combination)
    string canonicalSubsets[];
    int subsetCount = BuildCanonicalComboSubsets(combination, INPUT_MIN_SIGNALS, canonicalSubsets);
    if(subsetCount <= 0) return 50.0;
-
    double sumStrength = 0.0;
    int matches = 0;
    for(int s = 0; s < subsetCount; s++)
@@ -4410,16 +3803,13 @@ double ResolveNextStateConfidence(const RLStateAction &rec)
 {
    if(MathIsValidNumber(rec.confidenceSnapshot) && rec.confidenceSnapshot >= 0.0 && rec.confidenceSnapshot <= 100.0)
       return rec.confidenceSnapshot;
-
    // Deterministic fallback: combine MTF score and combo strength snapshot.
    double mtfComponent = 50.0;
    if(rec.mtfScoreSnapshot >= -4 && rec.mtfScoreSnapshot <= 4)
       mtfComponent = 50.0 + rec.mtfScoreSnapshot * 7.5;
-
    double comboComponent = 50.0;
    if(MathIsValidNumber(rec.comboStrengthSnapshot))
       comboComponent = MathMax(0.0, MathMin(100.0, rec.comboStrengthSnapshot));
-
    return MathMax(0.0, MathMin(100.0, (mtfComponent * 0.4) + (comboComponent * 0.6)));
 }
 //+------------------------------------------------------------------+
@@ -4428,13 +3818,11 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong orderTicket, ulon
                        double confidenceSnapshot, int mtfScoreSnapshot, double comboStrengthSnapshot)
 {
    const int pendingCap = MathMax(0, INPUT_RL_PENDING_HARD_CAP);
-
    if(orderTicket == 0 && positionId == 0)
    {
       if(INPUT_ENABLE_LOGGING) Print("RL Pending skipped: missing order/position ticket");
       return;
    }
-
    datetime now = TimeCurrent();
    int maxAgeSec = INPUT_RL_PENDING_MAX_AGE_HOURS * 3600;
    if(maxAgeSec > 0 && g_pendingRLCount > 0)
@@ -4449,18 +3837,15 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong orderTicket, ulon
             removed++;
             continue;
          }
-
          if(writeIdx != i)
             g_pendingRL[writeIdx] = g_pendingRL[i];
          writeIdx++;
       }
       g_pendingRLCount = writeIdx;
-
       if(removed > 0 && INPUT_ENABLE_LOGGING)
          Print("RL Pending cleanup during record: removed stale entries=", removed,
                " | Remaining=", g_pendingRLCount);
    }
-
    if(g_pendingRLCount >= pendingCap)
    {
       if(INPUT_ENABLE_LOGGING)
@@ -4468,21 +3853,17 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong orderTicket, ulon
                ") and no stale entries removable. Skipping new record for positionId=", positionId);
       return;
    }
-
    if(g_pendingRLCount >= ArraySize(g_pendingRL))
    {
       int targetSize = MathMin(pendingCap, g_pendingRLCount + 50);
       ArrayResize(g_pendingRL, targetSize);
    }
-
    if(g_pendingRLCount >= ArraySize(g_pendingRL))
    {
       if(INPUT_ENABLE_LOGGING)
          Print("RL WARNING: Pending RL buffer resize limited by cap. Skipping positionId=", positionId);
       return;
    }
-
-
    g_pendingRL[g_pendingRLCount].state = state;
    g_pendingRL[g_pendingRLCount].action = action;
    g_pendingRL[g_pendingRLCount].timestamp = TimeCurrent();
@@ -4496,25 +3877,19 @@ void RecordStateAction(int state, ENUM_RL_ACTION action, ulong orderTicket, ulon
    g_pendingRL[g_pendingRLCount].mtfScoreSnapshot = mtfScoreSnapshot;
    g_pendingRL[g_pendingRLCount].comboStrengthSnapshot = comboStrengthSnapshot;
    g_pendingRLCount++;
-
    if(INPUT_ENABLE_LOGGING)
       Print("RL Pending: State=", state, " Action=", EnumToString(action),
                      " | OrderTicket=", orderTicket,
                      " | PositionId=", positionId);
 }
 //+------------------------------------------------------------------+
-
-
-
 void RemovePendingRLByOrderTicket(ulong orderTicket)
 {
    if(orderTicket == 0 || g_pendingRLCount <= 0) return;
-
    for(int i = g_pendingRLCount - 1; i >= 0; i--)
    {
       if(g_pendingRL[i].orderTicket != orderTicket || g_pendingRL[i].positionTicket != 0)
          continue;
-
       for(int j = i; j < g_pendingRLCount - 1; j++)
          g_pendingRL[j] = g_pendingRL[j + 1];
       g_pendingRLCount--;
@@ -4524,12 +3899,10 @@ void RemovePendingRLByOrderTicket(ulong orderTicket)
 void RemapPendingRLToPosition(ulong orderTicket, ulong positionId)
 {
    if(orderTicket == 0 || positionId == 0) return;
-
    for(int i = 0; i < g_pendingRLCount; i++)
    {
       if(g_pendingRL[i].orderTicket != orderTicket)
          continue;
-
       g_pendingRL[i].positionTicket = positionId;
       g_pendingRL[i].timestamp = TimeCurrent();
       if(INPUT_ENABLE_LOGGING)
@@ -4544,22 +3917,18 @@ bool GetPendingRLRiskBasis(ulong positionId, double &entryPrice, double &slDista
    slDistance = 0.0;
    lot = 0.0;
    tickValue = 0.0;
-
    for(int i = 0; i < g_pendingRLCount; i++)
    {
       if(g_pendingRL[i].positionTicket != positionId)
          continue;
-
       entryPrice = g_pendingRL[i].entryPrice;
       slDistance = g_pendingRL[i].slDistance;
       lot = g_pendingRL[i].lot;
       tickValue = g_pendingRL[i].tickValue;
       return true;
    }
-
    return false;
 }
-
 bool ComputeNormalizedRLReward(ulong positionId, double netProfit,
                                double &normalizedReward,
                                double &entryPrice, double &slDistance,
@@ -4568,9 +3937,7 @@ bool ComputeNormalizedRLReward(ulong positionId, double netProfit,
 {
    normalizedReward = netProfit;
    riskBasis = 0.0;
-
    bool hasPendingBasis = GetPendingRLRiskBasis(positionId, entryPrice, slDistance, lot, tickValue);
-
    if(!hasPendingBasis)
    {
       if(PositionSelectByTicket(positionId))
@@ -4582,7 +3949,6 @@ bool ComputeNormalizedRLReward(ulong positionId, double netProfit,
       }
       tickValue = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
    }
-
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(slDistance > 0.0 && lot > 0.0 && tickValue > 0.0 && tickSize > 0.0)
    {
@@ -4593,14 +3959,12 @@ bool ComputeNormalizedRLReward(ulong positionId, double netProfit,
          return true;
       }
    }
-
    normalizedReward = netProfit;
    return false;
 }
 void UpdateRLFromTrade(ulong positionId, double reward)
 {
    bool matched = false;
-
    // Find pending RL record for this trade
    for(int i = 0; i < g_pendingRLCount; i++)
    {
@@ -4610,20 +3974,17 @@ void UpdateRLFromTrade(ulong positionId, double reward)
          RLStateAction rec = g_pendingRL[i];
          int state = rec.state;
          ENUM_RL_ACTION action = rec.action;
-
          if(state < 0 || state >= Q_TABLE_STATES || action < 0 || action >= Q_TABLE_ACTIONS)
          {
             g_rlUnmatchedCloses++;
             if(INPUT_ENABLE_LOGGING)
                Print("RL WARNING: Dropping invalid state/action for positionId=", positionId,
                      " | state=", state, " | action=", (int)action);
-
             for(int j = i; j < g_pendingRLCount - 1; j++)
                g_pendingRL[j] = g_pendingRL[j + 1];
             g_pendingRLCount--;
             return;
          }
-
          // Bellman equation update
          double threat = CalculateMarketThreat();
          int positions = CountMainPositionsFromBroker();
@@ -4631,36 +3992,29 @@ void UpdateRLFromTrade(ulong positionId, double reward)
          double nextConfidence = ResolveNextStateConfidence(rec);
          int nextState = DetermineRLState(nextConfidence, threat, positions, dd, g_consecutiveWins > 0);
          double nextStateMaxQ = g_qTable[nextState][0];
-
          for(int a = 1; a < Q_TABLE_ACTIONS; a++)
             if(g_qTable[nextState][a] > nextStateMaxQ)
                nextStateMaxQ = g_qTable[nextState][a];
-
          double oldQ = g_qTable[state][action];
          double newQ = oldQ + INPUT_RL_ALPHA *
                        (reward + INPUT_RL_GAMMA * nextStateMaxQ - oldQ);
          g_qTable[state][action] = newQ;
          g_qVisits[state][action]++;
-
          // Remove processed entry (shift array)
          for(int j = i; j < g_pendingRLCount - 1; j++)
             g_pendingRL[j] = g_pendingRL[j + 1];
          g_pendingRLCount--;
-
          g_rlTradesCompleted++;
          g_rlMatchedUpdates++;
-
          if(INPUT_ENABLE_LOGGING)
             Print("RL Update: State=", state, " Action=", EnumToString(action),
                   " Reward=", reward, " OldQ=", oldQ, " NewQ=", newQ,
                   " | NextConf=", DoubleToString(nextConfidence, 2),
                   " | PositionId=", positionId,
                   " | PendingRemaining=", g_pendingRLCount);
-
          break;
       }
    }
-
    if(!matched)
    {
       g_rlUnmatchedCloses++;
@@ -4676,10 +4030,8 @@ ENUM_RL_ACTION ApplyRLToDecision(double confidence, double threat,
 {
    if(!INPUT_ENABLE_RL || g_rlTradesCompleted < INPUT_RL_MIN_TRADES)
       return RL_FULL_SIZE;
-
    int state = DetermineRLState(confidence, threat, positions, drawdown,
                               g_consecutiveWins >= 2);
-
    if(INPUT_ENABLE_META_POLICY)
    {
       int visits = 0;
@@ -4688,19 +4040,15 @@ ENUM_RL_ACTION ApplyRLToDecision(double confidence, double threat,
       if(visits < INPUT_RL_MIN_STATE_VISITS)
          return RL_FULL_SIZE;
    }
-
    return GetRLAction(state);
 }
-
 void CleanupStalePendingRL()
 {
    if(!INPUT_ENABLE_RL || g_pendingRLCount <= 0) return;
-
    datetime now = TimeCurrent();
    int writeIdx = 0;
    int removed = 0;
    int maxAgeSec = INPUT_RL_PENDING_MAX_AGE_HOURS * 3600;
-
    for(int i = 0; i < g_pendingRLCount; i++)
    {
       bool stale = (maxAgeSec > 0 && (now - g_pendingRL[i].timestamp) > maxAgeSec);
@@ -4709,23 +4057,19 @@ void CleanupStalePendingRL()
       {
          unmatchedPendingGone = !OrderSelect(g_pendingRL[i].orderTicket);
       }
-
       if(stale || unmatchedPendingGone)
       {
          removed++;
          continue;
       }
-
       if(writeIdx != i)
          g_pendingRL[writeIdx] = g_pendingRL[i];
       writeIdx++;
    }
-
    g_pendingRLCount = writeIdx;
    if(removed > 0 && INPUT_ENABLE_LOGGING)
       Print("RL CLEANUP: Removed stale/unmatched pending entries=", removed, " | Remaining=", g_pendingRLCount);
 }
-
 //+------------------------------------------------------------------+
 //| SECTION 16: MARKOV CHAIN ANALYSIS (Part 4.2)                     |
 //+------------------------------------------------------------------+
@@ -4745,12 +4089,10 @@ bool HasMarkovRowEvidence(const ENUM_MARKOV_STATE row, const int minimumRowSampl
 void RecomputeMarkovTransitionsFromCounts()
 {
    const double laplaceAlpha = 1.0; // Dirichlet/Laplace smoothing for sparse rows.
-
    for(int from = 0; from < MARKOV_STATES; from++)
    {
       int rowTotal = GetMarkovRowTotal((ENUM_MARKOV_STATE)from);
       double denominator = rowTotal + (laplaceAlpha * MARKOV_STATES);
-
       for(int to = 0; to < MARKOV_STATES; to++)
       {
          double numerator = MathMax(g_markovCounts[from][to], 0) + laplaceAlpha;
@@ -4770,7 +4112,6 @@ void UpdateMarkovTransition(ENUM_MARKOV_STATE fromState, ENUM_MARKOV_STATE toSta
       ArrayInitialize(g_markovCounts, 0);
       g_markovTradesRecorded = 0;
    }
-
    if(g_markovQueueCount >= lookback)
    {
       MarkovTransitionEvent oldEvent = g_markovQueue[g_markovQueueHead];
@@ -4788,7 +4129,6 @@ void UpdateMarkovTransition(ENUM_MARKOV_STATE fromState, ENUM_MARKOV_STATE toSta
       g_markovQueue[idx].observedAt = TimeCurrent();
       g_markovQueueCount++;
    }
-
    g_markovCounts[fromState][toState]++;
    g_markovTradesRecorded++;
    RecomputeMarkovTransitionsFromCounts();
@@ -4799,7 +4139,6 @@ void LogMarkovAdjustmentSimulation()
 {
    if(!INPUT_ENABLE_LOGGING)
       return;
-
    double simLossBoost = MathMin(MathMax(3.0 * (5 - 2), -15.0), 15.0);
    double simWinPenalty = MathMin(MathMax(-5.0 * (6 - 2), -15.0), 15.0);
    Print("MARKOV SIM: Example loss-side boost at 5 losses = ", simLossBoost,
@@ -4811,19 +4150,15 @@ double GetMarkovConfidenceAdjustment()
 {
    const int minimumObservations = 10;
    const int minimumRowSamples = 3;
-
    if(!INPUT_ENABLE_MARKOV || g_markovQueueCount < minimumObservations)
       return 0;
-
    int totalSamples = 0;
    for(int r = 0; r < MARKOV_STATES; r++)
       totalSamples += GetMarkovRowTotal((ENUM_MARKOV_STATE)r);
    double effectiveSampleSize = (double)totalSamples / (double)MathMax(1, MARKOV_STATES * MARKOV_STATES);
    if(effectiveSampleSize < (double)minimumRowSamples)
       return 0;
-
    double adjustment = 0;
-
    if(g_consecutiveWins >= 3 && HasMarkovRowEvidence(MARKOV_WIN, minimumRowSamples))
    {
       double pLoss = g_markovTransitions[MARKOV_WIN][MARKOV_LOSS];
@@ -4833,7 +4168,6 @@ double GetMarkovConfidenceAdjustment()
       if(shrunk > 0.4)
          adjustment = -5.0 * (g_consecutiveWins - 2) * certainty;
    }
-
    if(g_consecutiveLosses >= 3 && HasMarkovRowEvidence(MARKOV_LOSS, minimumRowSamples))
    {
       double pWin = g_markovTransitions[MARKOV_LOSS][MARKOV_WIN];
@@ -4843,16 +4177,13 @@ double GetMarkovConfidenceAdjustment()
       if(shrunk > 0.3)
          adjustment += 3.0 * (g_consecutiveLosses - 2) * certainty;
    }
-
    adjustment = MathMax(-15.0, MathMin(15.0, adjustment));
-
    static bool loggedSimulation = false;
    if(!loggedSimulation)
    {
       LogMarkovAdjustmentSimulation();
       loggedSimulation = true;
    }
-
    return adjustment;
 }
 //+------------------------------------------------------------------+
@@ -4882,7 +4213,6 @@ double GetFingerprintTimeDecay(const datetime lastSeen)
    double lambda = MathMax(0.001, 1.0 - INPUT_LEARNING_DECAY);
    return MathExp(-lambda * elapsedDays);
 }
-
 double GetFingerprintBoost(const string &fpId, const string &combination)
 {
    for(int i = 0; i < g_fingerprintCount; i++)
@@ -4910,8 +4240,6 @@ string GenerateFingerprint(const SignalResult &signals, int session, int dayOfWe
           "_D" + IntegerToString(dayOfWeek) + "_R" + IntegerToString((int)g_currentRegime);
 }
 //+------------------------------------------------------------------+
-
-
 string BuildComboFromMask(int mask, const string &names[], int n)
 {
    string combo = "";
@@ -4923,7 +4251,6 @@ string BuildComboFromMask(int mask, const string &names[], int n)
    }
    return combo;
 }
-
 int IndicatorNameIndex(const string token)
 {
    string factorNames[8] = {"EMA","RSI","STOCH","ENGULF","BREAK","VOL","MACD","WPR"};
@@ -4931,16 +4258,13 @@ int IndicatorNameIndex(const string token)
       if(token == factorNames[i]) return i;
    return -1;
 }
-
 int ParseRawSignalCombinationOrdered(const string rawCombination, string &orderedIndicators[])
 {
    ArrayResize(orderedIndicators, 0);
    if(StringLen(rawCombination) == 0) return 0;
-
    string factorNames[8] = {"EMA","RSI","STOCH","ENGULF","BREAK","VOL","MACD","WPR"};
    bool present[8];
    ArrayInitialize(present, false);
-
    string parts[];
    int cnt = StringSplit(rawCombination, '_', parts);
    for(int i = 0; i < cnt; i++)
@@ -4948,7 +4272,6 @@ int ParseRawSignalCombinationOrdered(const string rawCombination, string &ordere
       int idx = IndicatorNameIndex(parts[i]);
       if(idx >= 0) present[idx] = true;
    }
-
    for(int i = 0; i < 8; i++)
    {
       if(!present[i]) continue;
@@ -4958,21 +4281,18 @@ int ParseRawSignalCombinationOrdered(const string rawCombination, string &ordere
    }
    return ArraySize(orderedIndicators);
 }
-
 int BuildCanonicalComboSubsets(const string rawCombination, int k, string &subsets[])
 {
    ArrayResize(subsets, 0);
    string orderedIndicators[];
    int active = ParseRawSignalCombinationOrdered(rawCombination, orderedIndicators);
    if(active < k || k <= 0) return 0;
-
    int maxMask = (1 << active);
    for(int mask = 1; mask < maxMask; mask++)
    {
       int bits = 0;
       for(int b = 0; b < active; b++) if((mask & (1 << b)) != 0) bits++;
       if(bits != k) continue;
-
       string combo = BuildComboFromMask(mask, orderedIndicators, active);
       int n = ArraySize(subsets);
       ArrayResize(subsets, n + 1);
@@ -4980,20 +4300,16 @@ int BuildCanonicalComboSubsets(const string rawCombination, int k, string &subse
    }
    return ArraySize(subsets);
 }
-
 void BuildDeterministicComboUniverse()
 {
    ArrayResize(g_comboUniverse, 0);
    g_comboUniverseCount = 0;
    g_comboObservedCount = 0;
-
    if(!INPUT_ENABLE_FULL_COMBO_UNIVERSE)
       return;
-
    int totalSignals = MathMin(INPUT_TOTAL_SIGNALS, INPUT_TOTAL_SIGNAL_FACTORS);
    int k = INPUT_MIN_SIGNALS;
    string factorNames[8] = {"EMA","RSI","STOCH","ENGULF","BREAK","VOL","MACD","WPR"};
-
    for(int mask = 1; mask < (1 << totalSignals); mask++)
    {
       int bits = 0;
@@ -5004,19 +4320,16 @@ void BuildDeterministicComboUniverse()
       ArrayResize(g_comboUniverse, idx + 1);
       g_comboUniverse[idx] = combo;
    }
-
    g_comboUniverseCount = ArraySize(g_comboUniverse);
    if(INPUT_ENABLE_LOGGING)
       Print("COMBO UNIVERSE INIT: totalSignals=", totalSignals, " k=", k, " totalCombos=", g_comboUniverseCount);
 }
-
 int FindCombinationIndex(const string combo)
 {
    for(int i = 0; i < g_combinationStatsCount; i++)
       if(g_combinationStats[i].combination == combo) return i;
    return -1;
 }
-
 double ComputeEntropyFromCounts(int wins, int losses)
 {
    int total = wins + losses;
@@ -5025,14 +4338,12 @@ double ComputeEntropyFromCounts(int wins, int losses)
    double pL = (double)losses / total;
    return -(pW * MathLog(pW) / MathLog(2.0) + pL * MathLog(pL) / MathLog(2.0));
 }
-
 void SaveCombinationStatsSnapshot()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_combo_stats.csv";
    string tmpName = filename + ".tmp";
    int handle = FileOpen(tmpName, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-
    FileWrite(handle, "ComboID", "Combination", "Seen", "ObservedTrades", "Wins", "Losses", "PF", "Expectancy", "Strength", "Entropy", "InfoGain", "RankScore");
    for(int i = 0; i < g_combinationStatsCount; i++)
    {
@@ -5054,12 +4365,10 @@ void SaveCombinationStatsSnapshot()
    if(!ReplaceFileAtomic(tmpName, filename))
       Print("WARNING: Failed atomic replace for combination stats file ", filename);
 }
-
 void RecomputeCombinationDerivedMetrics(int idx)
 {
    if(idx < 0 || idx >= g_combinationStatsCount) return;
    if(g_combinationStats[idx].totalTrades <= 0) return;
-
    g_combinationStats[idx].winRate = (double)g_combinationStats[idx].wins / g_combinationStats[idx].totalTrades;
    g_combinationStats[idx].profitFactor = (g_combinationStats[idx].totalLoss > 0.0) ?
       g_combinationStats[idx].totalProfit / g_combinationStats[idx].totalLoss :
@@ -5070,42 +4379,35 @@ void RecomputeCombinationDerivedMetrics(int idx)
       g_combinationStats[idx].totalLoss / g_combinationStats[idx].losses : 0.0;
    g_combinationStats[idx].expectancy = (g_combinationStats[idx].totalTrades > 0) ?
       ((g_combinationStats[idx].totalProfit - g_combinationStats[idx].totalLoss) / g_combinationStats[idx].totalTrades) : 0.0;
-
    double score = 50.0;
    double wrComponent = MathMax(MathMin((g_combinationStats[idx].winRate - 0.5) * 100.0, 30.0), -30.0);
    double pfComponent = MathMax(MathMin((g_combinationStats[idx].profitFactor - 1.0) * 20.0, 25.0), -25.0);
    score = MathMax(MathMin(score + wrComponent + pfComponent, 100.0), 0.0);
    g_combinationStats[idx].strengthScore = score;
-
    double baselineEntropy = 1.0;
    g_combinationStats[idx].entropy = ComputeEntropyFromCounts(g_combinationStats[idx].wins, g_combinationStats[idx].losses);
    g_combinationStats[idx].infoGain = MathMax(0.0, baselineEntropy - g_combinationStats[idx].entropy);
    double igNormalized = MathMax(0.0, MathMin(g_combinationStats[idx].infoGain / baselineEntropy, 1.0));
    if(g_combinationStats[idx].totalTrades < INPUT_COMBO_MIN_TRADES)
       igNormalized *= ((double)g_combinationStats[idx].totalTrades / MathMax(1, INPUT_COMBO_MIN_TRADES));
-
    if(INPUT_COMBO_RANK_MODE == COMBO_RANK_ENTROPY_IG)
       g_combinationStats[idx].rankScore = igNormalized * 100.0;
    else if(INPUT_COMBO_RANK_MODE == COMBO_RANK_HYBRID)
       g_combinationStats[idx].rankScore = (score * 0.6) + (igNormalized * 100.0 * 0.4);
    else
       g_combinationStats[idx].rankScore = score;
-
    g_combinationStats[idx].confidenceMultiplier = MathMax(MathMin(1.0 + (g_combinationStats[idx].rankScore - 50.0) / 200.0, 1.5), 0.5);
 }
-
 void UpdateCombinationStatsIncremental(const TrainingData &row)
 {
    string canonicalSubsets[];
    int subsetCount = BuildCanonicalComboSubsets(row.signalCombination, INPUT_MIN_SIGNALS, canonicalSubsets);
    if(subsetCount <= 0) return;
-
    for(int si = 0; si < subsetCount; si++)
    {
       int idx = -1;
       for(int i = 0; i < g_combinationStatsCount; i++)
          if(g_combinationStats[i].combination == canonicalSubsets[si]) { idx = i; break; }
-
       if(idx < 0 && g_combinationStatsCount < MAX_COMBINATION_STATS)
       {
          idx = g_combinationStatsCount++;
@@ -5114,19 +4416,15 @@ void UpdateCombinationStatsIncremental(const TrainingData &row)
          g_combinationStats[idx].comboId = canonicalSubsets[si];
       }
       if(idx < 0) continue;
-
       g_combinationStats[idx].seen = true;
       g_combinationStats[idx].totalTrades++;
       if(row.isWin) { g_combinationStats[idx].wins++; g_combinationStats[idx].totalProfit += row.profitLoss; }
       else { g_combinationStats[idx].losses++; g_combinationStats[idx].totalLoss += MathAbs(row.profitLoss); }
-
       if(row.entrySession == 0) { g_combinationStats[idx].asianTotal++; if(row.isWin) g_combinationStats[idx].asianWins++; }
       else if(row.entrySession == 1) { g_combinationStats[idx].londonTotal++; if(row.isWin) g_combinationStats[idx].londonWins++; }
       else if(row.entrySession == 2) { g_combinationStats[idx].nyTotal++; if(row.isWin) g_combinationStats[idx].nyWins++; }
-
       if(row.entryRegime == REGIME_TRENDING) { g_combinationStats[idx].trendingTotal++; if(row.isWin) g_combinationStats[idx].trendingWins++; }
       else if(row.entryRegime == REGIME_RANGING) { g_combinationStats[idx].rangingTotal++; if(row.isWin) g_combinationStats[idx].rangingWins++; }
-
       RecomputeCombinationDerivedMetrics(idx);
    }
 }
@@ -5134,7 +4432,6 @@ void RecalculateCombinationStats()
 {
    // Reset stats
    g_combinationStatsCount = 0;
-
    if(INPUT_ENABLE_FULL_COMBO_UNIVERSE)
    {
       for(int u = 0; u < g_comboUniverseCount && g_combinationStatsCount < MAX_COMBINATION_STATS; u++)
@@ -5146,7 +4443,6 @@ void RecalculateCombinationStats()
          g_combinationStats[idx].seen = false;
       }
    }
-
    // Group trades by canonical size-k subsets extracted from raw combinations
    for(int i = 0; i < g_trainingDataCount; i++)
    {
@@ -5157,7 +4453,6 @@ void RecalculateCombinationStats()
          int idx = -1;
          for(int j = 0; j < g_combinationStatsCount; j++)
             if(g_combinationStats[j].combination == canonicalSubsets[si]) { idx = j; break; }
-
          if(idx < 0 && g_combinationStatsCount < MAX_COMBINATION_STATS)
          {
             idx = g_combinationStatsCount;
@@ -5166,9 +4461,7 @@ void RecalculateCombinationStats()
             g_combinationStats[idx].combination = canonicalSubsets[si];
             g_combinationStats[idx].comboId = canonicalSubsets[si];
          }
-
          if(idx < 0) continue;
-
          g_combinationStats[idx].seen = true;
          g_combinationStats[idx].totalTrades++;
          if(g_trainingData[i].isWin)
@@ -5181,7 +4474,6 @@ void RecalculateCombinationStats()
             g_combinationStats[idx].losses++;
             g_combinationStats[idx].totalLoss += MathAbs(g_trainingData[i].profitLoss);
          }
-
          if(g_trainingData[i].entrySession == 0)
          {
             g_combinationStats[idx].asianTotal++;
@@ -5197,7 +4489,6 @@ void RecalculateCombinationStats()
             g_combinationStats[idx].nyTotal++;
             if(g_trainingData[i].isWin) g_combinationStats[idx].nyWins++;
          }
-
          if(g_trainingData[i].entryRegime == REGIME_TRENDING)
          {
             g_combinationStats[idx].trendingTotal++;
@@ -5210,7 +4501,6 @@ void RecalculateCombinationStats()
          }
       }
    }
-
    // Derive metrics
    g_comboObservedCount = 0;
    for(int i = 0; i < g_combinationStatsCount; i++)
@@ -5218,7 +4508,6 @@ void RecalculateCombinationStats()
       if(g_combinationStats[i].totalTrades > 0) g_comboObservedCount++;
       RecomputeCombinationDerivedMetrics(i);
    }
-
    if(INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_LOG_COMBINATION_INSIGHTS)
    {
       int topN = MathMax(1, INPUT_COMBO_INSIGHT_TOP_N);
@@ -5232,7 +4521,6 @@ void RecalculateCombinationStats()
          if(worstIdx < 0 || g_combinationStats[i].rankScore < g_combinationStats[worstIdx].rankScore)
             worstIdx = i;
       }
-
       if(bestIdx >= 0)
       {
          Print("COMBO STRENGTH: Best=", g_combinationStats[bestIdx].combination,
@@ -5241,7 +4529,6 @@ void RecalculateCombinationStats()
                " | WR=", DoubleToString(g_combinationStats[bestIdx].winRate * 100.0, 1), "%",
                " | PF=", DoubleToString(g_combinationStats[bestIdx].profitFactor, 2));
       }
-
       if(worstIdx >= 0)
       {
          Print("COMBO WEAKNESS: Worst=", g_combinationStats[worstIdx].combination,
@@ -5251,12 +4538,10 @@ void RecalculateCombinationStats()
                " | PF=", DoubleToString(g_combinationStats[worstIdx].profitFactor, 2));
       }
    }
-
    Print("COMBO COVERAGE: observed=", g_comboObservedCount, " / total=", MathMax(g_combinationStatsCount, 1));
    RebuildDecisionTreeFeatureModule();
    SaveCombinationStatsSnapshot();
 }
-
 //+------------------------------------------------------------------+
 //| SECTION 17B: DECISION-TREE FEATURE MODULE                        |
 //+------------------------------------------------------------------+
@@ -5266,7 +4551,6 @@ void SaveTreeFeatureRanking()
    string tmpName = filename + ".tmp";
    int handle = FileOpen(tmpName, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-
    FileWrite(handle, "feature", "support", "yesWins", "yesLosses", "noWins", "noLosses", "entropyYes", "entropyNo", "IG", "selectedFlag");
    for(int i = 0; i < g_treeFeatureMetricCount; i++)
    {
@@ -5287,54 +4571,45 @@ void SaveTreeFeatureRanking()
    if(!ReplaceFileAtomic(tmpName, filename))
       Print("WARNING: Failed atomic replace for tree feature metrics file ", filename);
 }
-
 bool ComboSubsetContainsFeature(const string feature, const string &canonicalSubsets[])
 {
    for(int i = 0; i < ArraySize(canonicalSubsets); i++)
       if(canonicalSubsets[i] == feature) return true;
    return false;
 }
-
 int CountSelectedTreeFeatureMatches(const string rawCombination)
 {
    if(g_treeSelectedFeatureCount <= 0) return 0;
    string canonicalSubsets[];
    int subsetCount = BuildCanonicalComboSubsets(rawCombination, INPUT_MIN_SIGNALS, canonicalSubsets);
    if(subsetCount <= 0) return 0;
-
    int matches = 0;
    for(int i = 0; i < g_treeSelectedFeatureCount; i++)
       if(ComboSubsetContainsFeature(g_treeSelectedFeatures[i], canonicalSubsets)) matches++;
    return matches;
 }
-
 double GetTreeConfidenceAdjustment(const string rawCombination)
 {
    if(!INPUT_ENABLE_TREE_FEATURE_MODULE || !INPUT_TREE_ADJUST_CONFIDENCE_ON || g_treeSelectedFeatureCount <= 0)
       return 0.0;
-
    string canonicalSubsets[];
    int subsetCount = BuildCanonicalComboSubsets(rawCombination, INPUT_MIN_SIGNALS, canonicalSubsets);
    if(subsetCount <= 0) return 0.0;
-
    double cumulative = 0.0;
    int hits = 0;
    for(int i = 0; i < g_treeFeatureMetricCount; i++)
    {
       if(!g_treeFeatureMetrics[i].selected) continue;
       if(!ComboSubsetContainsFeature(g_treeFeatureMetrics[i].feature, canonicalSubsets)) continue;
-
       int yesTot = g_treeFeatureMetrics[i].yesWins + g_treeFeatureMetrics[i].yesLosses;
       if(yesTot <= 0) continue;
       double wrEdge = ((double)g_treeFeatureMetrics[i].yesWins / yesTot) - 0.5;
       cumulative += wrEdge * g_treeFeatureMetrics[i].infoGain;
       hits++;
    }
-
    if(hits <= 0) return 0.0;
    return cumulative * 100.0 * INPUT_TREE_CONFIDENCE_WEIGHT;
 }
-
 void RebuildDecisionTreeFeatureModule()
 {
    g_treeParentEntropy = 0.0;
@@ -5342,9 +4617,7 @@ void RebuildDecisionTreeFeatureModule()
    g_treeSelectedFeatureCount = 0;
    ArrayResize(g_treeFeatureMetrics, 0);
    ArrayResize(g_treeSelectedFeatures, 0);
-
    if(!INPUT_ENABLE_TREE_FEATURE_MODULE || g_trainingDataCount <= 0) return;
-
    int parentWins = 0;
    int parentLosses = 0;
    for(int i = 0; i < g_trainingDataCount; i++)
@@ -5353,14 +4626,12 @@ void RebuildDecisionTreeFeatureModule()
       else parentLosses++;
    }
    g_treeParentEntropy = ComputeEntropyFromCounts(parentWins, parentLosses);
-
    int branchMin = MathMax(INPUT_COMBO_MIN_TRADES, INPUT_TREE_BRANCH_MIN_SUPPORT);
    int featureUniverse = INPUT_ENABLE_FULL_COMBO_UNIVERSE ? g_comboUniverseCount : g_combinationStatsCount;
    for(int f = 0; f < featureUniverse; f++)
    {
       string feature = INPUT_ENABLE_FULL_COMBO_UNIVERSE ? g_comboUniverse[f] : g_combinationStats[f].combination;
       if(StringLen(feature) == 0) continue;
-
       int yesWins = 0, yesLosses = 0, noWins = 0, noLosses = 0;
       for(int i = 0; i < g_trainingDataCount; i++)
       {
@@ -5378,17 +4649,14 @@ void RebuildDecisionTreeFeatureModule()
             else noLosses++;
          }
       }
-
       int yesTotal = yesWins + yesLosses;
       int noTotal = noWins + noLosses;
       if(yesTotal < branchMin || noTotal < branchMin) continue;
-
       double hYes = ComputeEntropyFromCounts(yesWins, yesLosses);
       double hNo = ComputeEntropyFromCounts(noWins, noLosses);
       double total = yesTotal + noTotal;
       double weighted = ((double)yesTotal / total) * hYes + ((double)noTotal / total) * hNo;
       double ig = MathMax(0.0, g_treeParentEntropy - weighted);
-
       int idx = ArraySize(g_treeFeatureMetrics);
       ArrayResize(g_treeFeatureMetrics, idx + 1);
       g_treeFeatureMetrics[idx].feature = feature;
@@ -5402,7 +4670,6 @@ void RebuildDecisionTreeFeatureModule()
       g_treeFeatureMetrics[idx].infoGain = ig;
       g_treeFeatureMetrics[idx].selected = false;
    }
-
    g_treeFeatureMetricCount = ArraySize(g_treeFeatureMetrics);
    for(int pick = 0; pick < INPUT_TREE_MAX_SELECTED_FEATURES; pick++)
    {
@@ -5415,17 +4682,14 @@ void RebuildDecisionTreeFeatureModule()
             best = i;
       }
       if(best < 0) break;
-
       g_treeFeatureMetrics[best].selected = true;
       int n = ArraySize(g_treeSelectedFeatures);
       ArrayResize(g_treeSelectedFeatures, n + 1);
       g_treeSelectedFeatures[n] = g_treeFeatureMetrics[best].feature;
       g_treeSelectedFeatureCount++;
    }
-
    SaveTreeFeatureRanking();
 }
-
 //+------------------------------------------------------------------+
 //| SECTION 18: MARKET REGIME DETECTION                              |
 //+------------------------------------------------------------------+
@@ -5437,9 +4701,7 @@ void DetectMarketRegime()
       g_currentRegime = REGIME_UNKNOWN;
       return;
    }
-
    double volRatio = CalculateVolatilityRatio();
-
    // Volatility first
    if(volRatio >= 1.5)
    {
@@ -5451,7 +4713,6 @@ void DetectMarketRegime()
       g_currentRegime = REGIME_QUIET;
       return;
    }
-
       if(adx[0] >= 25)
       g_currentRegime = REGIME_TRENDING;
    else if(adx[0] < 20)
@@ -5465,7 +4726,6 @@ void DetectMarketRegime()
 bool RunDecisionPipeline(DecisionResult &decision)
 {
 g_mtfReadFailureThisTick = false;
-
    //--- STEP 1: Pre?trade gates
    string rejectReason = "";
    if(!CheckAllGates(rejectReason))
@@ -5474,7 +4734,6 @@ g_mtfReadFailureThisTick = false;
          LogWithRestartGuard("Gate rejected: " + rejectReason);
       return false;
    }
-
    //--- STEP 2: Signal detection
    SignalResult signals;
    ZeroMemory(signals);
@@ -5493,7 +4752,6 @@ g_mtfReadFailureThisTick = false;
       signals.bearVotes = 0;
       signals.combinationString = "SIGNAL_GATE_BYPASS";
    }
-
    if(INPUT_GATE_MIN_SIGNALS_ON && signals.totalSignals < INPUT_MIN_SIGNALS)
    {
       g_gateDiagnostics.signalsRejects++;
@@ -5501,18 +4759,15 @@ g_mtfReadFailureThisTick = false;
          LogWithRestartGuard("Not enough signals: " + IntegerToString(signals.totalSignals) + " < " + IntegerToString(INPUT_MIN_SIGNALS));
       return false;
    }
-
    //--- STEP 3: Determine direction (base votes + MTF consensus weighting)
    int weightedBullVotes = signals.bullVotes;
    int weightedBearVotes = signals.bearVotes;
-
    int mtfConsensusStrength = 0;
    int mtfConsensusDirection = GetTimeframeDirectionConsensus(mtfConsensusStrength);
    if(INPUT_GATE_MTF_WEIGHTING_ON && mtfConsensusDirection == 1)
       weightedBullVotes += (int)MathRound(INPUT_MTF_CONSENSUS_VOTE_WEIGHT);
    else if(INPUT_GATE_MTF_WEIGHTING_ON && mtfConsensusDirection == -1)
       weightedBearVotes += (int)MathRound(INPUT_MTF_CONSENSUS_VOTE_WEIGHT);
-
    int direction = 0;
    if(weightedBullVotes > weightedBearVotes)
    {
@@ -5534,7 +4789,6 @@ g_mtfReadFailureThisTick = false;
                " consensusFrames=", mtfConsensusStrength);
       return false;
    }
-
    if(INPUT_ENABLE_LOGGING)
       Print("Votes: baseBull=", signals.bullVotes,
             " baseBear=", signals.bearVotes,
@@ -5542,7 +4796,6 @@ g_mtfReadFailureThisTick = false;
             " weightedBear=", weightedBearVotes,
             " consensusDir=", mtfConsensusDirection,
             " consensusFrames=", mtfConsensusStrength);
-
    //--- STEP 4: ADX filter (optional)
    if(INPUT_GATE_ADX_FILTER_ON && INPUT_USE_ADX_FILTER)
    {
@@ -5555,7 +4808,6 @@ g_mtfReadFailureThisTick = false;
             LogWithRestartGuard("ADX data unavailable in RunDecisionPipeline (CopyBuffer=" + IntegerToString(adxRead) + ") - rejecting entry");
          return false;
       }
-
       if(adx[0] < INPUT_ADX_MIN_THRESHOLD)
       {
          if(INPUT_ENABLE_LOGGING)
@@ -5563,7 +4815,6 @@ g_mtfReadFailureThisTick = false;
          return false;
       }
     }
-
     //--- STEP 4b: Same-direction limit check
     string dirReject = "";
     if(INPUT_GATE_SAME_DIRECTION_ON && !CheckSameDirectionLimit(direction, dirReject))
@@ -5581,7 +4832,6 @@ g_mtfReadFailureThisTick = false;
           LogWithRestartGuard("Same-direction cooldown active (" + dirText + ", " + IntegerToString(sameDirectionRemainingSec) + "s remaining)");
        return false;
     }
-
     //--- STEP 4c: Proximity check
     string proxReject = "";
     if(INPUT_GATE_PROXIMITY_ON && !CheckProximity(direction, proxReject))
@@ -5590,7 +4840,6 @@ g_mtfReadFailureThisTick = false;
           LogWithRestartGuard("Proximity reject: " + proxReject);
        return false;
     }
-
     //--- STEP 5: MTF alignment (optional)
     int mtfScore = CalculateMTFAlignment(direction);
     if(INPUT_GATE_MTF_ALIGNMENT_ON && INPUT_MIN_MTF_SCORE > 0 && mtfScore < INPUT_MIN_MTF_SCORE)
@@ -5601,17 +4850,14 @@ g_mtfReadFailureThisTick = false;
                              " | dataReadFailedThisTick=" + (g_mtfReadFailureThisTick ? "YES" : "NO"));
                                     return false;
     }
-
    //--- STEP 6: Fingerprint generation
    int sessionNow = GetCurrentSession();
    MqlDateTime dtNow;
    TimeToStruct(TimeCurrent(), dtNow);
    string fpId = GenerateFingerprint(signals, sessionNow, dtNow.day_of_week);
-
    //--- STEP 7: Threat calculation
    double threat = CalculateMarketThreat();
    ENUM_THREAT_ZONE threatZone = GetThreatZone(threat);
-
    // Soft gate near threshold, hard gate only when materially above threshold
    if(INPUT_GATE_THREAT_HARD_BLOCK_ON && INPUT_THREAT_HARD_ENTRY_BLOCK_ON && g_effThreatHardBlock && threat > (INPUT_MAX_THREAT_ENTRY + 10.0))
    {
@@ -5620,17 +4866,14 @@ g_mtfReadFailureThisTick = false;
          LogWithRestartGuard("Threat hard-block: " + DoubleToString(threat, 2) + " > " + DoubleToString(INPUT_MAX_THREAT_ENTRY + 10.0, 2));
       return false;
    }
-
    //--- STEP 8: Confidence calculation
    double confidence = CalculateConfidence(signals, direction, mtfScore,
                                             fpId, signals.combinationString, threat);
-
    if(!IsFiniteInRange(confidence, 0.0, 100.0) || !IsFiniteInRange(threat, 0.0, 100.0))
    {
       RegisterDataWarning("NaN/Inf model output in confidence/threat");
       return false;
    }
-
    // Apply adaptive minimum confidence
    double minConf = g_adaptive.minConfThreshold;
    if(INPUT_GATE_CONFIDENCE_MIN_ON && confidence < minConf)
@@ -5640,7 +4883,6 @@ g_mtfReadFailureThisTick = false;
          LogWithRestartGuard("Confidence too low: " + DoubleToString(confidence, 2) + " < " + DoubleToString(minConf, 2));
       return false;
    }
-
    if(INPUT_ENABLE_TREE_FEATURE_MODULE && INPUT_TREE_ENTRY_GATE_ON)
    {
       int selectedHits = CountSelectedTreeFeatureMatches(signals.combinationString);
@@ -5651,13 +4893,11 @@ g_mtfReadFailureThisTick = false;
          return false;
       }
    }
-
    //--- STEP 9: Q?Learning action selection (optional)
    int positions = CountMainPositionsFromBroker();
    double drawdown = CalculateDrawdownPercent();
    ENUM_RL_ACTION rlAction = ApplyRLToDecision(confidence, threat,
                                                positions, drawdown);
-
    // Honor RL skip decision
    if(INPUT_ENABLE_RL && INPUT_RL_INFERENCE_ON && rlAction == RL_SKIP_TRADE && g_rlTradesCompleted >= INPUT_RL_MIN_TRADES)
    {
@@ -5668,7 +4908,6 @@ g_mtfReadFailureThisTick = false;
          g_rngSeeded = true;
          Print("RNG SEEDED LATE: applied defensive seed in RunDecisionPipeline | seed=", seed);
       }
-
       // Randomised skip based on RL weight (default weight = 0.3)
       if((double)MathRand() / 32767.0 < INPUT_RL_WEIGHT)
       {
@@ -5677,7 +4916,6 @@ g_mtfReadFailureThisTick = false;
          return false;
       }
    }
-
    //--- STEP 10: Decision matrix - we now only block on extreme threat
    if(INPUT_GATE_THREAT_EXTREME_BLOCK_ON && g_effThreatExtremeZoneBlock && threatZone == THREAT_EXTREME)
    {
@@ -5686,7 +4924,6 @@ g_mtfReadFailureThisTick = false;
          LogWithRestartGuard("Extreme threat zone - blocking trade");
       return false;
    }
-
    //--- STEP 11: SL/TP calculation (threat?adjusted)
    double slPoints, tpPoints;
    if(!CalculateSLTP(direction, threat, slPoints, tpPoints))
@@ -5695,17 +4932,14 @@ g_mtfReadFailureThisTick = false;
          LogWithRestartGuard("SL/TP calculation failed");
       return false;
    }
-
    double expectedRR = (slPoints > 0.0) ? (tpPoints / slPoints) : 0.0;
    if(INPUT_GATE_EFFECTIVE_RR_ON && (!MathIsValidNumber(expectedRR) || expectedRR <= INPUT_MIN_EFFECTIVE_RR_AFTER_SPREAD))
    {
       RegisterDataWarning("Rejected by spread-adjusted RR gate");
       return false;
    }
-
    //--- STEP 12: Position sizing (threat + confidence + RL)
    double lotSize = CalculateLotSize(slPoints, confidence, threat, rlAction, direction);
-
    // Soft threat gating before hard no-trade: shrink lot near threat threshold
    if(INPUT_THREAT_SOFT_LOT_SHRINK_ON && g_effThreatSoftLotShrink && threat > INPUT_MAX_THREAT_ENTRY)
    {
@@ -5723,7 +4957,6 @@ if(INPUT_LOT_RISK_PARITY_CAP_ON && INPUT_ENABLE_RISK_PARITY_CAP)
       double capLots = INPUT_RISK_PARITY_BASE_CAP_LOTS * sessionWeight / volNorm;
       lotSize = MathMin(lotSize, MathMax(capLots, g_minLot));
    }
-
    // Final post-transform lot normalization (all multipliers/caps already applied)
    string volumeReason = "";
    double normalizedLotSize = 0.0;
@@ -5740,15 +4973,12 @@ if(INPUT_LOT_RISK_PARITY_CAP_ON && INPUT_ENABLE_RISK_PARITY_CAP)
       return false;
    }
    lotSize = normalizedLotSize;
-
    if(lotSize <= 0)
    {
       if(INPUT_ENABLE_LOGGING)
          Print("Lot size calculation returned 0");
       return false;
    }
-
-
    //--- Fill decision structure
    decision.shouldTrade = true;
    decision.direction = direction;
@@ -5763,12 +4993,10 @@ if(INPUT_LOT_RISK_PARITY_CAP_ON && INPUT_ENABLE_RISK_PARITY_CAP)
    decision.lotSize = lotSize;
    decision.fingerprintId = fpId;
    decision.rlAction = rlAction;
-
    if(INPUT_ENABLE_LOGGING)
       Print("DECISION: ", (direction == 1 ? "BUY" : "SELL"),
             " | Conf: ", confidence, " | Threat: ", threat,
             " | Signals: ", signals.totalSignals, " (", signals.combinationString, ")");
-
    return true;
 }
 //+------------------------------------------------------------------+
@@ -5777,27 +5005,22 @@ bool IsOrderCooldownActive(int &remainingSec)
    remainingSec = 0;
    if(INPUT_ORDER_COOLDOWN_SECONDS <= 0)
       return false;
-
    int elapsedSec = (int)(TimeCurrent() - g_lastOrderTime);
    remainingSec = MathMax(0, INPUT_ORDER_COOLDOWN_SECONDS - elapsedSec);
    return (remainingSec > 0);
 }
-
 bool IsSameDirectionCooldownActive(int direction, int &remainingSec)
 {
    remainingSec = 0;
    if(INPUT_SAME_DIRECTION_BLOCK_SECONDS <= 0)
       return false;
-
    datetime lastDirTime = (direction == 1) ? g_lastBuyOrderTime : g_lastSellOrderTime;
    if(lastDirTime <= 0)
       return false;
-
    int elapsedSec = (int)(TimeCurrent() - lastDirTime);
    remainingSec = MathMax(0, INPUT_SAME_DIRECTION_BLOCK_SECONDS - elapsedSec);
    return (remainingSec > 0);
 }
-
 bool CheckAllGates(string &rejectReason)
 {
    // V7.2 FIX (BUG 3): Emergency zero-guard - if maxPositions somehow reaches 0, reset to input default
@@ -5806,7 +5029,6 @@ bool CheckAllGates(string &rejectReason)
       g_adaptive.maxPositions = INPUT_MAX_CONCURRENT_TRADES;
       Print("WARNING: maxPositions was 0 or negative! Reset to ", INPUT_MAX_CONCURRENT_TRADES);
    }
-
    int windowSec = MathMax(60, INPUT_DATA_WARNING_WINDOW_MINUTES * 60);
    if(g_dataWarningWindowStart > 0 && (TimeCurrent() - g_dataWarningWindowStart) > windowSec)
    {
@@ -5818,35 +5040,29 @@ bool CheckAllGates(string &rejectReason)
       rejectReason = "Anomaly kill-switch active";
       return false;
    }
-
    bool isTesterMode = (MQLInfoInteger(MQL_TESTER) != 0);
    if(INPUT_GATE_TERMINAL_CONNECTED_ON && !isTesterMode && !TerminalInfoInteger(TERMINAL_CONNECTED))
    {
       rejectReason = "Terminal disconnected";
       return false;
    }
-
    if(INPUT_GATE_AUTOTRADING_ALLOWED_ON && !MQLInfoInteger(MQL_TRADE_ALLOWED))
    {
       rejectReason = "AutoTrading disabled";
       return false;
    }
-
    if(INPUT_GATE_SESSION_ON && !IsAllowedSession())
    {
       g_gateDiagnostics.sessionRejects++;
       rejectReason = "Outside trading session";
       return false;
    }
-
    // Cooldown is enforced in ExecuteOrder so confirmed flip replacements can bypass when configured.
-
    if(INPUT_GATE_MAX_DAILY_TRADES_ON && g_daily.tradesPlaced >= INPUT_MAX_DAILY_TRADES)
    {
       rejectReason = "Daily trade limit reached";
       return false;
    }
-
    double dayLoss = g_daily.lossToday;
    double maxDayLoss = g_daily.dayStartBalance * (INPUT_DAILY_LOSS_LIMIT_PERCENT / 100.0);
    if(INPUT_GATE_DAILY_LOSS_ON && dayLoss >= maxDayLoss)
@@ -5854,25 +5070,21 @@ bool CheckAllGates(string &rejectReason)
       rejectReason = "Daily loss limit reached";
       return false;
    }
-
    if(INPUT_GATE_CONSECUTIVE_LOSS_ON && g_consecutiveLosses >= INPUT_MAX_CONSECUTIVE_LOSSES)
    {
       rejectReason = "Consecutive loss limit reached";
       return false;
    }
-
    if(INPUT_GATE_SPREAD_ON && IsSpreadHigh())
    {
       rejectReason = "Spread too high";
       return false;
    }
-
     int inputCap = MathMax(1, INPUT_MAX_CONCURRENT_TRADES);
    int adaptiveCap = MathMax(1, g_adaptive.maxPositions);
    int allowedAdaptiveDelta = (INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION ? 2 : 0);
    int adaptiveModeCap = MathMin(adaptiveCap, inputCap + allowedAdaptiveDelta);
    int effectiveMaxMain = ((INPUT_MAX_MAIN_HARD_CAP_ON || INPUT_STRICT_OPPOSITE_FLIP_MODE) ? inputCap : adaptiveModeCap);
-
    int openMain = CountMainPositionsFromBroker();
    int pendingMain = ((INPUT_EXECUTION_MODE == PENDING_STOP && IsFeatureEnabled("pending_orders")) ? CountMainPendingStopsAllDirections() : 0);
    int effectiveExposure = GetEffectiveMainExposureCount();
@@ -5898,13 +5110,11 @@ bool CheckAllGates(string &rejectReason)
       return false;
       }
    }
-
    if(INPUT_GATE_EA_PROTECTION_STATE_ON && g_effGateProtectionBlock && (g_eaState == STATE_EXTREME_RISK || g_eaState == STATE_DRAWDOWN_PROTECT))
    {
       rejectReason = "EA in protection mode";
       return false;
    }
-
    return true;
 }
 //+------------------------------------------------------------------+
@@ -5912,7 +5122,6 @@ bool IsCountableForEntryGating(const string comment)
 {
   return IsMainEntryComment(comment);
 }
-
  // Same-direction limit: prevent all positions being in one direction
  bool CheckSameDirectionLimit(int direction, string &rejectReason)
  {
@@ -5923,18 +5132,14 @@ bool IsCountableForEntryGating(const string comment)
        ulong ticket = PositionGetTicket(i);
        if(ticket == 0) continue;
        if(!IsOurPosition(ticket)) continue;
-
        string comment = PositionGetString(POSITION_COMMENT);
        if(!IsCountableForEntryGating(comment)) continue;
-
        int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
        if(posDir == direction)
           sameCount++;
     }
-
     if(INPUT_EXECUTION_MODE == PENDING_STOP && IsFeatureEnabled("pending_orders"))
        sameCount += CountPendingStopsByDirection(direction);
-
     if(sameCount >= INPUT_MAX_SAME_DIRECTION)
     {
        rejectReason = "Same-direction limit reached (" + IntegerToString(sameCount) +
@@ -5945,7 +5150,6 @@ bool IsCountableForEntryGating(const string comment)
                 " | sameCount=", sameCount, " | limit=", INPUT_MAX_SAME_DIRECTION);
        return false;
     }
-
     if(INPUT_ENABLE_LOGGING)
        Print("CHECK SAME DIRECTION: ACCEPT | direction=", (direction == 1 ? "BUY" : "SELL"),
              " | sameCount=", sameCount, " | limit=", INPUT_MAX_SAME_DIRECTION);
@@ -5956,25 +5160,20 @@ bool IsCountableForEntryGating(const string comment)
  bool CheckProximity(int direction, string &rejectReason)
  {
     if(INPUT_PROXIMITY_POINTS <= 0) return true;
-
     double currentPrice = (direction == 1) ?
                           SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
                           SymbolInfoDouble(_Symbol, SYMBOL_BID);
     double minDist = INPUT_PROXIMITY_POINTS * g_point;
-
     int total = PositionsTotal();
     for(int i = 0; i < total; i++)
     {
        ulong ticket = PositionGetTicket(i);
        if(ticket == 0) continue;
        if(!IsOurPosition(ticket)) continue;
-
        string comment = PositionGetString(POSITION_COMMENT);
        if(!IsCountableForEntryGating(comment)) continue;
-
        double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
        double dist = MathAbs(currentPrice - entryPrice);
-
        if(dist < minDist)
        {
           rejectReason = "Too close to existing position (dist=" +
@@ -5987,9 +5186,6 @@ bool IsCountableForEntryGating(const string comment)
  }
  //+------------------------------------------------------------------+
  // Position age timeout: close stale positions
-
-
-
  //+------------------------------------------------------------------+
 bool IsValidHourValue(int hour)
 {
@@ -6005,13 +5201,10 @@ bool IsHourInWindow(int hour, int start, int end)
 {
    if(!IsValidHourValue(hour) || !IsValidHourValue(start) || !IsValidHourValue(end))
       return false;
-
    if(start < end)
       return (hour >= start && hour < end);
-
    if(start > end)
       return (hour >= start || hour < end);
-
    // Explicit behavior for start==end: full-day enabled session window.
    return true;
 }
@@ -6040,10 +5233,8 @@ bool ValidateSessionHourConfig(string &err)
 void LogWithRestartGuard(const string message)
 {
    Print(message);
-
    if(INPUT_REPEAT_LOG_RESTART_THRESHOLD <= 0)
       return;
-
    if(message == g_lastLogMessage)
       g_lastLogRepeatCount++;
    else
@@ -6051,16 +5242,13 @@ void LogWithRestartGuard(const string message)
       g_lastLogMessage = message;
       g_lastLogRepeatCount = 1;
    }
-
    if(g_lastLogRepeatCount >= INPUT_REPEAT_LOG_RESTART_THRESHOLD)
    {
       Print("RESTART GUARD: repeated log detected | message=", message,
             " | repeats=", g_lastLogRepeatCount,
             " | threshold=", INPUT_REPEAT_LOG_RESTART_THRESHOLD);
-
       g_lastLogRepeatCount = 0;
       g_lastLogMessage = "";
-
       long currentTf = Period();
       if(!ChartSetSymbolPeriod(0, _Symbol, (ENUM_TIMEFRAMES)currentTf))
       {
@@ -6073,7 +5261,6 @@ void LogWithRestartGuard(const string message)
 bool ShouldPrintOncePerWindow(string key, int secondsWindow)
 {
    if(secondsWindow <= 0) return true;
-
    datetime now = TimeCurrent();
    for(int i = 0; i < g_logSuppressionCount; i++)
    {
@@ -6083,7 +5270,6 @@ bool ShouldPrintOncePerWindow(string key, int secondsWindow)
       g_logSuppressionTimes[i] = now;
       return true;
    }
-
    int newSize = g_logSuppressionCount + 1;
    if(ArrayResize(g_logSuppressionKeys, newSize) != newSize) return true;
    if(ArrayResize(g_logSuppressionTimes, newSize) != newSize) return true;
@@ -6105,7 +5291,6 @@ void ConsumeStreakMultiplierOrder()
 {
    if(!INPUT_ENABLE_STREAK_LOT_MULTIPLIER || !INPUT_LOT_STREAK_BOOST_ON) return;
    if(g_streakMultiplierOrdersRemaining <= 0) return;
-
    g_streakMultiplierOrdersRemaining--;
    if(INPUT_ENABLE_LOGGING)
       LogWithRestartGuard("STREAK LOT BOOST USED: remainingOrders=" + IntegerToString(g_streakMultiplierOrdersRemaining));
@@ -6115,15 +5300,12 @@ bool IsSpreadHigh()
 {
    if(!INPUT_ENABLE_HIGH_SPREAD_PROTECT)
       return false;
-
    double spreadPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
    if(spreadPoints < 0) spreadPoints = 0;
-
    double spread = spreadPoints * g_point;
    double avgSpread = (g_averageSpread > 0) ? g_averageSpread : spread;
    if(avgSpread <= 0)
       return false;
-
    return (spread > avgSpread * INPUT_HIGH_SPREAD_MULTIPLIER);
 }
 //+------------------------------------------------------------------+
@@ -6134,59 +5316,10 @@ bool IsPositionProfitable(ulong ticket)
    return (PositionGetDouble(POSITION_PROFIT) > 0.0);
 }
 //+------------------------------------------------------------------+
+// V8.0: HandleHighSpreadOpenPositions REMOVED. Spread is entry-gate only, never closes positions.
 void HandleHighSpreadOpenPositions()
 {
-   if(!IsCloseEnabled() || !INPUT_CLOSE_HIGH_SPREAD_PROFIT_ON)
-      return;
-   static bool loggedDisabled = false;
-   if(!g_effCloseHighSpreadProfit)
-   {
-      if(!loggedDisabled)
-      {
-         Print("HIGH SPREAD CLOSE disabled (INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT=OFF)");
-         loggedDisabled = true;
-      }
-      return;
-   }
-
-   if(!IsSpreadHigh())
-      return;
-         double closePercent = MathMax(1.0, MathMin(INPUT_HIGH_SPREAD_CLOSE_PERCENT, 100.0));
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!IsOurPosition(ticket)) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-
-      double profit = PositionGetDouble(POSITION_PROFIT);
-      if(profit > 0.0)
-      {
-          double currentLots = PositionGetDouble(POSITION_VOLUME);
-         double lotsToClose = 0.0;
-         bool shouldFullClose = false;
-         bool partialOk = ComputePartialCloseLots(currentLots, currentLots, closePercent, CLOSE_BASIS_REMAINING, lotsToClose, shouldFullClose);
-
-         bool closeOk = false;
-         if(shouldFullClose)
-            closeOk = g_trade.PositionClose(ticket);
-         else if(partialOk)
-            closeOk = g_trade.PositionClosePartial(ticket, lotsToClose);
-
-         if(closeOk && ShouldPrintOncePerWindow("high_spread_close_" + IntegerToString((int)ticket), 30))
-         {
-            string action = shouldFullClose ? "closed full" : ("closed " + DoubleToString(lotsToClose, (int)g_lotDigits) + " lots");
-            LogWithRestartGuard("HIGH SPREAD: profitable position " + IntegerToString((int)ticket) +
-                               " | " + action +
-                               " | closePercent=" + DoubleToString(closePercent, 1));
-         }
-      }
-      else if(profit <= 0.0 && INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD)
-      {
-         if(ShouldPrintOncePerWindow("high_spread_keep_" + IntegerToString((int)ticket), 60))
-            LogWithRestartGuard("HIGH SPREAD: loss position " + IntegerToString((int)ticket) + " - keeping original stops");
-      }
-   }
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
 bool ShouldSkipStopAdjustmentsForTicket(ulong ticket)
@@ -6195,13 +5328,10 @@ bool ShouldSkipStopAdjustmentsForTicket(ulong ticket)
       return false;
    if(!IsSpreadHigh())
       return false;
-
    if(!g_effModifySkipLossOnHighSpread || !INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD)
       return false;
-
    if(!PositionSelectByTicket(ticket))
       return false;
-
    return (PositionGetDouble(POSITION_PROFIT) <= 0.0);
 }
 //+------------------------------------------------------------------+
@@ -6212,14 +5342,11 @@ int GetTPFailureTrackerIndex(ulong ticket, bool createIfMissing)
       if(g_tpModifyFailures[i].ticket == ticket)
          return i;
    }
-
    if(!createIfMissing)
       return -1;
-
    int newSize = ArraySize(g_tpModifyFailures) + 1;
    if(ArrayResize(g_tpModifyFailures, newSize) != newSize)
       return -1;
-
    int idx = newSize - 1;
    g_tpModifyFailures[idx].ticket = ticket;
    g_tpModifyFailures[idx].failCount = 0;
@@ -6232,7 +5359,6 @@ void ResetTPFailureTracker(ulong ticket)
    int idx = GetTPFailureTrackerIndex(ticket, false);
    if(idx < 0)
       return;
-
    g_tpModifyFailures[idx].failCount = 0;
    g_tpModifyFailures[idx].nextRetryTime = 0;
 }
@@ -6242,7 +5368,6 @@ void RegisterTPModifyFailure(ulong ticket)
    int idx = GetTPFailureTrackerIndex(ticket, true);
    if(idx < 0)
       return;
-
    g_tpModifyFailures[idx].failCount++;
    int backoffSeconds = (int)MathMin(300.0, MathPow(2.0, (double)MathMin(g_tpModifyFailures[idx].failCount, 8)));
    g_tpModifyFailures[idx].nextRetryTime = TimeCurrent() + backoffSeconds;
@@ -6253,7 +5378,6 @@ bool CanAttemptTPModify(ulong ticket)
    int idx = GetTPFailureTrackerIndex(ticket, false);
    if(idx < 0)
       return true;
-
    return (TimeCurrent() >= g_tpModifyFailures[idx].nextRetryTime);
 }
 //+------------------------------------------------------------------+
@@ -6261,39 +5385,30 @@ bool IsAllowedSession()
 {
    if(!INPUT_GATE_SESSION_WINDOW_ON)
       return true;
-
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
    int hour = dt.hour;
-
    if(!IsValidHourValue(hour))
    {
       WarnInvalidSessionHour("current_server_hour", hour);
       RegisterDataWarning("Invalid current session hour");
       return false;
    }
-
    int logicalHour = (hour - INPUT_SERVER_UTC_OFFSET_HOURS) % 24;
    if(logicalHour < 0) logicalHour += 24;
-
    bool inAsian  = IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END);
    bool inLondon = IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END);
    bool inNY     = IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END);
-
    if((inAsian && inLondon) || (inAsian && inNY) || (inLondon && inNY))
       RegisterDataWarning("Overlapping session windows detected");
-
    bool asianOn = (INPUT_TRADE_ASIAN && INPUT_SESSION_ASIAN_ON);
    bool londonOn = (INPUT_TRADE_LONDON && INPUT_SESSION_LONDON_ON);
    bool nyOn = (INPUT_TRADE_NEWYORK && INPUT_SESSION_NY_ON);
-
    if(!asianOn && !londonOn && !nyOn)
       return !INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES;
-
    if(nyOn && inNY) return true;
    if(londonOn && inLondon) return true;
    if(asianOn && inAsian) return true;
-
    return false;
 }
 //+------------------------------------------------------------------+
@@ -6303,21 +5418,17 @@ int GetCurrentSession()
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
    int hour = dt.hour;
-
    if(!IsValidHourValue(hour))
    {
       WarnInvalidSessionHour("current_server_hour", hour);
       return -1;
    }
-
    int logicalHour = (hour - INPUT_SERVER_UTC_OFFSET_HOURS) % 24;
    if(logicalHour < 0) logicalHour += 24;
-
    // Priority: NY > London > Asian (for overlaps)
    if(INPUT_SESSION_NY_ON && IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END)) return 2;
    if(INPUT_SESSION_LONDON_ON && IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
    if(INPUT_SESSION_ASIAN_ON && IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
-
    return -1; // Off-hours
 }
 //+------------------------------------------------------------------+
@@ -6333,22 +5444,18 @@ int GetCurrentSession()
        if(CopyBuffer(g_hATR_M1, 0, 0, 1, atr) < 1 || atr[0] <= 0)
           return false;
     }
-
    // Base SL/TP from ATR
    slPoints = atr[0] * INPUT_SL_ATR_MULTIPLIER / g_point;
    tpPoints = atr[0] * INPUT_TP_ATR_MULTIPLIER / g_point;
-
    // Adaptive adjustments (already stored in points)
    slPoints += g_adaptive.slAdjustPoints;
    tpPoints += g_adaptive.tpAdjustPoints;
-
    // Sane bounds per symbol before further transforms
    double maxAdaptiveShift = MathMax(10.0, SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL) * 3.0);
    slPoints = MathMax(slPoints, 1.0);
    tpPoints = MathMax(tpPoints, 1.0);
    g_adaptive.slAdjustPoints = MathMax(-maxAdaptiveShift, MathMin(g_adaptive.slAdjustPoints, maxAdaptiveShift));
    g_adaptive.tpAdjustPoints = MathMax(-maxAdaptiveShift, MathMin(g_adaptive.tpAdjustPoints, maxAdaptiveShift));
-
    // Threat-based SL tightening
    ENUM_THREAT_ZONE zone = GetThreatZone(threat);
    switch(zone)
@@ -6358,16 +5465,13 @@ int GetCurrentSession()
       case THREAT_EXTREME:slPoints *= 0.50; break; // 50% tighter
       default: break;
    }
-
    // Regime-based TP adjustment
    if(g_currentRegime == REGIME_TRENDING)
       tpPoints *= 1.5; // Larger TP in trends
    else if(g_currentRegime == REGIME_RANGING)
       tpPoints *= 0.75; // Smaller TP in ranges
-
    double slBeforeSpread = slPoints;
    double tpBeforeSpread = tpPoints;
-
    // Spread-aware risk/reward shaping:
    // - Add spread to SL so effective stop includes current transaction cost.
    // - Subtract spread from TP to avoid overestimating net reachable reward.
@@ -6375,22 +5479,18 @@ int GetCurrentSession()
    if(spreadPoints < 0) spreadPoints = 0;
    slPoints += spreadPoints;
    tpPoints -= spreadPoints;
-
    // Floor clamp before hard limits to avoid non-positive TP under wide spreads.
    tpPoints = MathMax(tpPoints, 1.0);
    slPoints = MathMax(slPoints, 1.0);
-
    // Re-apply user min/max limits after spread adjustment
    slPoints = MathMax(slPoints, INPUT_MIN_SL_POINTS);
    slPoints = MathMin(slPoints, INPUT_MAX_SL_POINTS);
    tpPoints = MathMax(tpPoints, INPUT_MIN_TP_POINTS);
    tpPoints = MathMin(tpPoints, INPUT_MAX_TP_POINTS);
-
    // Re-apply stop-level constraints after spread adjustment and clamps
    double minDist = g_stopLevel * g_point;
    if(slPoints * g_point < minDist) slPoints = (double)(g_stopLevel + 10);
    if(tpPoints * g_point < minDist) tpPoints = (double)(g_stopLevel + 10);
-
    if(INPUT_ENABLE_LOGGING)
    {
       Print("SLTP DEBUG: spreadPts=", DoubleToString(spreadPoints, 1),
@@ -6398,7 +5498,6 @@ int GetCurrentSession()
             " | postSpread SL/TP=", DoubleToString(slPoints, 1), "/", DoubleToString(tpPoints, 1),
             " | threat=", DoubleToString(threat, 1));
    }
-
    return true;
 }
 //+------------------------------------------------------------------+
@@ -6408,7 +5507,6 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
 {
   if(!MathIsValidNumber(slPoints) || slPoints <= 0.0)
       return 0.0;
-
     if(!MathIsValidNumber(g_tickValue) || g_tickValue <= 0.0 ||
       !MathIsValidNumber(g_tickSize) || g_tickSize <= 0.0 ||
       !MathIsValidNumber(g_point) || g_point <= 0.0)
@@ -6416,25 +5514,20 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
       RegisterDataWarning("CalculateLotSize invalid symbol economics");
       return NormalizeVolumeToStep(g_minLot);
    }
-
    double pointValue = (g_tickValue / g_tickSize) * g_point;
    if(!MathIsValidNumber(pointValue) || pointValue <= 0.0)
    {
       RegisterDataWarning("CalculateLotSize invalid point value");
       return NormalizeVolumeToStep(g_minLot);
    }
-
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(!MathIsValidNumber(equity) || equity <= 0.0)
       return NormalizeVolumeToStep(g_minLot);
-
    double riskMoney = equity * (g_risk.riskPercent / 100.0);
    if(!INPUT_LOT_BASE_RISK_ON)
             riskMoney = equity * (INPUT_MIN_LOT_SIZE / MathMax(0.01, equity));
-
    double slValue = slPoints * g_point;
  double price = (direction >= 0) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
       double baseLot = 0.0;
    double testProfit = 0.0;
    if(MathIsValidNumber(price) && price > 0.0 && OrderCalcProfit(ORDER_TYPE_BUY, _Symbol, 1.0, price, price + slValue, testProfit))
@@ -6442,20 +5535,16 @@ double CalculateLotSize(double slPoints, double confidence, double threat, ENUM_
      if(MathIsValidNumber(testProfit) && MathAbs(testProfit) > 0.0)
          baseLot = riskMoney / MathAbs(testProfit);
    }
-
 if(!MathIsValidNumber(baseLot) || baseLot <= 0.0)
       baseLot = riskMoney / MathMax(slPoints * pointValue, 1e-10);
    if(!MathIsValidNumber(baseLot) || baseLot <= 0.0)
       baseLot = g_minLot;
-
 double lotSize = baseLot;
    double threatFactor = MathMax(0.25, MathMin(1.0, 1.0 - (threat / 200.0)));
    double confFactor = MathMax(0.5, MathMin(1.0, 0.5 + (confidence / 200.0)));
    lotSize *= threatFactor;
-
   
    lotSize *= confFactor;
-
    double rlFactor = 1.0;
    if(INPUT_LOT_RL_SCALING_ON && INPUT_ENABLE_RL)
    {
@@ -6472,32 +5561,25 @@ double lotSize = baseLot;
    
    if(INPUT_LOT_ADAPTIVE_MULTIPLIER_ON)
       lotSize *= MathMax(0.25, MathMin(3.0, g_adaptive.lotMultiplier));
-
-
    
    if(INPUT_LOT_STREAK_BOOST_ON)
   lotSize *= MathMax(0.25, MathMin(3.0, GetStreakLotMultiplier()));
-
    if(INPUT_LOT_HIGH_ADX_BOOST_ON && INPUT_ENABLE_HIGH_ADX_RISK_MODE)
    {
       double adxNow[];
       if(CopyBuffer(g_hADX_M1, 0, 0, 1, adxNow) == 1 && adxNow[0] >= INPUT_HIGH_ADX_THRESHOLD)
          lotSize *= MathMax(0.25, MathMin(3.0, INPUT_HIGH_ADX_LOT_MULTIPLIER));
    }
-
-
   
    lotSize = MathMax(lotSize, g_risk.minLot);
    lotSize = MathMin(lotSize, g_risk.maxLot);
    lotSize = MathMax(lotSize, g_minLot);
    lotSize = MathMin(lotSize, g_maxLot);
-
    string volReason = "";
    double normalizedLot = 0.0;
    if(!NormalizeAndValidateOrderVolume(lotSize, normalizedLot, volReason))
       normalizedLot = NormalizeVolumeToStep(g_minLot);
    lotSize = normalizedLot;
-
    double marginRequired = 0.0;
    ENUM_ORDER_TYPE marginOrderType = (direction >= 0 ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
    if(!OrderCalcMargin(marginOrderType, _Symbol, lotSize, price, marginRequired) || !MathIsValidNumber(marginRequired) || marginRequired <= 0.0)
@@ -6523,7 +5605,6 @@ double lotSize = baseLot;
       }
       lotSize = validatedDownscaledLot;
    }
-
    double effectiveRisk = slPoints * pointValue * lotSize;
    if(INPUT_ENABLE_LOGGING)
    {
@@ -6536,32 +5617,24 @@ double lotSize = baseLot;
             " | confFactor=", DoubleToString(confFactor, 3),
             " | rlFactor=", DoubleToString(rlFactor, 3));
    }
-
    
    // ---- FINAL SAFETY CLAMP (FIX: prevent 0/NaN lot) ----
    if(!MathIsValidNumber(lotSize) || lotSize <= 0.0)
       lotSize = g_minLot;
-
    // Respect broker + EA caps
    double eaMin = (INPUT_MIN_LOT_SIZE > 0.0 ? INPUT_MIN_LOT_SIZE : g_minLot);
    double eaMax = (INPUT_MAX_LOT_SIZE > 0.0 ? INPUT_MAX_LOT_SIZE : g_maxLot);
-
    if(eaMin < g_minLot) eaMin = g_minLot;
    if(eaMax > g_maxLot) eaMax = g_maxLot;
    if(eaMax < eaMin) eaMax = eaMin;
-
    if(lotSize < eaMin) lotSize = eaMin;
    if(lotSize > eaMax) lotSize = eaMax;
-
    // Normalize to step
    double step = GetEffectiveLotStep();
    if(!MathIsValidNumber(step) || step <= 0.0) step = 0.01;
-
    lotSize = MathFloor(lotSize / step) * step;
    if(lotSize < eaMin) lotSize = eaMin;
-
    lotSize = NormalizeDouble(lotSize, g_lotDigits);
-
 return lotSize;
 }
 //+------------------------------------------------------------------+
@@ -6570,18 +5643,15 @@ return lotSize;
 bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong &placedOrderTicket)
 {
    placedOrderTicket = 0;
-
     int pendingSameDirection = CountMainPendingStopsByDirection(decision.direction);
    int pendingOppositeDirection = CountMainPendingStopsByDirection(decision.direction * -1);
    int openMain = CountMainPositionsFromBroker();
    int effectiveExposure = GetEffectiveMainExposureCount();
-
    if((INPUT_STRICT_OPPOSITE_FLIP_MODE || INPUT_MAX_MAIN_HARD_CAP_ON) && INPUT_MAX_CONCURRENT_TRADES == 1 && pendingOppositeDirection > 0)
    {
       Print("PENDING STOP REJECTED: strict one-slot cap still has opposite pending | oppositePending=", pendingOppositeDirection);
       return false;
    }
-
    if(INPUT_EXEC_PENDING_DUPLICATE_BLOCK_ON && pendingSameDirection > 0)
    {
        Print("PENDING STOP REJECTED: duplicate pending rule | Symbol=", _Symbol,
@@ -6590,7 +5660,6 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
             " | ExistingPendingSameDir=", pendingSameDirection);
       return false;
    }
-
    if((INPUT_STRICT_OPPOSITE_FLIP_MODE || INPUT_MAX_MAIN_HARD_CAP_ON) && effectiveExposure >= MathMax(1, INPUT_MAX_CONCURRENT_TRADES))
    {
       Print("PENDING STOP REJECTED: strict slot cap | openMain=", openMain,
@@ -6604,11 +5673,9 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
    MqlTradeResult result;
    ZeroMemory(request);
    ZeroMemory(result);
-
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    double offset = INPUT_PENDING_STOP_OFFSET_POINTS * g_point;
-
    request.action = TRADE_ACTION_PENDING;
    request.symbol = _Symbol;
    request.magic = BuildMagicForSubtype(SUBTYPE_MAIN);
@@ -6626,7 +5693,6 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
       request.type_time = ORDER_TIME_GTC;
       request.expiration = 0;
    }
-
    if(decision.direction == 1)
    {
       request.type = ORDER_TYPE_BUY_STOP;
@@ -6695,23 +5761,19 @@ bool PlacePendingStopOrder(const DecisionResult &decision, string comment, ulong
       Print("PENDING STOP REJECTED: TP must be non-zero before activation");
       return false;
    }
-
    Print("PENDING STOP REQUEST: Type=", EnumToString(request.type),
          " | Trigger=", DoubleToString(request.price, g_digits),
          " | SL=", DoubleToString(request.sl, g_digits),
          " | TP=", DoubleToString(request.tp, g_digits),
          " | Expiry=", TimeToString(request.expiration, TIME_DATE|TIME_SECONDS),
          " | Lot=", DoubleToString(request.volume, 2));
-
    bool sent = OrderSend(request, result);
    Print("PENDING STOP RESULT: Retcode=", result.retcode,
          " | Deal=", result.deal,
          " | Order=", result.order,
          " | Comment=", result.comment);
-
    if(!sent || (result.retcode != TRADE_RETCODE_DONE && result.retcode != TRADE_RETCODE_PLACED))
       return false;
-
    placedOrderTicket = result.order;
    return true;
 }
@@ -6725,7 +5787,6 @@ string BuildUniqueOrderComment(const string prefix, int direction)
       comment = StringSubstr(comment, 0, 31);
    return comment;
 }
-
 ulong ResolveOpenedPositionId(ulong orderTicket, string comment)
 {
    // 1) Prefer live-position lookup by our comment/magic/symbol
@@ -6736,10 +5797,8 @@ ulong ResolveOpenedPositionId(ulong orderTicket, string comment)
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
       if(PositionGetString(POSITION_COMMENT) != comment) continue;
-
       return ticket;
    }
-
    // 2) Fallback to deal history mapping (order -> position)
    if(orderTicket != 0)
    {
@@ -6753,14 +5812,12 @@ ulong ResolveOpenedPositionId(ulong orderTicket, string comment)
             if((ulong)HistoryDealGetInteger(dealTicket, DEAL_ORDER) != orderTicket) continue;
             if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC))) continue;
             if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
-
             ulong positionId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
             if(positionId != 0)
                return positionId;
          }
       }
    }
-
    return 0;
 }
 bool CheckTotalRiskBudgetForCandidate(int direction, double lotSize, double slPoints, string &reason)
@@ -6769,7 +5826,6 @@ bool CheckTotalRiskBudgetForCandidate(int direction, double lotSize, double slPo
    double tickSize = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
    if(tickSize <= 0.0 || tickValue <= 0.0)
       return true;
-
    double openRisk = 0.0;
    for(int i = 0; i < PositionsTotal(); i++)
    {
@@ -6782,11 +5838,9 @@ bool CheckTotalRiskBudgetForCandidate(int direction, double lotSize, double slPo
       double lot = PositionGetDouble(POSITION_VOLUME);
       openRisk += (points * g_point / tickSize) * tickValue * lot;
    }
-
    double candidateRisk = (slPoints * g_point / tickSize) * tickValue * lotSize;
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    if(equity <= 0.0) return true;
-
    double maxRiskMoney = equity * (g_risk.maxTotalRisk / 100.0);
    double totalRisk = openRisk + candidateRisk;
    if(totalRisk > maxRiskMoney)
@@ -6798,7 +5852,6 @@ bool CheckTotalRiskBudgetForCandidate(int direction, double lotSize, double slPo
    }
    return true;
 }
-
 bool ExecuteOrder(const DecisionResult &decision)
 {
    if(!IsPlacementEnabled())
@@ -6807,25 +5860,18 @@ bool ExecuteOrder(const DecisionResult &decision)
          Print("EXECUTE ORDER SKIPPED: placement toggle disabled (INPUT_TOGGLE_PLACE_ORDERS=false)");
       return false;
    }
-
+   // V8.0: Standard cooldown check (no flip bypass)
    int cooldownRemainingSec = 0;
    bool cooldownActive = IsOrderCooldownActive(cooldownRemainingSec);
-   bool allowFlipCooldownBypass = (g_currentEntryIsFlip && INPUT_FLIP_BYPASS_COOLDOWN_ON);
-   if(cooldownActive && !allowFlipCooldownBypass)
+   if(cooldownActive)
    {
       Print("ORDER REJECTED: Cooldown active (", cooldownRemainingSec, "s remaining)");
       g_gateDiagnostics.cooldownRejects++;
       return false;
    }
-   if(cooldownActive && allowFlipCooldownBypass && !g_flipCooldownBypassLogged)
-   {
-      g_flipCooldownBypassLogged = true;
-      Print("COOLDOWN BYPASS APPLIED: flip replacement entry allowed | remaining=", cooldownRemainingSec, "s");
-   }
   
    double price, sl, tp;
    ENUM_ORDER_TYPE orderType;
-
    if(decision.direction == 1)
    {
       orderType = ORDER_TYPE_BUY;
@@ -6840,24 +5886,20 @@ bool ExecuteOrder(const DecisionResult &decision)
       sl = price + decision.slPoints * g_point;
       tp = price - decision.tpPoints * g_point;
    }
-
    sl = NormalizeDouble(sl, g_digits);
    tp = NormalizeDouble(tp, g_digits);
    price = NormalizeDouble(price, g_digits);
-
    if(tp <= 0.0)
    {
       Print("ORDER REJECTED: TP must be non-zero before activation");
       return false;
    }
-
 string riskReject = "";
    if(!CheckTotalRiskBudgetForCandidate(decision.direction, decision.lotSize, decision.slPoints, riskReject))
    {
       Print("ORDER REJECTED: ", riskReject);
       return false;
    }
-
    double validatedLot = 0.0;
    string lotReason = "";
    if(!NormalizeAndValidateOrderVolume(decision.lotSize, validatedLot, lotReason))
@@ -6871,7 +5913,6 @@ string riskReject = "";
             " | reason=", lotReason);
       return false;
    }
-
    bool lotChangedMaterially = (MathAbs(validatedLot - decision.lotSize) > (GetEffectiveLotStep() * 0.5));
    if(lotChangedMaterially)
    {
@@ -6885,7 +5926,6 @@ string riskReject = "";
          return false;
       }
    }
-
    DecisionResult validatedDecision = decision;
    validatedDecision.lotSize = validatedLot;
    string comment = BuildUniqueOrderComment(COMMENT_MAIN_PREFIX, decision.direction);
@@ -6903,7 +5943,6 @@ string riskReject = "";
          Print("PENDING STOP ORDER FAILED");
          return false;
       }
-
       Print("PENDING STOP ORDER PLACED: ", (decision.direction == 1 ? "BUY_STOP" : "SELL_STOP"),
                  " | Lot: ", validatedLot,
             " | BasePrice: ", price,
@@ -6911,7 +5950,6 @@ string riskReject = "";
             " | Threat: ", DoubleToString(decision.threatLevel, 1),
             " | Zone: ", EnumToString(decision.threatZone),
             " | Signals: ", decision.signalCombination);
-
       if(INPUT_ENABLE_RL && INPUT_EXEC_RECORD_RL_ON_SUBMIT && INPUT_RL_RECORD_ON)
       {
          int state = DetermineRLState(decision.confidence,
@@ -6927,7 +5965,6 @@ string riskReject = "";
                            decision.confidence, decision.mtfScore,
                            GetCombinationStrengthSnapshot(decision.signalCombination));
       }
-
       ConsumeStreakMultiplierOrder();
       datetime orderPlacedTime = TimeCurrent();
       g_daily.pendingOrdersPlaced++;
@@ -6939,7 +5976,6 @@ string riskReject = "";
       g_totalTrades++;
       return true;
    }
-
    if(!IsFeatureEnabled("market_orders"))
    {
       if(INPUT_ENABLE_LOGGING)
@@ -6952,17 +5988,14 @@ string riskReject = "";
    {
            g_trade.SetTypeFilling(g_selectedFillingMode);
       g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_MAIN));
-
       if(g_trade.PositionOpen(_Symbol, orderType, attemptLot, price, sl, tp, comment))
       {
          ulong orderTicket = g_trade.ResultOrder();
          ulong positionId = ResolveOpenedPositionId(orderTicket, comment);
          if(positionId == 0)
             positionId = orderTicket;
-
          Print("OPEN VALIDATION: orderTicket=", orderTicket,
                " -> positionId=", positionId);
-
          Print("ORDER PLACED: ", (decision.direction == 1 ? "BUY" : "SELL"),
                  " | Lot: ", attemptLot,
                " | Price: ", price,
@@ -6973,11 +6006,9 @@ string riskReject = "";
                              " | Signals: ", decision.signalCombination,
                " | OrderTicket: ", orderTicket,
                " | PositionId: ", positionId);
-
     DecisionResult trackedDecision = decision;
          trackedDecision.lotSize = attemptLot;
 TrackNewPosition(positionId, trackedDecision, comment);
-
          if(INPUT_ENABLE_RL && INPUT_EXEC_RECORD_RL_ON_SUBMIT && INPUT_RL_RECORD_ON)
          {
           int state = DetermineRLState(decision.confidence,
@@ -6991,7 +6022,6 @@ TrackNewPosition(positionId, trackedDecision, comment);
                                         decision.confidence, decision.mtfScore,
                                         GetCombinationStrengthSnapshot(decision.signalCombination));
          }
-
          ConsumeStreakMultiplierOrder();
          datetime orderPlacedTime = TimeCurrent();
          g_lastOrderTime = orderPlacedTime;
@@ -7000,10 +6030,8 @@ TrackNewPosition(positionId, trackedDecision, comment);
          else
             g_lastSellOrderTime = orderPlacedTime;
          g_totalTrades++;
-
          return true;
       }
-
        uint retcode = g_trade.ResultRetcode();
       Print("Order attempt ", attempt + 1, " failed: ", retcode,
             " - ", g_trade.ResultComment(),
@@ -7012,7 +6040,6 @@ TrackNewPosition(positionId, trackedDecision, comment);
             " | step=", DoubleToString(GetEffectiveLotStep(), g_lotDigits),
             " | min=", DoubleToString(g_minLot, g_lotDigits),
             " | max=", DoubleToString(g_maxLot, g_lotDigits));
-
       if(retcode == TRADE_RETCODE_INVALID_VOLUME)
       {
          double nextLot = attemptLot - GetEffectiveLotStep();
@@ -7024,7 +6051,6 @@ TrackNewPosition(positionId, trackedDecision, comment);
                   " | reason=", lotReason);
             break;
          }
-
          if(validatedLot >= attemptLot)
          {
             Print("RETRY STOPPED: invalid-volume fallback did not reduce lot",
@@ -7032,42 +6058,33 @@ TrackNewPosition(positionId, trackedDecision, comment);
                   " | fallbackLot=", DoubleToString(validatedLot, g_lotDigits));
             break;
          }
-
          attemptLot = validatedLot;
       }
-
       // Refresh price before next attempt
       if(decision.direction == 1)
          price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       else
          price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
    }
-
    Print("ORDER FAILED after ", maxAttempts, " attempts | retry=", (INPUT_EXEC_MARKET_RETRY_ON ? "ON" : "OFF"));
    return false;
 }
 //+------------------------------------------------------------------+
-
 //+------------------------------------------------------------------+
 void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, string comment)
 {
    // Clean up inactive entries first
    CleanupInactivePositions();
-
    if(g_positionCount >= MAX_POSITIONS)
    {
       Print("WARNING: Position tracking array full, cannot track new position");
       return;
    }
-
    int idx = g_positionCount;
    g_positionCount++;
-
    double price = 0.0;
    if(positionTicket > 0 && PositionSelectByTicket(positionTicket))
       price = PositionGetDouble(POSITION_PRICE_OPEN);
-
    if(price <= 0.0 || !MathIsValidNumber(price))
    {
       // Fallback only when broker position cannot be selected yet.
@@ -7075,7 +6092,6 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
              SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
              SymbolInfoDouble(_Symbol, SYMBOL_BID);
    }
-
      g_positions[idx].ticket = positionTicket;
    g_positions[idx].direction = decision.direction;
    g_positions[idx].entryPrice = price;
@@ -7107,7 +6123,6 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
    g_positions[idx].isActive = true;
    g_positions[idx].maxProfit = 0;
    g_positions[idx].maxLoss = 0;
-
    if(INPUT_ENABLE_LOGGING)
       Print("TRACK NEW POSITION: ticket=", positionTicket,
             " | entryPrice=", DoubleToString(g_positions[idx].entryPrice, g_digits),
@@ -7116,73 +6131,11 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
 //+------------------------------------------------------------------+
 //| SECTION 23: 50% LOT CLOSE SYSTEM (Part 8)                        |
 //+------------------------------------------------------------------+
+// V8.0: Handle50PercentLotClose REMOVED. No fractional volume close.
 void Handle50PercentLotClose()
 {
- if(!g_effClose50PctDefensive)
-      return;
-   if(!INPUT_ENABLE_LOSS_PARTIAL_CLOSE)
-      return;
- if(!IsCloseEnabled())
-      return;
-
-   int effectiveCount = MathMin(g_lossPartsCount, 10);
-   for(int i = 0; i < g_positionCount; i++)
-   {
-      if(!g_positions[i].isActive) continue;
-      ulong ticket = g_positions[i].ticket;
-      if(IsTicketManagedThisTick(ticket)) continue;
-      if(!PositionSelectByTicket(ticket)) { g_positions[i].isActive = false; continue; }
-      if(g_positions[i].closePathState == CLOSE_PATH_TERMINAL) continue;
-      if(g_positions[i].trailingTPActive) continue;
-
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double slPrice = PositionGetDouble(POSITION_SL);
-      double currentLots = PositionGetDouble(POSITION_VOLUME);
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      if(slPrice == 0) continue;
-
-      double slDistance = MathAbs(entryPrice - slPrice);
-      if(slDistance <= 0) continue;
-      double currentLoss = (posType == POSITION_TYPE_BUY) ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
-      if(currentLoss <= 0) continue;
-      double lossPct = (currentLoss / slDistance) * 100.0;
-      g_positions[i].highestLossPctSeen = MathMax(g_positions[i].highestLossPctSeen, lossPct);
-
-      for(int level = 0; level < effectiveCount; level++)
-      {
-         if(g_positions[i].lossPartDone[level]) continue;
-         if(lossPct < g_lossPartTriggers[level]) continue;
-
-         double lotsToClose = 0.0;
-         bool fullExit = false;
-         if(!ComputePartialCloseLots(currentLots, g_positions[i].originalLots, g_lossPartPercentages[level], INPUT_PARTIAL_CLOSE_BASIS, lotsToClose, fullExit))
-         {
-            if(fullExit)
-            {
-               g_positions[i].closePathState = CLOSE_PATH_TERMINAL;
-               g_trade.PositionClose(ticket);
-               MarkTicketManagedThisTick(ticket);
-               return;
-            }
-            g_positions[i].lossPartDone[level] = true;
-            continue;
-         }
-
-         if(g_trade.PositionClosePartial(ticket, lotsToClose))
-         {
-            g_positions[i].lossPartDone[level] = true;
-            g_positions[i].closePathState = CLOSE_PATH_LOSS_PARTIAL_STARTED;
-            g_positions[i].lastLossTriggerIndex = level;
-            if(level == 0) { g_positions[i].lotReduced = true; g_positions[i].halfSLHit = true; }
-            g_positions[i].currentLots = PositionGetDouble(POSITION_VOLUME);
-            MarkTicketManagedThisTick(ticket);
-            break;
-         }
-      }
-   }
+   return; // V8.0: disabled
 }
-
 //+------------------------------------------------------------------+
 //| SECTION 24: PARTIAL CLOSE & TRAILING STOP                        |
 //+------------------------------------------------------------------+
@@ -7200,226 +6153,44 @@ double CalculateTPProgressPercent(int posType, double entryPrice, double current
       tpSpan = entryPrice - tpPrice;
       moved = entryPrice - currentPrice;
    }
-
    if(tpSpan <= 0.0)
       return -1.0;
-
    double progress = (moved / tpSpan) * 100.0;
    if(progress < 0.0) progress = 0.0;
    if(progress > 1000.0) progress = 1000.0;
    return progress;
 }
-
+// V8.0: HandleProgressMilestoneActions REMOVED. No BE/trailing/TP modification.
 void HandleProgressMilestoneActions(ulong ticket, int idx, double progressPct)
 {
-   if(ticket == 0 || idx < 0 || idx >= g_positionCount)
-      return;
-   if(!PositionSelectByTicket(ticket) || !g_positions[idx].isActive)
-      return;
-
-   const double milestonePct = 50.0;
-   if(progressPct < milestonePct)
-      return;
-
-   int posType = (int)PositionGetInteger(POSITION_TYPE);
-   double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-   if(!g_positions[idx].movedToBreakeven && g_effModifyMoveToBE)
-   {
-      MoveToBreakeven(ticket, entryPrice, posType);
-      if(PositionSelectByTicket(ticket))
-      {
-         double slAfter = PositionGetDouble(POSITION_SL);
-         bool beReached = (posType == POSITION_TYPE_BUY) ? (slAfter >= entryPrice && slAfter > 0.0)
-                                                      : (slAfter <= entryPrice && slAfter > 0.0);
-         if(beReached)
-            g_positions[idx].movedToBreakeven = true;
-      }
-   }
-  bool milestoneTpZeroApplied = false;
-   bool milestoneTpZeroAttempted = false;
-   if(INPUT_PROGRESS_MILESTONE_ZERO_TP_ON &&
-      g_effModifyTrailingTP && IsTpModifyEnabled() && INPUT_ENABLE_TRAILING_TP_GAP &&
-      CanModifyPosition(ticket) && CanAttemptTPModify(ticket) && !ShouldSkipStopAdjustmentsForTicket(ticket) &&
-      PositionSelectByTicket(ticket))
-   {
-      double currentSL = PositionGetDouble(POSITION_SL);
-      double previousTP = PositionGetDouble(POSITION_TP);
-      if(previousTP != 0.0)
-      {
-         milestoneTpZeroAttempted = true;
-         bool modified = g_trade.PositionModify(ticket, currentSL, 0.0);
-         if(modified)
-         {
-            milestoneTpZeroApplied = true;
-            ResetTPFailureTracker(ticket);
-            if(INPUT_ENABLE_LOGGING)
-               Print("PROGRESS_MILESTONE TP_ZERO OK: ticket=", ticket,
-                     " | progressPct=", DoubleToString(progressPct, 2),
-                     " | prevTP=", DoubleToString(previousTP, g_digits));
-         }
-         else
-         {
-            RegisterTPModifyFailure(ticket);
-            if(INPUT_ENABLE_LOGGING)
-               Print("PROGRESS_MILESTONE TP_ZERO FAILED: ticket=", ticket,
-                     " | progressPct=", DoubleToString(progressPct, 2),
-                     " | prevTP=", DoubleToString(previousTP, g_digits),
-                     " | retcode=", g_trade.ResultRetcode(),
-                     " | comment=", g_trade.ResultComment());
-         }
-      }
-   }
-
-   if(g_effModifyTrailingTP && INPUT_ENABLE_TRAILING_TP_GAP && !g_positions[idx].trailingTPActive)
-   {
-      g_positions[idx].trailingTPActive = true;
-      g_positions[idx].closePathState = CLOSE_PATH_TRAILING_TP_MODE;
-      if(INPUT_ENABLE_LOGGING)
-         Print("PROGRESS_MILESTONE TRAILING_MODE ENABLED: ticket=", ticket,
-               " | progressPct=", DoubleToString(progressPct, 2),
-               " | milestonePct=", DoubleToString(milestonePct, 2));
-   }
-
-   if(INPUT_ENABLE_LOGGING)
-      Print("PROGRESS_MILESTONE DIAG: ticket=", ticket,
-            " | milestoneReached=YES",
-            " | tpZeroConfig=", (INPUT_PROGRESS_MILESTONE_ZERO_TP_ON ? "ON" : "OFF"),
-            " | tpZeroApplied=", (milestoneTpZeroApplied ? "YES" : "NO"),
-            " | tpZeroAttempted=", (milestoneTpZeroAttempted ? "YES" : "NO"),
-            " | trailingActive=", (g_positions[idx].trailingTPActive ? "YES" : "NO"));
+   return; // V8.0: disabled
 }
-
+// V8.0: ProcessProgressMilestoneActions REMOVED.
 void ProcessProgressMilestoneActions()
 {
-   for(int i = 0; i < g_positionCount; i++)
-   {
-      if(!g_positions[i].isActive)
-         continue;
-
-      ulong ticket = g_positions[i].ticket;
-      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket))
-         continue;
-      if(g_positions[i].closePathState == CLOSE_PATH_TERMINAL)
-         continue;
-
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double tpPrice = PositionGetDouble(POSITION_TP);
-      if(tpPrice == 0.0)
-         continue;
-
-      double progressPct = CalculateTPProgressPercent(posType, entryPrice, currentPrice, tpPrice);
-      if(progressPct < 0.0)
-         continue;
-
-      g_positions[i].highestProfitPctSeen = MathMax(g_positions[i].highestProfitPctSeen, progressPct);
-      HandleProgressMilestoneActions(ticket, i, progressPct);
-   }
+   return; // V8.0: disabled
 }
-
-
+// V8.0: ManagePartialClose REMOVED. No fractional volume close.
 void ManagePartialClose()
 {
-   if(!g_effClosePartialTP)
-      return;
-   if(!INPUT_ENABLE_PROFIT_PARTIAL_CLOSE)
-      return;
-   if(!IsCloseEnabled())
-      return;
-
-   int effectiveCount = MathMin(g_profitPartsCount, 10);
-   for(int i = 0; i < g_positionCount; i++)
-   {
-      if(!g_positions[i].isActive) continue;
-      ulong ticket = g_positions[i].ticket;
-      if(IsTicketManagedThisTick(ticket)) continue;
-      if(!PositionSelectByTicket(ticket)) { g_positions[i].isActive = false; continue; }
-      if(g_positions[i].closePathState == CLOSE_PATH_TERMINAL) continue;
-      if(g_positions[i].trailingTPActive) continue;
-
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double tpPrice = PositionGetDouble(POSITION_TP);
-      double currentLots = PositionGetDouble(POSITION_VOLUME);
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      if(tpPrice == 0) continue;
-
-      double tpDistance = MathAbs(tpPrice - entryPrice);
-      if(tpDistance <= 0) continue;
-      double currentProfit = (posType == POSITION_TYPE_BUY) ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
-      if(currentProfit <= 0) continue;
-      double profitPct = (currentProfit / tpDistance) * 100.0;
-      g_positions[i].highestProfitPctSeen = MathMax(g_positions[i].highestProfitPctSeen, profitPct);
-
-      for(int level = 0; level < effectiveCount; level++)
-      {
-         if(g_positions[i].profitPartDone[level]) continue;
-         if(profitPct < g_profitPartTriggers[level]) continue;
-
-         double lotsToClose = 0.0;
-         bool fullExit = false;
-         if(!ComputePartialCloseLots(currentLots, g_positions[i].originalLots, g_profitPartPercentages[level], INPUT_PARTIAL_CLOSE_BASIS, lotsToClose, fullExit))
-         {
-            if(fullExit)
-            {
-               g_positions[i].closePathState = CLOSE_PATH_TERMINAL;
-               g_trade.PositionClose(ticket);
-               MarkTicketManagedThisTick(ticket);
-               return;
-            }
-            g_positions[i].profitPartDone[level] = true;
-            continue;
-         }
-
-         if(g_trade.PositionClosePartial(ticket, lotsToClose))
-         {
-            g_positions[i].profitPartDone[level] = true;
-            g_positions[i].closePathState = CLOSE_PATH_PROFIT_PARTIAL_STARTED;
-            g_positions[i].lastProfitTriggerIndex = level;
-            if(level == 0) g_positions[i].partialClosed = true;
-            
-            g_positions[i].currentLots = PositionGetDouble(POSITION_VOLUME);
-            MarkTicketManagedThisTick(ticket);
-            break;
-         }
-      }
-   }
+   return; // V8.0: disabled
 }
-
 //+------------------------------------------------------------------+
+// V8.0: MoveToBreakeven REMOVED. SL/TP are static after placement.
 void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 {
-  
-   if(!g_effModifyMoveToBE)
-  
-      return;
-if(!IsStopModifyEnabled())
-      return;
-
-   if(ShouldSkipStopAdjustmentsForTicket(ticket)) return;
-   if(!CanModifyPosition(ticket)) return;
-
+   return; // V8.0: disabled - SL stays fixed at order placement value
    double currentSL = PositionGetDouble(POSITION_SL);
    double currentTP = PositionGetDouble(POSITION_TP);
-
-   // V7.31 FIX #1: Guard against moving SL when already better than breakeven
    if(posType == POSITION_TYPE_BUY)
    {
-      // For BUY: if currentSL >= entryPrice, it's already at or better than breakeven
       if(currentSL >= entryPrice && currentSL > 0)
       {
-         if(INPUT_ENABLE_LOGGING)
-            Print("BREAKEVEN GUARD: BUY position ticket ", ticket, 
-                  " SL already at or better than breakeven | currentSL=", 
-                  DoubleToString(currentSL, g_digits), 
-                  " | entryPrice=", DoubleToString(entryPrice, g_digits));
          return;
       }
    }
-   else // SELL position
+   else
    {
-      // For SELL: if currentSL <= entryPrice and > 0, it's already at or better than breakeven
       if(currentSL <= entryPrice && currentSL > 0)
       {
          if(INPUT_ENABLE_LOGGING)
@@ -7430,12 +6201,9 @@ if(!IsStopModifyEnabled())
          return;
       }
    }
-
    double newSL = NormalizeDouble(entryPrice, g_digits);
-
    double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
    double minDist = g_stopLevel * g_point;
-
    if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY)
    {
       if(currentPrice - newSL < minDist)
@@ -7446,7 +6214,6 @@ if(!IsStopModifyEnabled())
       if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && newSL - currentPrice < minDist)
          newSL = currentPrice + minDist;
    }
-
    if(g_trade.PositionModify(ticket, newSL, currentTP))
       Print("BREAKEVEN: Ticket ", ticket, " SL moved to ", newSL);
 }
@@ -7459,18 +6226,14 @@ void ManageTrailingStops()
       return;
    if(!IsStopModifyEnabled())
       return;
-
    static datetime lastTrailCheck = 0;
    if(TimeCurrent() - lastTrailCheck < 5) return; // throttle to every 5?sec
    lastTrailCheck = TimeCurrent();
-
    double atr[];
    if(CopyBuffer(g_hATR_M1, 0, 0, 1, atr) < 1 || atr[0] <= 0)
       return;
-
    double trailDistance = atr[0] * INPUT_TRAIL_ATR_MULTIPLIER +
                           g_adaptive.trailAdjustPoints * g_point;
-
    int total = PositionsTotal();
    for(int i = 0; i < total; i++)
    {
@@ -7478,40 +6241,32 @@ void ManageTrailingStops()
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
       if(ShouldSkipStopAdjustmentsForTicket(ticket)) continue;
-
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double currentSL = PositionGetDouble(POSITION_SL);
       double currentTP = PositionGetDouble(POSITION_TP);
       int posType = (int)PositionGetInteger(POSITION_TYPE);
-
       double profit = (posType == POSITION_TYPE_BUY) ?
                       currentPrice - entryPrice :
                       entryPrice - currentPrice;
-
       if(profit < INPUT_TRAIL_ACTIVATION_POINTS * g_point)
          continue;
-
       double newSL;
       if(posType == POSITION_TYPE_BUY)
          newSL = currentPrice - trailDistance;
       else
          newSL = currentPrice + trailDistance;
-
       newSL = NormalizeDouble(newSL, g_digits);
-
       double minDist = g_stopLevel * g_point;
       if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY && currentPrice - newSL < minDist)
          continue;
       if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_SELL && newSL - currentPrice < minDist)
          continue;
-
       bool shouldMove = false;
       if(posType == POSITION_TYPE_BUY && newSL > currentSL + INPUT_TRAIL_STEP_POINTS * g_point)
          shouldMove = true;
       else if(posType == POSITION_TYPE_SELL && newSL < currentSL - INPUT_TRAIL_STEP_POINTS * g_point)
          shouldMove = true;
-
       if(shouldMove && g_trade.PositionModify(ticket, newSL, currentTP))
          Print("TRAILING: Ticket ", ticket, " SL moved from ", currentSL, " to ", newSL);
    }
@@ -7521,11 +6276,9 @@ bool CanModifyPosition(ulong ticket)
 {
    if(!PositionSelectByTicket(ticket)) return false;
    if(!INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON) return true; // diagnostics bypass
-
    double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
    double currentSL = PositionGetDouble(POSITION_SL);
    int posType = (int)PositionGetInteger(POSITION_TYPE);
-
    double freezeDist = g_freezeLevel * g_point;
    if(freezeDist > 0)
    {
@@ -7543,7 +6296,6 @@ bool HasEnoughMargin(double lots, double price, ENUM_ORDER_TYPE orderType)
    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    return (marginRequired <= freeMargin * 0.95);
 }
-
 //+------------------------------------------------------------------+
 //| SECTION 25: RECOVERY MODE DISPATCHER (Part 9)                    |
 //+------------------------------------------------------------------+
@@ -7566,70 +6318,52 @@ void MonitorRecoveryMartingaleMode()
    g_activeRecoverySubtype = SUBTYPE_RECOVERY;
    MonitorRecoveryAveraging();
 }
-
 //| SECTION 25: RECOVERY AVERAGING SYSTEM (Part 9)                   |
 //+------------------------------------------------------------------+
 void MonitorRecoveryAveraging()
 {
    double threat = CalculateMarketThreat();
    ENUM_THREAT_ZONE zone = GetThreatZone(threat);
-
    double baseTriggerDepth = INPUT_RECOVERY_TRIGGER_DEPTH;
    double triggerDepth = baseTriggerDepth;
-
    if(zone == THREAT_RED)
       triggerDepth -= 10.0;
    else if(zone == THREAT_ORANGE)
       triggerDepth -= 5.0;
-
    if(threat >= 70.0)
       triggerDepth -= 5.0;
-
    triggerDepth = MathMax(5.0, MathMin(95.0, triggerDepth));
-
    for(int i = 0; i < g_positionCount; i++)
    {
       if(!g_positions[i].isActive) continue;
       if(g_positions[i].recoveryCount >= INPUT_MAX_RECOVERY_PER_POS) continue;
-
       // Skip non-main positions
       if(StringFind(g_positions[i].comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
       if(StringFind(g_positions[i].comment, COMMENT_AVG_PREFIX)      >= 0) continue;
-
       if(threat < INPUT_RECOVERY_THREAT_MIN) continue;
-
       if(g_positions[i].lastRecoveryTime > 0 &&
          TimeCurrent() - g_positions[i].lastRecoveryTime < INPUT_RECOVERY_COOLDOWN_SECONDS)
          continue;
-
       ulong ticket = g_positions[i].ticket;
-
       if(!PositionSelectByTicket(ticket))
       {
          g_positions[i].isActive = false;
          continue;
       }
-
       double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
       double slPrice = PositionGetDouble(POSITION_SL);
       int posType = (int)PositionGetInteger(POSITION_TYPE);
-
       if(slPrice == 0) continue;
-
       double slDist = MathAbs(entryPrice - slPrice);
       if(slDist <= 0) continue;
-
       double loss = 0;
       if(posType == POSITION_TYPE_BUY)
          loss = entryPrice - currentPrice;
       else
          loss = currentPrice - entryPrice;
-
       if(loss <= 0) continue;
-
       double depthPct = (loss / slDist) * 100.0;
-
       if(depthPct >= triggerDepth && depthPct <= 70)
       {
          double lotRatio = INPUT_RECOVERY_LOT_RATIO_MOD;
@@ -7637,7 +6371,6 @@ void MonitorRecoveryAveraging()
             lotRatio = INPUT_RECOVERY_LOT_RATIO_SAFE;
          else if(threat >= 70)
             lotRatio = INPUT_RECOVERY_LOT_RATIO_HIGH;
-
          if(INPUT_ENABLE_LOGGING)
          {
             Print("RECOVERY CHECK: ticket=", ticket,
@@ -7646,7 +6379,6 @@ void MonitorRecoveryAveraging()
                   " lotRatio=", DoubleToString(lotRatio, 2),
                   " threat=", DoubleToString(threat, 2));
          }
-
          double recLots = g_positions[i].originalLots * lotRatio;
  double validatedRecoveryLot = 0.0;
          string recoveryReason = "";
@@ -7660,9 +6392,7 @@ void MonitorRecoveryAveraging()
                   " | reason=", recoveryReason);
             continue;
          }
-
                  PlaceRecoveryOrder(ticket, posType, validatedRecoveryLot, slPrice, entryPrice);
-
          g_positions[i].recoveryCount++;
          g_positions[i].lastRecoveryTime = TimeCurrent();
       }
@@ -7683,17 +6413,14 @@ bool GetRecoveryBasketMetrics(ulong parentTicket, int parentType,
 {
    double totalLots = 0.0;
    double weightedPrice = 0.0;
-
    int total = PositionsTotal();
    for(int i = 0; i < total; i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) continue;
-
       int posType = (int)PositionGetInteger(POSITION_TYPE);
       if(posType != parentType) continue;
-
       string comment = PositionGetString(POSITION_COMMENT);
       bool includePos = (ticket == parentTicket);
       if(!includePos)
@@ -7703,19 +6430,15 @@ bool GetRecoveryBasketMetrics(ulong parentTicket, int parentType,
                        StringFind(comment, COMMENT_RECOVERY_PREFIX + parentTag) >= 0);
       }
       if(!includePos) continue;
-
       double lots = PositionGetDouble(POSITION_VOLUME);
       double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       totalLots += lots;
       weightedPrice += lots * openPrice;
    }
-
    totalLots += plannedRecoveryLots;
    weightedPrice += plannedRecoveryLots * plannedRecoveryPrice;
-
    if(totalLots <= 0.0)
       return false;
-
    combinedLots = totalLots;
    combinedBreakEven = weightedPrice / totalLots;
    return true;
@@ -7730,122 +6453,34 @@ bool BuildValidRecoveryTP(int parentType, double price, double sl,
    double riskDistance = MathAbs(combinedBreakEven - sl);
    double scaledDistance = riskDistance * MathMax(0.0, INPUT_RECOVERY_TP_TARGET_MULTIPLIER);
    double desiredMove = MathMax(minProfitBuffer, scaledDistance);
-
    double minDist = (double)MathMax(g_stopLevel, g_freezeLevel) * g_point;
    desiredMove = MathMax(desiredMove, minDist + (2.0 * g_point));
-
    double tp = (parentType == POSITION_TYPE_BUY) ?
                (combinedBreakEven + desiredMove) :
                (combinedBreakEven - desiredMove);
-
    if(parentType == POSITION_TYPE_BUY && tp <= price)
       tp = price + desiredMove;
    if(parentType == POSITION_TYPE_SELL && tp >= price)
       tp = price - desiredMove;
-
    targetTP = NormalizeDouble(tp, g_digits);
-
    if(parentType == POSITION_TYPE_BUY && (targetTP - price) < minDist)
       targetTP = NormalizeDouble(price + minDist + (2.0 * g_point), g_digits);
    if(parentType == POSITION_TYPE_SELL && (price - targetTP) < minDist)
       targetTP = NormalizeDouble(price - minDist - (2.0 * g_point), g_digits);
-
    return true;
 }
 //+------------------------------------------------------------------+
+// V8.0: PlaceRecoveryOrder REMOVED. No recovery system.
 void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
                         double parentSL, double parentEntry)
 {
-   ENUM_ORDER_TYPE orderType = (parentType == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double price = (orderType == ORDER_TYPE_BUY) ?
-                  SymbolInfoDouble(_Symbol, SYMBOL_ASK) :
-                  SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-   double sl = NormalizeDouble(parentSL, g_digits);
-   double combinedBE = parentEntry;
-   double combinedLots = lots;
-   if(!GetRecoveryBasketMetrics(parentTicket, parentType, lots, price, combinedBE, combinedLots))
-   {
-      Print("RECOVERY ORDER SKIPPED: unable to calculate combined basket break-even for parent ", parentTicket);
-      return;
-   }
-
-   double tp = 0.0;
-   if(!BuildValidRecoveryTP(parentType, price, sl, combinedBE, tp))
-   {
-      Print("RECOVERY ORDER SKIPPED: invalid TP model for parent ", parentTicket);
-      return;
-   }
-
-   int mainCount = CountMainPositionsFromBroker();
-   int recoveryCount = CountRecoveryPositions();
-   if(mainCount >= INPUT_MAX_CONCURRENT_TRADES) return;
-   if(recoveryCount >= INPUT_MAX_CONCURRENT_RECOVERY_TRADES) return;
-   if(INPUT_GATE_DAILY_LOSS_ON && g_daily.dayStartBalance > 0.0)
-   {
-      double currentDailyLossPercent = (g_daily.lossToday / g_daily.dayStartBalance) * 100.0;
-      if(currentDailyLossPercent >= INPUT_DAILY_LOSS_LIMIT_PERCENT) return;
-   }
-   if(!HasEnoughMargin(lots, price, orderType)) return;
-
-   string comment = g_activeRecoveryPrefix + IntegerToString((int)parentTicket);
-
-    g_trade.SetTypeFilling(g_selectedFillingMode);
-   g_trade.SetExpertMagicNumber(BuildMagicForSubtype(g_activeRecoverySubtype));
-
-   if(g_trade.PositionOpen(_Symbol, orderType, lots, price, sl, tp, comment))
-   {
-      Print("RECOVERY ORDER: Parent ", parentTicket,
-            " | Type: ", (orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"),
-            " | Lots: ", DoubleToString(lots, 2),
-            " | CombinedLots: ", DoubleToString(combinedLots, 2),
-            " | BasketBE: ", DoubleToString(combinedBE, g_digits),
-            " | SL: ", DoubleToString(sl, g_digits),
-            " | TP: ", DoubleToString(tp, g_digits));
-   }
-   else
-   {
-      Print("RECOVERY ORDER FAILED: ", g_trade.ResultRetcode(),
-            " - ", g_trade.ResultComment());
-   }
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
+// V8.0: CheckRecoveryTimeouts REMOVED. No recovery system.
 void CheckRecoveryTimeouts()
 {
-   if(!IsCloseEnabled() || !INPUT_CLOSE_RECOVERY_TIMEOUT_ON)
-      return;
-   static bool loggedDisabled = false;
-   if(!g_effCloseRecoveryTimeout)
-   {
-      if(!loggedDisabled)
-      {
-         Print("RECOVERY TIMEOUT close disabled (INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT=OFF)");
-         loggedDisabled = true;
-      }
-      return;
-   }
-   int total = PositionsTotal();
-   for(int i = total - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!IsOurPosition(ticket)) continue;
-
-      string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, COMMENT_RECOVERY_PREFIX) < 0 &&
-         StringFind(comment, COMMENT_AVG_PREFIX)      < 0)
-         continue;
-
-      datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
-      int ageMinutes = (int)((TimeCurrent() - openTime) / 60);
-
-      if(ageMinutes >= INPUT_RECOVERY_TIMEOUT_MINUTES)
-      {
-         if(g_trade.PositionClose(ticket))
-            Print("RECOVERY TIMEOUT: Closed ticket ", ticket,
-                  " after ", ageMinutes, " minutes");
-      }
-   }
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
 //| SECTION 26: POSITION SYNC & HISTORY PROCESSING                   |
@@ -7855,12 +6490,10 @@ void SyncPositionStates()
    g_syncMissingCount = 0;
    g_syncNewCount = 0;
    g_syncDuplicateCount = 0;
-
    // 1) Mark tracked positions inactive if no longer present, and refresh live fields
    for(int i = 0; i < g_positionCount; i++)
    {
       if(!g_positions[i].isActive) continue;
-
       ulong ticket = g_positions[i].ticket;
       if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket))
       {
@@ -7868,12 +6501,10 @@ void SyncPositionStates()
          g_positions[i].isActive = false;
          continue;
       }
-
       g_positions[i].currentLots = PositionGetDouble(POSITION_VOLUME);
       g_positions[i].slPrice = PositionGetDouble(POSITION_SL);
       g_positions[i].tpPrice = PositionGetDouble(POSITION_TP);
    }
-
    // 2) Track any new broker positions (e.g., pending stop activation / terminal restart / manual sync gaps)
    int total = PositionsTotal();
    for(int p = 0; p < total; p++)
@@ -7881,7 +6512,6 @@ void SyncPositionStates()
       ulong ticket = PositionGetTicket(p);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-
       int dupCount = 0;
       bool alreadyTracked = false;
       for(int i = 0; i < g_positionCount; i++)
@@ -7897,18 +6527,14 @@ void SyncPositionStates()
          g_syncDuplicateCount += (dupCount - 1);
          if(INPUT_ENABLE_LOGGING) Print("SYNC DUPLICATE: ticket tracked multiple times: ", ticket, " | dupCount=", dupCount);
       }
-
       if(alreadyTracked) continue;
-
       if(g_positionCount >= MAX_POSITIONS)
       {
          Print("WARNING: Cannot auto-track broker position, tracking array full: ", ticket);
          continue;
       }
-
       int idx = g_positionCount;
       g_positionCount++;
-
       g_positions[idx].ticket = ticket;
       g_positions[idx].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       g_positions[idx].slPrice = PositionGetDouble(POSITION_SL);
@@ -7936,13 +6562,10 @@ void SyncPositionStates()
       g_positions[idx].isActive = true;
       g_positions[idx].maxProfit = 0;
       g_positions[idx].maxLoss = 0;
-
       g_syncNewCount++;
       Print("SYNC NEW: Auto-tracked broker position Ticket=", ticket,
             " | Comment=", g_positions[idx].comment);
    }
-
-
    if(INPUT_ENABLE_LOGGING && (g_syncMissingCount > 0 || g_syncNewCount > 0 || g_syncDuplicateCount > 0))
       Print("SYNC SUMMARY: missing=", g_syncMissingCount, " new=", g_syncNewCount, " duplicates=", g_syncDuplicateCount,
             " | tracked=", g_positionCount);
@@ -7952,17 +6575,14 @@ void SyncExistingPositions()
 {
    // FIXED: Reset count first (already done in OnInit)
    g_positionCount = 0;
-
    int total = PositionsTotal();
    for(int i = 0; i < total && g_positionCount < MAX_POSITIONS; i++)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(!IsOurPosition(ticket)) continue;
-
       int idx = g_positionCount;
       g_positionCount++;
-
       g_positions[idx].ticket = ticket;
       g_positions[idx].entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
       g_positions[idx].slPrice = PositionGetDouble(POSITION_SL);
@@ -7990,17 +6610,14 @@ void SyncExistingPositions()
       g_positions[idx].isActive = true;
       g_positions[idx].maxProfit = 0;
       g_positions[idx].maxLoss = 0;
-
       Print("SYNCED EXISTING: Ticket ", ticket);
    }
-
    Print("Synced ", g_positionCount, " existing positions");
 }
 //+------------------------------------------------------------------+
 void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, datetime closeTime)
 {
    if(!INPUT_ENABLE_FINGERPRINT) return;
-
    string fpId = "";
    string combination = "";
    int session = GetSessionFromTime(closeTime);
@@ -8008,7 +6625,6 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
    TimeToStruct(closeTime, dt);
    int dayOfWeek = dt.day_of_week;
    ENUM_MARKET_REGIME regime = g_currentRegime;
-
    // Prefer live/tracked context first, then recently-closed archive fallback.
    PositionState ctx;
    if(FindPositionContext(positionId, ctx))
@@ -8016,7 +6632,6 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
       fpId = ctx.fingerprintId;
       combination = ctx.signalCombination;
    }
-
    // Fallback: latest training record for this position
    if(StringLen(fpId) == 0 || StringLen(combination) == 0)
    {
@@ -8033,10 +6648,8 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
          }
       }
    }
-
    if(StringLen(fpId) == 0)
       fpId = combination + "_S" + IntegerToString(session) + "_D" + IntegerToString(dayOfWeek) + "_R" + IntegerToString((int)regime);
-
    int idx = -1;
    for(int i = 0; i < g_fingerprintCount; i++)
    {
@@ -8046,7 +6659,6 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
          break;
       }
    }
-
    if(idx < 0)
    {
       if(g_fingerprintCount >= MAX_FINGERPRINTS)
@@ -8055,7 +6667,6 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
             Print("FINGERPRINT UPDATE SKIPPED: storage full | id=", fpId);
          return;
       }
-
       idx = g_fingerprintCount;
       g_fingerprintCount++;
       ZeroMemory(g_fingerprints[idx]);
@@ -8066,11 +6677,9 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
       g_fingerprints[idx].regime = regime;
       g_fingerprints[idx].decayWeight = 1.0;
    }
-
    // Recency/decay update
    g_fingerprints[idx].decayWeight = MathMax(0.1, MathMin(1.0,
       g_fingerprints[idx].decayWeight * INPUT_LEARNING_DECAY + (1.0 - INPUT_LEARNING_DECAY)));
-
    g_fingerprints[idx].totalOccurrences++;
    if(isWin)
    {
@@ -8082,29 +6691,22 @@ void UpdateFingerprintOnClose(ulong positionId, double netProfit, bool isWin, da
       g_fingerprints[idx].losses++;
       g_fingerprints[idx].totalLoss += MathAbs(netProfit);
    }
-
    int trades = g_fingerprints[idx].wins + g_fingerprints[idx].losses;
    if(trades > 0)
       g_fingerprints[idx].winRate = (double)g_fingerprints[idx].wins / trades;
-
    g_fingerprints[idx].avgProfit = (g_fingerprints[idx].wins > 0) ?
       g_fingerprints[idx].totalProfit / g_fingerprints[idx].wins : 0.0;
    g_fingerprints[idx].avgLoss = (g_fingerprints[idx].losses > 0) ?
       g_fingerprints[idx].totalLoss / g_fingerprints[idx].losses : 0.0;
-
    g_fingerprints[idx].profitFactor = (g_fingerprints[idx].totalLoss > 0) ?
       g_fingerprints[idx].totalProfit / g_fingerprints[idx].totalLoss :
       (g_fingerprints[idx].totalProfit > 0 ? 10.0 : 0.0);
-
    double pfScore = MathMin(g_fingerprints[idx].profitFactor, 3.0) / 3.0; // 0..1
    g_fingerprints[idx].strengthScore = (g_fingerprints[idx].winRate * 70.0 + pfScore * 30.0) * g_fingerprints[idx].decayWeight;
    g_fingerprints[idx].strengthScore = MathMax(0.0, MathMin(100.0, g_fingerprints[idx].strengthScore));
-
    g_fingerprints[idx].confidenceMultiplier = 0.7 + (g_fingerprints[idx].strengthScore / 100.0) * 0.6;
    g_fingerprints[idx].confidenceMultiplier = MathMax(0.5, MathMin(1.5, g_fingerprints[idx].confidenceMultiplier));
-
    g_fingerprints[idx].lastSeen = closeTime;
-
    if(INPUT_ENABLE_LOGGING)
       Print("FINGERPRINT UPDATED: id=", g_fingerprints[idx].id,
             " | trades=", g_fingerprints[idx].totalOccurrences,
@@ -8121,13 +6723,11 @@ int FindPositionCloseAccumulator(ulong positionId)
          return i;
    return -1;
 }
-
 int EnsurePositionCloseAccumulator(ulong positionId)
 {
    int idx = FindPositionCloseAccumulator(positionId);
    if(idx >= 0)
       return idx;
-
    idx = g_positionCloseAccumulatorCount;
    g_positionCloseAccumulatorCount++;
    ArrayResize(g_positionCloseAccumulators, g_positionCloseAccumulatorCount);
@@ -8135,27 +6735,21 @@ int EnsurePositionCloseAccumulator(ulong positionId)
    g_positionCloseAccumulators[idx].positionId = positionId;
    return idx;
 }
-
 void RemovePositionCloseAccumulator(int idx)
 {
    if(idx < 0 || idx >= g_positionCloseAccumulatorCount)
       return;
-
    for(int i = idx; i < g_positionCloseAccumulatorCount - 1; i++)
       g_positionCloseAccumulators[i] = g_positionCloseAccumulators[i + 1];
-
    g_positionCloseAccumulatorCount--;
    ArrayResize(g_positionCloseAccumulators, g_positionCloseAccumulatorCount);
 }
-
 bool GetPositionHistoryVolumes(ulong positionId, double &openedVolume, double &closedVolume)
 {
    openedVolume = 0.0;
    closedVolume = 0.0;
-
    if(!HistorySelectByPosition(positionId))
       return false;
-
    int total = HistoryDealsTotal();
    for(int i = 0; i < total; i++)
    {
@@ -8163,25 +6757,20 @@ bool GetPositionHistoryVolumes(ulong positionId, double &openedVolume, double &c
       if(deal == 0) continue;
       if(HistoryDealGetString(deal, DEAL_SYMBOL) != _Symbol) continue;
       if(!IsOurMagic(HistoryDealGetInteger(deal, DEAL_MAGIC))) continue;
-
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(deal, DEAL_ENTRY);
       double vol = HistoryDealGetDouble(deal, DEAL_VOLUME);
       if(entry == DEAL_ENTRY_IN || entry == DEAL_ENTRY_INOUT) openedVolume += vol;
       if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT) closedVolume += vol;
    }
-
    return true;
 }
-
 bool IsPositionTerminalClose(ulong positionId, double &remainingVolume, bool &terminalByHistory)
 {
    remainingVolume = 0.0;
    terminalByHistory = false;
-
    bool stillOpen = PositionSelectByTicket(positionId);
    if(stillOpen)
       remainingVolume = PositionGetDouble(POSITION_VOLUME);
-
    double opened = 0.0;
    double closed = 0.0;
    bool historyOk = GetPositionHistoryVolumes(positionId, opened, closed);
@@ -8190,21 +6779,17 @@ bool IsPositionTerminalClose(ulong positionId, double &remainingVolume, bool &te
       double epsilon = MathMax(0.0000001, g_lotStep * 0.5);
       terminalByHistory = (closed + epsilon >= opened);
    }
-
    return ((!stillOpen && remainingVolume <= 0.0) || terminalByHistory);
 }
-
 ENUM_MARKOV_STATE ClassifyMarkovStateFromR(double normalizedR)
 {
    if(normalizedR > INPUT_MARKOV_WIN_R) return MARKOV_WIN;
    if(normalizedR < INPUT_MARKOV_LOSS_R) return MARKOV_LOSS;
    return MARKOV_EVEN;
 }
-
 void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetime closeTime, double finalNetProfit, bool terminalByHistory)
 {
    bool isWin = (finalNetProfit > 0.0);
-
    if(isWin)
    {
       g_consecutiveWins++;
@@ -8232,24 +6817,18 @@ void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetim
       g_daily.lossToday += MathAbs(finalNetProfit);
       g_daily.realizedFinalPositionPnlToday += finalNetProfit;
    }
-
    double entryPrice = 0.0, slDistance = 0.0, lot = 0.0, tickValue = 0.0, riskBasis = 0.0, normalizedReward = finalNetProfit;
    ComputeNormalizedRLReward(positionId, finalNetProfit, normalizedReward, entryPrice, slDistance, lot, tickValue, riskBasis);
-
    if(INPUT_ENABLE_MARKOV && INPUT_MARKOV_UPDATE_ON)
       UpdateMarkovTransition(g_lastMarkovState, ClassifyMarkovStateFromR(normalizedReward));
-
    if(INPUT_ENABLE_RL)
       if(INPUT_RL_LEARNING_ON)
          UpdateRLFromTrade(positionId, INPUT_RL_USE_RAW_REWARD ? finalNetProfit : normalizedReward);
-
    bool allowMLRecord = INPUT_ENABLE_ML && INPUT_ML_RECORD_ON;
    bool allowComboRecord = INPUT_ENABLE_COMBINATION_ADAPTIVE && INPUT_COMBO_ADAPTIVE_RECORD_ON;
    if(allowMLRecord || allowComboRecord)
       RecordTrainingData(positionId, dealTicket, finalNetProfit, isWin);
-
    UpdateFingerprintOnClose(positionId, finalNetProfit, isWin, closeTime);
-
    Print("CLOSED POSITION FINAL: DealTicket ", dealTicket,
          " | PositionTicket: ", positionId,
          " | P&L: ", finalNetProfit,
@@ -8258,48 +6837,38 @@ void ApplyFinalClosedPositionOutcome(ulong positionId, ulong dealTicket, datetim
          " | Win: ", isWin, " | ConsWin: ", g_consecutiveWins,
          " | ConsLoss: ", g_consecutiveLosses);
 }
-
 void ProcessClosedPositions()
 {
    datetime now = TimeCurrent();
    if(g_lastHistoryProcessTime > 0 && (now - g_lastHistoryProcessTime) < INPUT_HISTORY_PROCESS_INTERVAL_SECONDS)
       return;
    g_lastHistoryProcessTime = now;
-
    int safetyMargin = MathMax(0, INPUT_HISTORY_SAFETY_MARGIN_SECONDS);
    datetime fromTime = (g_lastProcessedDealTime > 0) ? g_lastProcessedDealTime - safetyMargin : now - (datetime)(MathMax(1, INPUT_HISTORY_BOOTSTRAP_DAYS) * 86400);
    if(fromTime < 0) fromTime = 0;
    if(!HistorySelect(fromTime, now)) return;
-
    int dealsTotal = HistoryDealsTotal();
    datetime maxProcessedDealTime = g_lastProcessedDealTime;
    ulong maxProcessedDealTicketAtTime = g_lastProcessedDealTicket;
-
    for(int i = 0; i < dealsTotal; i++)
    {
       ulong dealTicket = HistoryDealGetTicket(i);
       if(dealTicket == 0) continue;
       if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
       if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC))) continue;
-
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
       if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_INOUT) continue;
-
       datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
       if(closeTime < g_lastProcessedDealTime) continue;
       if(closeTime == g_lastProcessedDealTime && dealTicket <= g_lastProcessedDealTicket) continue;
-
       ulong posId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
       if(posId == 0) continue;
-
       double netProfit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT) + HistoryDealGetDouble(dealTicket, DEAL_SWAP) + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
       double dealVolume = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
-
       g_daily.closedDealsToday++;
       g_daily.realizedDealPnlToday += netProfit;
       g_closedDealsProcessedTotal++;
       RecordClosedDealData(dealTicket, netProfit);
-
       int accIdx = EnsurePositionCloseAccumulator(posId);
       g_positionCloseAccumulators[accIdx].cumulativeNetProfit += netProfit;
       g_positionCloseAccumulators[accIdx].closedVolume += dealVolume;
@@ -8307,19 +6876,16 @@ void ProcessClosedPositions()
       g_positionCloseAccumulators[accIdx].lastCloseTime = closeTime;
       if(g_positionCloseAccumulators[accIdx].firstCloseTime == 0)
          g_positionCloseAccumulators[accIdx].firstCloseTime = closeTime;
-
       double openedVol = 0.0, closedVol = 0.0;
       if(GetPositionHistoryVolumes(posId, openedVol, closedVol))
       {
          g_positionCloseAccumulators[accIdx].openedVolume = openedVol;
          g_positionCloseAccumulators[accIdx].closedVolume = closedVol;
       }
-
       double remainingVolume = 0.0;
       bool terminalByHistory = false;
       bool terminal = IsPositionTerminalClose(posId, remainingVolume, terminalByHistory);
       g_positionCloseAccumulators[accIdx].terminalByHistory = terminalByHistory;
-
       if(!terminal)
       {
          if(INPUT_ENABLE_LOGGING)
@@ -8334,7 +6900,6 @@ void ProcessClosedPositions()
          ApplyFinalClosedPositionOutcome(posId, dealTicket, closeTime, g_positionCloseAccumulators[accIdx].cumulativeNetProfit, g_positionCloseAccumulators[accIdx].terminalByHistory);
          RemovePositionCloseAccumulator(accIdx);
       }
-
       if(closeTime > maxProcessedDealTime)
       {
          maxProcessedDealTime = closeTime;
@@ -8345,7 +6910,6 @@ void ProcessClosedPositions()
          maxProcessedDealTicketAtTime = dealTicket;
       }
    }
-
    if(maxProcessedDealTime > g_lastProcessedDealTime || (maxProcessedDealTime == g_lastProcessedDealTime && maxProcessedDealTicketAtTime > g_lastProcessedDealTicket))
    {
       g_lastProcessedDealTime = maxProcessedDealTime;
@@ -8358,17 +6922,14 @@ void ProcessClosedPositions()
    }
 }
 //+------------------------------------------------------------------+
-
 void UpsertTrackedPositionFromEntryDeal(ulong positionId, ulong dealTicket)
 {
    if(positionId == 0 || dealTicket == 0)
       return;
-
    double dealPrice = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
    datetime dealTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
    if(dealPrice <= 0.0 || !MathIsValidNumber(dealPrice))
       return;
-
    int idx = -1;
    for(int i = 0; i < g_positionCount; i++)
    {
@@ -8378,12 +6939,10 @@ void UpsertTrackedPositionFromEntryDeal(ulong positionId, ulong dealTicket)
          break;
       }
    }
-
    if(idx < 0)
    {
       if(g_positionCount >= MAX_POSITIONS)
          return;
-
       idx = g_positionCount++;
       g_positions[idx].ticket = positionId;
       g_positions[idx].comment = "";
@@ -8401,11 +6960,9 @@ void UpsertTrackedPositionFromEntryDeal(ulong positionId, ulong dealTicket)
       g_positions[idx].maxLoss = 0;
       g_positions[idx].isActive = true;
    }
-
    g_positions[idx].entryPrice = dealPrice;
    if(g_positions[idx].entryTime <= 0)
       g_positions[idx].entryTime = dealTime;
-
    if(PositionSelectByTicket(positionId))
    {
       double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -8424,12 +6981,10 @@ void UpsertTrackedPositionFromEntryDeal(ulong positionId, ulong dealTicket)
       g_positions[idx].comment = PositionGetString(POSITION_COMMENT);
    }
 }
-
 void ProcessEntryDeals()
 {
    static ulong countedPositionIds[];
    static datetime countedDayStart = 0;
-
    datetime now = TimeCurrent();
    MqlDateTime dt;
    TimeToStruct(now, dt);
@@ -8440,42 +6995,33 @@ void ProcessEntryDeals()
       ArrayResize(countedPositionIds, 0);
       countedDayStart = todayStart;
    }
-
    int safetyMargin = MathMax(0, INPUT_HISTORY_SAFETY_MARGIN_SECONDS);
    datetime fromTime = (g_lastProcessedEntryDealTime > 0)
                        ? g_lastProcessedEntryDealTime - safetyMargin
                        : now - (datetime)(MathMax(1, INPUT_HISTORY_BOOTSTRAP_DAYS) * 86400);
    if(fromTime < 0) fromTime = 0;
-
    if(!HistorySelect(fromTime, now))
       return;
-
    datetime maxTime = g_lastProcessedEntryDealTime;
    ulong maxTicketAtTime = g_lastProcessedEntryDealTicket;
-
    for(int i = 0; i < HistoryDealsTotal(); i++)
    {
       ulong dealTicket = HistoryDealGetTicket(i);
       if(dealTicket == 0) continue;
       if(HistoryDealGetString(dealTicket, DEAL_SYMBOL) != _Symbol) continue;
       if(!IsOurMagic(HistoryDealGetInteger(dealTicket, DEAL_MAGIC))) continue;
-
       ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
       if(entry != DEAL_ENTRY_IN && entry != DEAL_ENTRY_INOUT)
          continue;
-
       datetime entryTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
       if(entryTime < g_lastProcessedEntryDealTime) continue;
       if(entryTime == g_lastProcessedEntryDealTime && dealTicket <= g_lastProcessedEntryDealTicket) continue;
-
       ulong orderTicket = (ulong)HistoryDealGetInteger(dealTicket, DEAL_ORDER);
       ulong positionId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
       if(orderTicket > 0 && positionId > 0)
          RemapPendingRLToPosition(orderTicket, positionId);
-
       // Pending-stop fills and market entries are normalized from broker deal/position data.
       UpsertTrackedPositionFromEntryDeal(positionId, dealTicket);
-
       bool alreadyCounted = false;
       for(int p = 0; p < ArraySize(countedPositionIds); p++)
       {
@@ -8498,14 +7044,12 @@ void ProcessEntryDeals()
                " | uniquePositionCounted=", (!alreadyCounted ? "yes" : "no"),
                " | tradesFilledToday=", g_daily.tradesPlaced,
                " | pendingPlacedToday=", g_daily.pendingOrdersPlaced);
-
       if(entryTime > maxTime || (entryTime == maxTime && dealTicket > maxTicketAtTime))
       {
          maxTime = entryTime;
          maxTicketAtTime = dealTicket;
       }
    }
-
    if(maxTime > g_lastProcessedEntryDealTime ||
       (maxTime == g_lastProcessedEntryDealTime && maxTicketAtTime > g_lastProcessedEntryDealTicket))
    {
@@ -8524,47 +7068,37 @@ int GetSessionFromTime(datetime ts)
    MqlDateTime dt;
    TimeToStruct(ts, dt);
    int hour = dt.hour;
-
    if(!IsValidHourValue(hour))
    {
       WarnInvalidSessionHour("timestamp_hour", hour);
       return -1;
    }
-
    int logicalHour = (hour - INPUT_SERVER_UTC_OFFSET_HOURS) % 24;
    if(logicalHour < 0) logicalHour += 24;
-
    // Priority: NY > London > Asian (for overlaps)
    if(INPUT_SESSION_NY_ON && IsHourInWindow(logicalHour, INPUT_NY_START, INPUT_NY_END)) return 2;
    if(INPUT_SESSION_LONDON_ON && IsHourInWindow(logicalHour, INPUT_LONDON_START, INPUT_LONDON_END)) return 1;
    if(INPUT_SESSION_ASIAN_ON && IsHourInWindow(logicalHour, INPUT_ASIAN_START, INPUT_ASIAN_END)) return 0;
-
    return -1;
 }
 //+------------------------------------------------------------------+
 ENUM_MARKET_REGIME EstimateRegimeAtTime(datetime ts)
 {
    if(ts <= 0) return REGIME_UNKNOWN;
-
    int shift = iBarShift(_Symbol, PERIOD_H1, ts, true);
    if(shift < 0) shift = iBarShift(_Symbol, PERIOD_H1, ts, false);
    if(shift < 0) return REGIME_UNKNOWN;
-
    double adx[];
    if(CopyBuffer(g_hADX_H1, 0, shift, 1, adx) < 1) return REGIME_UNKNOWN;
-
    double atrNow[];
    if(CopyBuffer(g_hATR_H1, 0, shift, 1, atrNow) < 1) return REGIME_UNKNOWN;
-
    double atrHist[];
    int avgLen = 30;
    if(CopyBuffer(g_hATR_H1, 0, shift + 1, avgLen, atrHist) < avgLen) return REGIME_UNKNOWN;
-
    double atrAvg = 0.0;
    for(int i = 0; i < avgLen; i++) atrAvg += atrHist[i];
    atrAvg /= avgLen;
    if(atrAvg <= 0.0) return REGIME_UNKNOWN;
-
    double volRatio = atrNow[0] / atrAvg;
    if(volRatio >= 1.5) return REGIME_VOLATILE;
    if(volRatio < 0.7) return REGIME_QUIET;
@@ -8578,7 +7112,6 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
    string symbol = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
    long magic = HistoryDealGetInteger(dealTicket, DEAL_MAGIC);
    string filename = symbol + "_" + IntegerToString((int)magic) + "_closed_deals.csv";
-
    ulong posId = (ulong)HistoryDealGetInteger(dealTicket, DEAL_POSITION_ID);
    datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
    ENUM_DEAL_TYPE dealType = (ENUM_DEAL_TYPE)HistoryDealGetInteger(dealTicket, DEAL_TYPE);
@@ -8590,7 +7123,6 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
    int mtfScore = 0;
    datetime sessionRefTime = closeTime;
    ENUM_MARKET_REGIME entryRegime = REGIME_UNKNOWN;
-
    PositionState ctx;
    if(FindPositionContext(posId, ctx))
    {
@@ -8619,7 +7151,6 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
             if(t == DEAL_TYPE_SELL) { direction = -1; directionConfidence = "MED"; break; }
          }
       }
-
       if(direction == 0)
       {
          if(dealType == DEAL_TYPE_SELL || dealType == DEAL_TYPE_BUY_CANCELED) direction = 1;
@@ -8627,21 +7158,17 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
          directionConfidence = "LOW";
       }
    }
-
    int session = GetSessionFromTime(sessionRefTime);
    ENUM_MARKET_REGIME closeRegimeEstimate = EstimateRegimeAtTime(closeTime);
-
    bool newFile = !FileIsExist(filename);
    int handle = FileOpen(filename, FILE_READ | FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-
    if(newFile)
    {
       FileWrite(handle,
                 "Symbol", "Magic", "DealTicket", "PositionID", "Direction", "DirectionConfidence", "NetProfit",
                 "SignalCombination", "Confidence", "Threat", "MTF", "Session", "EntryRegime", "CloseRegimeEstimate", "Timestamp");
    }
-
    FileSeek(handle, 0, SEEK_END);
    FileWrite(handle,
       symbol,
@@ -8659,10 +7186,8 @@ void RecordClosedDealData(ulong dealTicket, double netProfit)
       (int)entryRegime,
       (int)closeRegimeEstimate,
       closeTime);
-
    FileClose(handle);
 }
-
 //+------------------------------------------------------------------+
 void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bool isWin)
 {
@@ -8673,20 +7198,16 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
          g_trainingData[i] = g_trainingData[i + 1];
       g_trainingDataCount = INPUT_MAX_TRAINING_DATA - 1;
    }
-
    int idx = g_trainingDataCount;
    g_trainingDataCount++;
-
    datetime closeTime = (datetime)HistoryDealGetInteger(dealTicket, DEAL_TIME);
    if(closeTime <= 0) closeTime = TimeCurrent();
-
    g_trainingData[idx].ticket = positionId;
    g_trainingData[idx].closeTime = closeTime; // Keep closeTime from history deal
    g_trainingData[idx].profitLoss = netProfit;
    g_trainingData[idx].isWin = isWin;
    g_trainingData[idx].exitType = isWin ? "WIN_CLOSE" : "LOSS_CLOSE";
    g_trainingData[idx].closeSession = GetSessionFromTime(closeTime);
-
    MqlDateTime dt;
    TimeToStruct(closeTime, dt);
    g_trainingData[idx].closeDayOfWeek = dt.day_of_week;
@@ -8695,7 +7216,6 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
    g_trainingData[idx].entrySession = g_trainingData[idx].closeSession;
    g_trainingData[idx].entryDayOfWeek = g_trainingData[idx].closeDayOfWeek;
    g_trainingData[idx].entryRegime = g_trainingData[idx].closeRegime;
-
    // Find matching position context (live first, then recently-closed archive)
    PositionState ctx;
    if(FindPositionContext(positionId, ctx))
@@ -8722,14 +7242,12 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
       }
       g_trainingData[idx].holdingMinutes = (int)MathMax((closeTime - ctx.entryTime) / 60, 0);
    }
-
    // Incremental update on append; periodic full rebuild for consistency.
    UpdateCombinationStatsIncremental(g_trainingData[idx]);
    if((g_trainingDataCount % 200) == 0)
       RecalculateCombinationStats();
    else if(INPUT_ENABLE_TREE_FEATURE_MODULE && (g_trainingDataCount % 50) == 0)
       RebuildDecisionTreeFeatureModule();
-
    if(INPUT_ENABLE_LOGGING)
       Print("TRAINING DATA: DealTicket=", dealTicket,
             " | PositionId=", positionId,
@@ -8743,28 +7261,22 @@ void RecordTrainingData(ulong positionId, ulong dealTicket, double netProfit, bo
 void CheckAdaptiveOptimization()
 {
    if(!INPUT_ENABLE_ADAPTIVE) return;
-
    int tradesSinceOpt = g_trainingDataCount - g_adaptive.tradesAtLastOpt;
    if(tradesSinceOpt < INPUT_ADAPT_INTERVAL) return;
-
    // Also limit to once per day
    if(g_adaptive.lastOptimization > 0 &&
       TimeCurrent() - g_adaptive.lastOptimization < 86400)
       return;
-
    PerformAdaptiveOptimization();
 }
 //+------------------------------------------------------------------+
 void PerformAdaptiveOptimization()
 {
    if(g_trainingDataCount < 20) return; // need enough data
-
    int lookback = MathMin(20, g_trainingDataCount);
    int startIdx = g_trainingDataCount - lookback;
-
    int wins = 0;
    double totalProfit = 0, totalLoss = 0;
-
    for(int i = startIdx; i < g_trainingDataCount; i++)
    {
       if(g_trainingData[i].isWin)
@@ -8777,13 +7289,10 @@ void PerformAdaptiveOptimization()
          totalLoss += MathAbs(g_trainingData[i].profitLoss);
       }
    }
-
    double winRate = (double)wins / lookback;
    double profitFactor = (totalLoss > 0) ? totalProfit / totalLoss :
                          (totalProfit > 0 ? 10.0 : 0);
-
    Print("ADAPTIVE OPTIMIZATION: WR=", winRate, " PF=", profitFactor);
-
    const double baselineLotMultiplier = 1.0;
    const double baselineThreatMultiplier = 1.0;
    const double baselineMinConf = INPUT_MIN_CONFIDENCE;
@@ -8791,11 +7300,9 @@ void PerformAdaptiveOptimization()
    const double baselineSLAdjust = 0.0;
    const double baselineTPAdjust = 0.0;
    const double baselineTrailAdjust = 0.0;
-
    bool isUnderperform = (winRate < 0.50 || profitFactor < 1.20);
    bool isOutperform = (winRate >= 0.60 && profitFactor >= 2.0);
    bool isNeutral = (!isUnderperform && !isOutperform);
-
    if(isUnderperform)
    {
       // Underperforming: reduce risk moderately
@@ -8804,7 +7311,6 @@ void PerformAdaptiveOptimization()
       g_adaptive.threatMultiplier += 0.03;
       g_adaptive.maxPositions -= 1;
       g_adaptive.minConfThreshold += 2.0;
-
       Print("ADAPTIVE: Underperforming - reducing risk moderately");
    }
    else if(isNeutral)
@@ -8819,7 +7325,6 @@ void PerformAdaptiveOptimization()
       int posDelta = baselineMaxPositions - g_adaptive.maxPositions;
       if(posDelta != 0)
          g_adaptive.maxPositions += (posDelta > 0 ? 1 : -1);
-
       Print("ADAPTIVE: Neutral - reverting gradually toward baseline");
    }
    else if(isOutperform)
@@ -8831,10 +7336,8 @@ void PerformAdaptiveOptimization()
          g_adaptive.maxPositions += 1;
       g_adaptive.slAdjustPoints += (baselineSLAdjust - g_adaptive.slAdjustPoints) * 0.35;
       g_adaptive.minConfThreshold += (baselineMinConf - g_adaptive.minConfThreshold) * 0.15;
-
       Print("ADAPTIVE: Outperforming - controlled expansion enabled");
    }
-
    // Safety clamps for adaptive parameters
    g_adaptive.lotMultiplier = MathMax(0.50, MathMin(g_adaptive.lotMultiplier, 1.50));
    g_adaptive.slAdjustPoints = MathMax(-30.0, MathMin(g_adaptive.slAdjustPoints, 30.0));
@@ -8844,7 +7347,6 @@ void PerformAdaptiveOptimization()
    g_adaptive.minConfThreshold = MathMax(20.0, MathMin(g_adaptive.minConfThreshold, 85.0));
   int adaptiveMaxCap = INPUT_MAX_CONCURRENT_TRADES + (INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION ? 2 : 0);
    g_adaptive.maxPositions = (int)MathMax(1, MathMin(g_adaptive.maxPositions, adaptiveMaxCap));
-
    if(INPUT_ENABLE_LOGGING)
       Print("ADAPTIVE BAND RESULT: under=", (isUnderperform ? "true" : "false"),
             " neutral=", (isNeutral ? "true" : "false"),
@@ -8856,7 +7358,6 @@ void PerformAdaptiveOptimization()
             " | threatMul=", DoubleToString(g_adaptive.threatMultiplier, 3),
             " | minConf=", DoubleToString(g_adaptive.minConfThreshold, 2),
             " | maxPos=", g_adaptive.maxPositions);
-
    g_adaptive.lastOptimization = TimeCurrent();
    g_adaptive.tradesAtLastOpt = g_trainingDataCount;
 }
@@ -8873,14 +7374,12 @@ string JsonEscape(const string &value)
    StringReplace(out, "\t", "\\t");
    return out;
 }
-
 string TruncateForLog(const string &text, int maxChars)
 {
    if(maxChars <= 0 || StringLen(text) <= maxChars)
       return text;
    return StringSubstr(text, 0, maxChars) + "...";
 }
-
 bool ExtractJsonFieldString(const string &json, const string &key, string &outValue)
 {
    int keyPos = StringFind(json, "\"" + key + "\"");
@@ -8901,7 +7400,6 @@ bool ExtractJsonFieldString(const string &json, const string &key, string &outVa
    outValue = StringSubstr(json, startPos, endPos - startPos);
    return true;
 }
-
 bool ExtractJsonFieldDouble(const string &json, const string &key, double &outValue)
 {
    int keyPos = StringFind(json, "\"" + key + "\"");
@@ -8922,7 +7420,6 @@ bool ExtractJsonFieldDouble(const string &json, const string &key, double &outVa
    outValue = StringToDouble(StringSubstr(json, startPos, endPos - startPos));
    return MathIsValidNumber(outValue);
 }
-
 bool ExtractJsonFieldBool(const string &json, const string &key, bool &outValue)
 {
    int keyPos = StringFind(json, "\"" + key + "\"");
@@ -8935,7 +7432,6 @@ bool ExtractJsonFieldBool(const string &json, const string &key, bool &outValue)
    if(startPos + 5 <= StringLen(json) && StringSubstr(json, startPos, 5) == "false") { outValue = false; return true; }
    return false;
 }
-
 bool ShouldQueryAI()
 {
    if(g_aiResponse.consecutiveErrors >= 5) return false;
@@ -8953,34 +7449,26 @@ void QueryDeepSeekAI()
          g_aiSkippedByBackoff++;
       return;
    }
-
    ulong requestStartMs = GetTickCount();
    g_lastAIQuery = TimeCurrent();
-
    double rsi[], adx[];
    CopyBuffer(g_hRSI_M1, 0, 0, 1, rsi);
    CopyBuffer(g_hADX_M1, 0, 0, 1, adx);
-
    string marketContext = StringFormat("Symbol: %s | RSI: %.1f | ADX: %.1f | Regime: %s | Threat: %.1f", _Symbol,
       ArraySize(rsi) > 0 ? rsi[0] : 50.0,
       ArraySize(adx) > 0 ? adx[0] : 20.0,
       EnumToString(g_currentRegime),
       CalculateMarketThreat());
-
    string prompt = "Analyze: " + marketContext + ". Reply JSON: {\"bias\":\"bullish/bearish/neutral\",\"confidence\":0-100,\"risk_alert\":true/false}";
    string requestBody = "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"" + JsonEscape(prompt) + "\"}],\"max_tokens\":100}";
-
    char post[];
    ArrayResize(post, StringLen(requestBody));
    StringToCharArray(requestBody, post);
-
    char result[];
    string resultHeaders;
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + INPUT_AI_API_KEY;
    int res = WebRequest("POST", INPUT_AI_URL, headers, 3000, post, result, resultHeaders);
-
    g_tickMsAILastDuration = GetTickCount() - requestStartMs;
-
    if(res == 200)
    {
       string response = CharArrayToString(result);
@@ -9017,22 +7505,18 @@ bool ParseAIResponse(const string &response)
    string bias;
    double confidence = 50.0;
    bool riskAlert = false;
-
    bool okBias = ExtractJsonFieldString(response, "bias", bias);
    bool okConf = ExtractJsonFieldDouble(response, "confidence", confidence);
    bool okRisk = ExtractJsonFieldBool(response, "risk_alert", riskAlert);
-
    if(!okBias || !okConf || !okRisk || !MathIsValidNumber(confidence) || confidence < 0.0 || confidence > 100.0)
    {
       Print("AI PARSE FAILURE: missing/invalid fields | raw=", TruncateForLog(response, 300));
       return false;
    }
-
    string normalizedBias = bias;
    StringToLower(normalizedBias);
    if(normalizedBias != "bullish" && normalizedBias != "bearish" && normalizedBias != "neutral")
       normalizedBias = "neutral";
-
    g_aiResponse.marketBias = normalizedBias;
    g_aiResponse.confidenceScore = confidence;
    g_aiResponse.riskAlert = riskAlert;
@@ -9065,12 +7549,9 @@ void CheckDailyReset()
    {
       if(INPUT_RESET_CONSEC_DAILY)
          g_consecutiveLosses = 0;
-
       ResetDailyCounters();
       g_peakEquity = AccountInfoDouble(ACCOUNT_EQUITY);
-
       CleanupInactivePositions();
-
       Print("=== NEW DAY RESET === | Daily loss baseline balance=", DoubleToString(g_daily.dayStartBalance, 2));
    }
 }
@@ -9081,7 +7562,6 @@ void UpdateAverageSpread()
    g_totalSpread += currentSpread;
    g_spreadSamples++;
    g_averageSpread = g_totalSpread / g_spreadSamples;
-
    if(g_spreadSamples > 10000)
    {
       g_totalSpread = g_averageSpread * 5000;
@@ -9089,73 +7569,23 @@ void UpdateAverageSpread()
    }
 }
 //+------------------------------------------------------------------+
+// V8.0: CloseAllPositions REMOVED. No emergency/forced liquidation.
 void CloseAllPositions(string reason)
 {
-   if(!IsCloseEnabled())
-      return;
-   if(!g_effCloseAllApi)
-   {
-      if(ShouldPrintOncePerWindow("close_all_api_disabled", 60))
-         Print("CLOSE ALL skipped (CLOSE_ALL_API_DISABLED) | reason=", reason);
-      return;
-   }
-
-   bool safeOnlyOur = true;
-   bool safeSymbolCurrent = true;
-   if(!g_effCloseAllOnlyOur || !(g_effCloseAllSymbolFilter && INPUT_CLOSE_ALL_SYMBOL_SCOPE_CURRENT))
-      Print("WARNING: CloseAllPositions broad scope request detected but safety policy forces only-our + current-symbol.");
-
-   int attempted = 0;
-   int closed = 0;
-   int failed = 0;
-   int total = PositionsTotal();
-   for(int i = total - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-
-      if(safeOnlyOur && !IsOurPosition(ticket))
-         continue;
-
-      if(safeSymbolCurrent)
-      {
-         if(PositionGetString(POSITION_SYMBOL) != _Symbol)
-            continue;
-      }
-
-      attempted++;
-      if(g_trade.PositionClose(ticket))
-      {
-         closed++;
-         Print("CLOSED: Ticket ", ticket, " | Reason: ", reason);
-      }
-      else
-      {
-         failed++;
-      }
-   }
-
-   Print("CLOSE_ALL SUMMARY: reason=", reason,
-         " attempted=", attempted,
-         " closed=", closed,
-         " failed=", failed,
-         " onlyOur=", (safeOnlyOur ? "ON" : "OFF"),
-         " symbolFilter=", (safeSymbolCurrent ? "ON" : "OFF"));
+   Print("V8.0: CloseAllPositions disabled. reason=", reason);
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
 void ArchiveRecentlyClosedPositionContext(const PositionState &state)
 {
    if(state.ticket == 0)
       return;
-
    int cap = ArraySize(g_recentlyClosedContext);
    if(cap <= 0)
    {
       cap = 256;
       ArrayResize(g_recentlyClosedContext, cap);
    }
-
    if(g_recentlyClosedContextCount < cap)
    {
       g_recentlyClosedContext[g_recentlyClosedContextCount].state = state;
@@ -9163,10 +7593,8 @@ void ArchiveRecentlyClosedPositionContext(const PositionState &state)
       g_recentlyClosedContextCount++;
       return;
    }
-
    for(int i = 1; i < cap; i++)
       g_recentlyClosedContext[i - 1] = g_recentlyClosedContext[i];
-
    g_recentlyClosedContext[cap - 1].state = state;
    g_recentlyClosedContext[cap - 1].archivedAt = TimeCurrent();
 }
@@ -9180,7 +7608,6 @@ bool FindPositionContext(ulong positionId, PositionState &ctx)
       ctx = g_positions[i];
       return true;
    }
-
    for(int i = g_recentlyClosedContextCount - 1; i >= 0; i--)
    {
       if(g_recentlyClosedContext[i].state.ticket != positionId)
@@ -9188,7 +7615,6 @@ bool FindPositionContext(ulong positionId, PositionState &ctx)
       ctx = g_recentlyClosedContext[i].state;
       return true;
    }
-
    return false;
 }
 //+------------------------------------------------------------------+
@@ -9196,11 +7622,9 @@ void CleanupRecentClosedContext()
 {
    if(g_recentlyClosedContextCount <= 0)
       return;
-
    int maxAgeHours = MathMax(24, INPUT_RL_PENDING_MAX_AGE_HOURS);
    int maxAgeSec = maxAgeHours * 3600;
    datetime now = TimeCurrent();
-
    int writeIdx = 0;
    for(int i = 0; i < g_recentlyClosedContextCount; i++)
    {
@@ -9235,35 +7659,29 @@ void SaveQTable()
    string tmpName = filename + ".tmp";
    int handle = FileOpen(tmpName, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-
    uint checksum = FNV1aStart();
    checksum = FNV1aUpdateInt(checksum, QTABLE_HASH_SENTINEL);
    checksum = FNV1aUpdateInt(checksum, QTABLE_SCHEMA_VERSION);
    checksum = FNV1aUpdateInt(checksum, Q_TABLE_STATES);
    checksum = FNV1aUpdateInt(checksum, Q_TABLE_ACTIONS);
    checksum = FNV1aUpdateInt(checksum, g_rlTradesCompleted);
-
    FileWriteInteger(handle, QTABLE_SCHEMA_VERSION);
    FileWriteInteger(handle, g_rlTradesCompleted);
-
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
       {
          FileWriteDouble(handle, g_qTable[s][a]);
          checksum = FNV1aUpdateDouble(checksum, g_qTable[s][a]);
       }
-
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
       {
          FileWriteInteger(handle, g_qVisits[s][a]);
          checksum = FNV1aUpdateInt(checksum, g_qVisits[s][a]);
       }
-
    FileWriteInteger(handle, (int)checksum);
    FileFlush(handle);
    FileClose(handle);
-
    if(!ReplaceFileAtomic(tmpName, filename))
       Print("ERROR: SaveRuntimeState replace failed, previous runtime file kept intact: ", filename);
    Print("Q-Table saved: ", g_rlTradesCompleted, " trades recorded");
@@ -9273,10 +7691,8 @@ void LoadQTable()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_qtable.bin";
    if(!FileIsExist(filename)) return;
-
    int handle = FileOpen(filename, FILE_READ | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-
    int version = FileReadInteger(handle);
    if(version != 2 && version != QTABLE_SCHEMA_VERSION)
    {
@@ -9287,7 +7703,6 @@ void LoadQTable()
       g_rlTradesCompleted = 0;
       return;
    }
-
    if(version == 2)
    {
       int checksumLegacy = FileReadInteger(handle);
@@ -9300,7 +7715,6 @@ void LoadQTable()
       FileClose(handle);
       return;
    }
-
    g_rlTradesCompleted = FileReadInteger(handle);
    uint checksum = FNV1aStart();
    checksum = FNV1aUpdateInt(checksum, QTABLE_HASH_SENTINEL);
@@ -9308,21 +7722,18 @@ void LoadQTable()
    checksum = FNV1aUpdateInt(checksum, Q_TABLE_STATES);
    checksum = FNV1aUpdateInt(checksum, Q_TABLE_ACTIONS);
    checksum = FNV1aUpdateInt(checksum, g_rlTradesCompleted);
-
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
       {
          g_qTable[s][a] = FileReadDouble(handle);
          checksum = FNV1aUpdateDouble(checksum, g_qTable[s][a]);
       }
-
    for(int s = 0; s < Q_TABLE_STATES; s++)
       for(int a = 0; a < Q_TABLE_ACTIONS; a++)
       {
          g_qVisits[s][a] = FileReadInteger(handle);
          checksum = FNV1aUpdateInt(checksum, g_qVisits[s][a]);
       }
-
    int fileChecksum = FileReadInteger(handle);
    FileClose(handle);
    if((int)checksum != fileChecksum)
@@ -9335,23 +7746,19 @@ void LoadQTable()
    }
    Print("Q-Table loaded: ", g_rlTradesCompleted, " trades");
 }
-
 void SaveMarkovData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_markov.bin";
    int handle = FileOpen(filename, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-
    FileWriteInteger(handle, 5);
    FileWriteInteger(handle, g_markovTradesRecorded);
    FileWriteInteger(handle, (int)g_lastMarkovState);
    FileWriteInteger(handle, g_markovQueueHead);
    FileWriteInteger(handle, g_markovQueueCount);
-
    for(int i = 0; i < MARKOV_STATES; i++)
       for(int j = 0; j < MARKOV_STATES; j++)
          FileWriteInteger(handle, g_markovCounts[i][j]);
-
    int cap = ArraySize(g_markovQueue);
    FileWriteInteger(handle, cap);
    for(int i = 0; i < cap; i++)
@@ -9360,7 +7767,6 @@ void SaveMarkovData()
       FileWriteInteger(handle, (int)g_markovQueue[i].toState);
       FileWriteLong(handle, (long)g_markovQueue[i].observedAt);
    }
-
    FileClose(handle);
 }
 //+------------------------------------------------------------------+
@@ -9368,10 +7774,8 @@ void LoadMarkovData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_markov.bin";
    if(!FileIsExist(filename)) return;
-
    int handle = FileOpen(filename, FILE_READ | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-
    int version = FileReadInteger(handle);
    if(version < 2 || version > 5)
    {
@@ -9379,31 +7783,25 @@ void LoadMarkovData()
       FileClose(handle);
       return;
    }
-
    g_markovTradesRecorded = FileReadInteger(handle);
    g_lastMarkovState = (ENUM_MARKOV_STATE)FileReadInteger(handle);
    g_markovQueueHead = (version >= 5) ? FileReadInteger(handle) : 0;
    g_markovQueueCount = (version >= 3) ? FileReadInteger(handle) : 0;
-
    for(int i = 0; i < MARKOV_STATES; i++)
       for(int j = 0; j < MARKOV_STATES; j++)
          g_markovCounts[i][j] = FileReadInteger(handle);
-
    int cap = (version >= 5) ? FileReadInteger(handle) : g_markovQueueCount;
    if(cap < 0) cap = 0;
    ArrayResize(g_markovQueue, cap);
    if(g_markovQueueCount > cap) g_markovQueueCount = cap;
-
    for(int i = 0; i < cap; i++)
    {
       g_markovQueue[i].fromState = (ENUM_MARKOV_STATE)FileReadInteger(handle);
       g_markovQueue[i].toState = (ENUM_MARKOV_STATE)FileReadInteger(handle);
       g_markovQueue[i].observedAt = (version >= 5) ? (datetime)FileReadLong(handle) : 0;
    }
-
    if(cap > 0) g_markovQueueHead = ((g_markovQueueHead % cap) + cap) % cap;
    else g_markovQueueHead = 0;
-
    RecomputeMarkovTransitionsFromCounts();
    FileClose(handle);
 }
@@ -9414,11 +7812,9 @@ void SaveFingerprintData()
    string tmpName = filename + ".tmp";
    int handle = FileOpen(tmpName, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-
    FileWrite(handle, "Schema", FP_SCHEMA_VERSION, "Rows", g_fingerprintCount);
    FileWrite(handle, "ID", "Combo", "Session", "Day", "Regime", "Total", "Wins", "Losses",
              "WinRate", "PF", "AvgProfit", "AvgLoss", "Strength", "Multiplier", "Decay");
-
    for(int i = 0; i < g_fingerprintCount; i++)
    {
       FileWrite(handle,
@@ -9438,7 +7834,6 @@ void SaveFingerprintData()
          g_fingerprints[i].confidenceMultiplier,
          g_fingerprints[i].decayWeight);
    }
-
    FileClose(handle);
    if(!ReplaceFileAtomic(tmpName, filename))
       Print("WARNING: Failed atomic replace for fingerprint file ", filename);
@@ -9448,7 +7843,6 @@ void LoadFingerprintData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_fp.csv";
    if(!FileIsExist(filename)) return;
-
    int handle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
    if(FileSize(handle) <= 0)
@@ -9457,7 +7851,6 @@ void LoadFingerprintData()
       FileClose(handle);
       return;
    }
-
    // Metadata line (schema + row count)
    string schemaKey = FileReadString(handle);
    int schemaVer = (int)FileReadNumber(handle);
@@ -9469,10 +7862,8 @@ void LoadFingerprintData()
       FileClose(handle);
       return;
    }
-
    for(int h = 0; h < 15; h++)
       FileReadString(handle);
-
    g_fingerprintCount = 0;
    int badRows = 0;
    while(!FileIsEnding(handle) && g_fingerprintCount < MAX_FINGERPRINTS)
@@ -9493,7 +7884,6 @@ void LoadFingerprintData()
       row.strengthScore = FileReadNumber(handle);
       row.confidenceMultiplier = FileReadNumber(handle);
       row.decayWeight = FileReadNumber(handle);
-
       bool valid = (StringLen(row.id) > 0 && row.session >= -1 && row.session <= 2 &&
                     row.dayOfWeek >= 0 && row.dayOfWeek <= 6 &&
                     MathIsValidNumber(row.winRate) && row.winRate >= 0.0 && row.winRate <= 100.0 &&
@@ -9503,10 +7893,8 @@ void LoadFingerprintData()
          badRows++;
          continue;
       }
-
       g_fingerprints[g_fingerprintCount++] = row;
    }
-
    FileClose(handle);
    if(schemaVer != FP_SCHEMA_VERSION)
       Print("WARNING: Fingerprint schema mismatch file=", schemaVer, " expected=", FP_SCHEMA_VERSION);
@@ -9519,12 +7907,10 @@ void SaveTrainingData()
    string tmpName = filename + ".tmp";
    int handle = FileOpen(tmpName, FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
-
    FileWrite(handle, "Schema", TRAINING_SCHEMA_VERSION, "Rows", g_trainingDataCount);
    FileWrite(handle, "Ticket", "EntryTime", "CloseTime", "Combo", "Profit", "IsWin",
              "Confidence", "Threat", "MTF", "VolRatio", "EntrySession", "CloseSession",
              "EntryDay", "CloseDay", "EntryRegime", "CloseRegime", "FP");
-
    for(int i = 0; i < g_trainingDataCount; i++)
    {
       FileWrite(handle,
@@ -9546,7 +7932,6 @@ void SaveTrainingData()
          (int)g_trainingData[i].closeRegime,
          g_trainingData[i].fingerprintId);
    }
-
    FileClose(handle);
    if(!ReplaceFileAtomic(tmpName, filename))
       Print("WARNING: Failed atomic replace for training file ", filename);
@@ -9556,7 +7941,6 @@ void LoadTrainingData()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_training.csv";
    if(!FileIsExist(filename)) return;
-
    int handle = FileOpen(filename, FILE_READ | FILE_CSV | FILE_ANSI, ',');
    if(handle == INVALID_HANDLE) return;
    if(FileSize(handle) <= 0)
@@ -9565,7 +7949,6 @@ void LoadTrainingData()
       FileClose(handle);
       return;
    }
-
    string schemaKey = FileReadString(handle);
    int schemaVer = (int)FileReadNumber(handle);
    string rowsKey = FileReadString(handle);
@@ -9576,10 +7959,8 @@ void LoadTrainingData()
       FileClose(handle);
       return;
    }
-
    for(int h = 0; h < 17; h++)
       FileReadString(handle);
-
    g_trainingDataCount = 0;
    int badRows = 0;
    while(!FileIsEnding(handle) && g_trainingDataCount < INPUT_MAX_TRAINING_DATA)
@@ -9602,7 +7983,6 @@ void LoadTrainingData()
       row.entryRegime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
       row.closeRegime = (ENUM_MARKET_REGIME)(int)FileReadNumber(handle);
       row.fingerprintId = FileReadString(handle);
-
       if(schemaVer < 3)
       {
          if(row.entryTime > 0)
@@ -9615,7 +7995,6 @@ void LoadTrainingData()
          if(row.entryRegime == REGIME_UNKNOWN)
             row.entryRegime = row.closeRegime;
       }
-
       bool valid = (row.ticket > 0 && MathIsValidNumber(row.profitLoss) &&
                     MathIsValidNumber(row.confidenceAtEntry) && row.confidenceAtEntry >= 0.0 && row.confidenceAtEntry <= 100.0 &&
                     MathIsValidNumber(row.threatAtEntry) && row.threatAtEntry >= 0.0 && row.threatAtEntry <= 100.0 &&
@@ -9626,10 +8005,8 @@ void LoadTrainingData()
          badRows++;
          continue;
       }
-
       g_trainingData[g_trainingDataCount++] = row;
    }
-
    FileClose(handle);
    if(schemaVer != TRAINING_SCHEMA_VERSION)
       Print("WARNING: Training schema mismatch file=", schemaVer, " expected=", TRAINING_SCHEMA_VERSION);
@@ -9644,7 +8021,6 @@ void SaveAdaptiveParams()
    string tmpName = filename + ".tmp";
    int handle = FileOpen(tmpName, FILE_WRITE | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-
    FileWriteInteger(handle, ADAPTIVE_SCHEMA_VERSION);
    FileWriteDouble(handle, g_adaptive.lotMultiplier);
    FileWriteDouble(handle, g_adaptive.slAdjustPoints);
@@ -9655,7 +8031,6 @@ void SaveAdaptiveParams()
    FileWriteDouble(handle, g_adaptive.minConfThreshold);
    FileWriteInteger(handle, g_adaptive.maxPositions);
    FileWriteInteger(handle, g_totalTrades);
-
    FileClose(handle);
    if(!ReplaceFileAtomic(tmpName, filename))
       Print("WARNING: Failed atomic replace for adaptive file ", filename);
@@ -9665,10 +8040,8 @@ void LoadAdaptiveParams()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_adaptive.bin";
    if(!FileIsExist(filename)) return;
-
    int handle = FileOpen(filename, FILE_READ | FILE_BIN);
    if(handle == INVALID_HANDLE) return;
-
    int version = FileReadInteger(handle);
    if(version <= 0 || version > ADAPTIVE_SCHEMA_VERSION)
    {
@@ -9677,7 +8050,6 @@ void LoadAdaptiveParams()
       ResetAdaptiveParamsToDefaults();
       return;
    }
-
    g_adaptive.lotMultiplier = FileReadDouble(handle);
    g_adaptive.slAdjustPoints = FileReadDouble(handle);
    g_adaptive.tpAdjustPoints = FileReadDouble(handle);
@@ -9687,9 +8059,7 @@ void LoadAdaptiveParams()
    g_adaptive.minConfThreshold = FileReadDouble(handle);
    g_adaptive.maxPositions = FileReadInteger(handle);
    g_totalTrades = FileReadInteger(handle);
-
    FileClose(handle);
-
    // V7.2 FIX (BUG 1, 2): Validate ALL loaded adaptive params with sane defaults
    // lotMultiplier: 0.5?2.0 (prevent zero or negative)
    if(g_adaptive.lotMultiplier <= 0 || g_adaptive.lotMultiplier > 2.0 || !MathIsValidNumber(g_adaptive.lotMultiplier))
@@ -9698,7 +8068,6 @@ void LoadAdaptiveParams()
       g_adaptive.lotMultiplier = 1.0;
    }
    g_adaptive.lotMultiplier = MathMax(0.5, MathMin(g_adaptive.lotMultiplier, 2.0));
-
    // threatMultiplier: 0.5?2.0 (excessive values block all trades)
    if(g_adaptive.threatMultiplier <= 0 || g_adaptive.threatMultiplier > 2.0 || !MathIsValidNumber(g_adaptive.threatMultiplier))
    {
@@ -9706,7 +8075,6 @@ void LoadAdaptiveParams()
       g_adaptive.threatMultiplier = 1.0;
    }
    g_adaptive.threatMultiplier = MathMax(0.5, MathMin(g_adaptive.threatMultiplier, 2.0));
-
    // minConfThreshold: 20?80 (100?% would block everything)
    if(g_adaptive.minConfThreshold < 0 || g_adaptive.minConfThreshold > 100 || !MathIsValidNumber(g_adaptive.minConfThreshold))
    {
@@ -9715,7 +8083,6 @@ void LoadAdaptiveParams()
       g_adaptive.minConfThreshold = INPUT_MIN_CONFIDENCE;
    }
    g_adaptive.minConfThreshold = MathMax(20.0, MathMin(g_adaptive.minConfThreshold, 80.0));
-
    // maxPositions: at least 2 (0?? gate always blocks)
    if(g_adaptive.maxPositions <= 0 || g_adaptive.maxPositions > INPUT_MAX_CONCURRENT_TRADES + 5)
    {
@@ -9724,7 +8091,6 @@ void LoadAdaptiveParams()
       g_adaptive.maxPositions = INPUT_MAX_CONCURRENT_TRADES;
    }
    g_adaptive.maxPositions = MathMax(g_adaptive.maxPositions, 2);
-
    // confMultiplierCap: 1.0?2.0
    if(g_adaptive.confMultiplierCap <= 0 || g_adaptive.confMultiplierCap > 3.0 || !MathIsValidNumber(g_adaptive.confMultiplierCap))
    {
@@ -9733,7 +8099,6 @@ void LoadAdaptiveParams()
       g_adaptive.confMultiplierCap = 1.5;
    }
    g_adaptive.confMultiplierCap = MathMax(1.0, MathMin(g_adaptive.confMultiplierCap, 2.0));
-
    Print("Adaptive params loaded and VALIDATED. Total trades: ", g_totalTrades,
          " | lotMult=", g_adaptive.lotMultiplier,
          " | threatMult=", g_adaptive.threatMultiplier,
@@ -9750,11 +8115,8 @@ void SaveRuntimeState()
       Print("WARNING: SaveRuntimeState failed to open ", tmpName);
       return;
    }
-
-
    if(INPUT_RL_PENDING_HARD_CAP < 0)
       Print("WARNING: INPUT_RL_PENDING_HARD_CAP is negative (", INPUT_RL_PENDING_HARD_CAP, ") - clamped to 0 for serialization.");
-
    FileWriteInteger(handle, RUNTIME_SCHEMA_VERSION);
    FileWriteLong(handle, (long)g_lastProcessedDealTicket);
    FileWriteLong(handle, (long)g_lastProcessedDealTime);
@@ -9763,10 +8125,8 @@ void SaveRuntimeState()
    FileWriteInteger(handle, g_rlMatchedUpdates);
    FileWriteInteger(handle, g_rlUnmatchedCloses);
    FileWriteInteger(handle, g_closedDealsProcessedTotal);
-
    int pendingToWrite = MathMin(g_pendingRLCount, MathMax(0, INPUT_RL_PENDING_HARD_CAP));
    FileWriteInteger(handle, pendingToWrite);
-
    uint checksum = FNV1aStart();
    checksum = FNV1aUpdateInt(checksum, RUNTIME_HASH_SENTINEL);
    checksum = FNV1aUpdateInt(checksum, RUNTIME_SCHEMA_VERSION);
@@ -9778,7 +8138,6 @@ void SaveRuntimeState()
    checksum = FNV1aUpdateInt(checksum, g_rlUnmatchedCloses);
    checksum = FNV1aUpdateInt(checksum, g_closedDealsProcessedTotal);
    checksum = FNV1aUpdateInt(checksum, pendingToWrite);
-
    for(int i = 0; i < pendingToWrite; i++)
    {
       FileWriteInteger(handle, g_pendingRL[i].state);
@@ -9793,7 +8152,6 @@ void SaveRuntimeState()
       FileWriteDouble(handle, g_pendingRL[i].confidenceSnapshot);
       FileWriteInteger(handle, g_pendingRL[i].mtfScoreSnapshot);
       FileWriteDouble(handle, g_pendingRL[i].comboStrengthSnapshot);
-
       checksum = FNV1aUpdateInt(checksum, g_pendingRL[i].state);
       checksum = FNV1aUpdateInt(checksum, (int)g_pendingRL[i].action);
       checksum = FNV1aUpdateLong(checksum, (long)g_pendingRL[i].timestamp);
@@ -9807,32 +8165,26 @@ void SaveRuntimeState()
       checksum = FNV1aUpdateInt(checksum, g_pendingRL[i].mtfScoreSnapshot);
       checksum = FNV1aUpdateDouble(checksum, g_pendingRL[i].comboStrengthSnapshot);
    }
-
    FileWriteInteger(handle, (int)checksum);
    FileFlush(handle);
    FileClose(handle);
-
    if(!ReplaceFileAtomic(tmpName, filename))
       Print("ERROR: SaveRuntimeState replace failed, previous runtime file kept intact: ", filename);
 }
-
 void ResetRuntimeStateAfterIntegrityFailure()
 {
    ResetRuntimeLinkedInMemoryState();
 }
-
 void LoadRuntimeState()
 {
    string filename = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER) + "_runtime.bin";
    if(!FileIsExist(filename)) return;
-
    int handle = FileOpen(filename, FILE_READ | FILE_BIN);
    if(handle == INVALID_HANDLE)
    {
       Print("WARNING: LoadRuntimeState failed to open ", filename);
       return;
    }
-
    int version = FileReadInteger(handle);
    if(version < 1 || version > RUNTIME_SCHEMA_VERSION)
    {
@@ -9840,7 +8192,6 @@ void LoadRuntimeState()
       FileClose(handle);
       return;
    }
-
    g_lastProcessedDealTicket = (ulong)FileReadLong(handle);
    g_lastProcessedDealTime = (version >= 3) ? (datetime)FileReadLong(handle) : 0;
    g_lastProcessedEntryDealTicket = (version >= 4) ? (ulong)FileReadLong(handle) : 0;
@@ -9848,12 +8199,10 @@ void LoadRuntimeState()
    g_rlMatchedUpdates = FileReadInteger(handle);
    g_rlUnmatchedCloses = FileReadInteger(handle);
    g_closedDealsProcessedTotal = FileReadInteger(handle);
-
    int pendingRead = (version >= 2) ? FileReadInteger(handle) : 0;
    if(pendingRead < 0) pendingRead = 0;
    if(INPUT_RL_PENDING_HARD_CAP < 0)
       Print("WARNING: INPUT_RL_PENDING_HARD_CAP is negative (", INPUT_RL_PENDING_HARD_CAP, ") - clamped to 0 during load.");
-
    uint checksum = FNV1aStart();
    checksum = FNV1aUpdateInt(checksum, RUNTIME_HASH_SENTINEL);
    checksum = FNV1aUpdateInt(checksum, version);
@@ -9865,11 +8214,9 @@ void LoadRuntimeState()
    checksum = FNV1aUpdateInt(checksum, g_rlUnmatchedCloses);
    checksum = FNV1aUpdateInt(checksum, g_closedDealsProcessedTotal);
    checksum = FNV1aUpdateInt(checksum, pendingRead);
-
    g_pendingRLCount = 0;
    int pendingCap = MathMax(0, INPUT_RL_PENDING_HARD_CAP);
    if(ArraySize(g_pendingRL) < pendingCap) ArrayResize(g_pendingRL, pendingCap);
-
    for(int i = 0; i < pendingRead; i++)
    {
       RLStateAction rec;
@@ -9885,7 +8232,6 @@ void LoadRuntimeState()
       rec.confidenceSnapshot = (version >= 6) ? FileReadDouble(handle) : 50.0;
       rec.mtfScoreSnapshot = (version >= 6) ? FileReadInteger(handle) : 0;
       rec.comboStrengthSnapshot = (version >= 6) ? FileReadDouble(handle) : 50.0;
-
       checksum = FNV1aUpdateInt(checksum, rec.state);
       checksum = FNV1aUpdateInt(checksum, (int)rec.action);
       checksum = FNV1aUpdateLong(checksum, (long)rec.timestamp);
@@ -9898,22 +8244,18 @@ void LoadRuntimeState()
       checksum = FNV1aUpdateDouble(checksum, rec.confidenceSnapshot);
       checksum = FNV1aUpdateInt(checksum, rec.mtfScoreSnapshot);
       checksum = FNV1aUpdateDouble(checksum, rec.comboStrengthSnapshot);
-
       bool validRec = (rec.state >= 0 && rec.state < Q_TABLE_STATES && rec.action >= 0 && rec.action < Q_TABLE_ACTIONS &&
                        MathIsValidNumber(rec.entryPrice) && MathIsValidNumber(rec.slDistance) &&
                        MathIsValidNumber(rec.lot) && MathIsValidNumber(rec.tickValue));
       if(validRec && rec.orderTicket > 0 && rec.positionTicket == 0 && !OrderSelect(rec.orderTicket))
          validRec = false;
-
       if(validRec && g_pendingRLCount < pendingCap)
          g_pendingRL[g_pendingRLCount++] = rec;
       else if(!validRec)
          RegisterDataWarning("Runtime pending RL record dropped during load");
    }
-
    int fileChecksum = (version >= 5) ? FileReadInteger(handle) : (int)checksum;
    FileClose(handle);
-
    bool checksumOk = ((int)checksum == fileChecksum);
    if(!checksumOk)
    {
@@ -9926,7 +8268,6 @@ void LoadRuntimeState()
       }
    }
 }
-
 void ResetRuntimeLinkedInMemoryState()
 {
    g_pendingRLCount = 0;
@@ -9942,7 +8283,6 @@ void ResetRuntimeLinkedInMemoryState()
    g_rlUnmatchedCloses = 0;
    g_closedDealsProcessedTotal = 0;
 }
-
 bool ResetAllPersistedStateFiles()
 {
    string base = _Symbol + "_" + IntegerToString(INPUT_MAGIC_NUMBER);
@@ -9956,7 +8296,6 @@ bool ResetAllPersistedStateFiles()
       base + "_runtime.bin",
       base + "_closed_deals.csv"
    };
-
    bool success = true;
    int deleted = 0;
    for(int i = 0; i < ArraySize(files); i++)
@@ -9983,7 +8322,6 @@ bool ResetAllPersistedStateFiles()
          if(!okBak) success = false;
       }
    }
-
    g_fingerprintCount = 0;
    g_trainingDataCount = 0;
    g_combinationStatsCount = 0;
@@ -9991,11 +8329,9 @@ bool ResetAllPersistedStateFiles()
    g_markovTradesRecorded = 0;
    g_lastMarkovState = MARKOV_EVEN;
    ResetRuntimeLinkedInMemoryState();
-
    Print("RESET PERSISTENCE: completed deletedFiles=", deleted, " success=", (success ? "true" : "false"));
    return success;
 }
-
 //+------------------------------------------------------------------+
 //| SECTION 31: CHART PANEL                                          |
 //+------------------------------------------------------------------+
@@ -10004,13 +8340,10 @@ void DrawStatsPanel()
    static datetime lastPanelUpdate = 0;
    if(TimeCurrent() - lastPanelUpdate < 5) return; // Throttle to 5?seconds
    lastPanelUpdate = TimeCurrent();
-
    int x = 10, y = 30;
    color bgColor = clrDarkSlateGray;
    color txtColor = clrWhite;
-
    string prefix = "V7_Panel_";
-
    // Background rectangle (create once, then update)
    if(ObjectFind(0, prefix + "bg") < 0)
       ObjectCreate(0, prefix + "bg", OBJ_RECTANGLE_LABEL, 0, 0, 0);
@@ -10021,23 +8354,18 @@ void DrawStatsPanel()
    ObjectSetInteger(0, prefix + "bg", OBJPROP_BGCOLOR, bgColor);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_BORDER_TYPE, BORDER_FLAT);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_CORNER, CORNER_LEFT_UPPER);
-
    y += 10;
-
    // Title
    CreateLabel(prefix + "title", "EA " + EA_VERSION_LABEL + " HumanBrain", x + 10, y, clrGold, 10);
    y += 20;
-
    // State
    string stateStr = EnumToString(g_eaState);
    color stateColor = clrLime;
    if(g_eaState == STATE_EXTREME_RISK) stateColor = clrRed;
    else if(g_eaState == STATE_RECOVERY_ACTIVE) stateColor = clrOrange;
    else if(g_eaState == STATE_DRAWDOWN_PROTECT) stateColor = clrYellow;
-
    CreateLabel(prefix + "state", "State: " + stateStr, x + 10, y, stateColor, 9);
    y += 18;
-
    // Threat
    double threat = CalculateMarketThreat();
    ENUM_THREAT_ZONE zone = GetThreatZone(threat);
@@ -10046,15 +8374,12 @@ void DrawStatsPanel()
    else if(zone == THREAT_RED)    thColor = clrOrangeRed;
    else if(zone == THREAT_ORANGE)thColor = clrOrange;
    else if(zone == THREAT_YELLOW)thColor = clrYellow;
-
    CreateLabel(prefix + "threat", "Threat: " + DoubleToString(threat,1) + " (" +
                EnumToString(zone) + ")", x + 10, y, thColor, 9);
    y += 18;
-
    // Regime
    CreateLabel(prefix + "regime", "Regime: " + EnumToString(g_currentRegime), x + 10, y, txtColor, 9);
    y += 18;
-
    // Position counts (broker counts)
    int mainPos = CountMainPositionsFromBroker();
    int totalPos = CountAllOurPositions();
@@ -10067,43 +8392,36 @@ void DrawStatsPanel()
                " | Open P/L: " + DoubleToString(openPL, 2),
                x + 10, y, openPLColor, 9);
    y += 18;
-
    CreateLabel(prefix + "positions", "Positions: " + IntegerToString(mainPos) + " main / " +
                IntegerToString(totalPos) + " total (max " + IntegerToString(g_adaptive.maxPositions) + ")",
                x + 10, y, txtColor, 9);
    y += 18;
-
    CreateLabel(prefix + "master_toggles", "Toggles P/C/M: " +
                (INPUT_TOGGLE_PLACE_ORDERS ? "ON" : "OFF") + "/" +
                (INPUT_TOGGLE_CLOSE_ORDERS ? "ON" : "OFF") + "/" +
                ((INPUT_TOGGLE_MODIFY_STOPS || INPUT_TOGGLE_MODIFY_TPS) ? "ON" : "OFF"),
                x + 10, y, txtColor, 9);
    y += 18;
-
    // Daily stats
    CreateLabel(prefix + "daily", "Today: Filled " + IntegerToString(g_daily.tradesPlaced) +
                " | Pending Placed " + IntegerToString(g_daily.pendingOrdersPlaced) +
                " | W:" + IntegerToString(g_daily.winsToday) + " L:" + IntegerToString(g_daily.lossesToday),
                x + 10, y, txtColor, 9);
    y += 18;
-
    CreateLabel(prefix + "activity", "Open Positions: " + IntegerToString(totalPos) +
                " | Closed Deals Today: " + IntegerToString(g_daily.closedDealsToday) +
                " | Closed Processed: " + IntegerToString(g_closedDealsProcessedTotal),
                x + 10, y, txtColor, 9);
    y += 18;
-
    // P&L today
    double netToday = g_daily.profitToday - g_daily.lossToday;
    color plColor = netToday >= 0 ? clrLime : clrRed;
    CreateLabel(prefix + "pnl", "P&L Today: " + DoubleToString(netToday, 2), x + 10, y, plColor, 9);
    y += 18;
-
    double maxDayLoss = g_daily.dayStartBalance * (INPUT_DAILY_LOSS_LIMIT_PERCENT / 100.0);
    CreateLabel(prefix + "dailycap", "Daily loss cap uses dayStartBalance=" + DoubleToString(g_daily.dayStartBalance, 2) +
                " (limit " + DoubleToString(maxDayLoss, 2) + ")", x + 10, y, txtColor, 9);
    y += 18;
-
    // Streak
    CreateLabel(prefix + "streak", "Streak: W" + IntegerToString(g_consecutiveWins) +
                " / L" + IntegerToString(g_consecutiveLosses) +
@@ -10112,23 +8430,19 @@ void DrawStatsPanel()
                " | BoostLeft=" + IntegerToString(g_streakMultiplierOrdersRemaining),
                x + 10, y, txtColor, 9);
    y += 18;
-
    // Drawdown
    double dd = CalculateDrawdownPercent();
    color ddColor = dd < 1 ? clrLime : (dd < 2 ? clrYellow : clrRed);
    CreateLabel(prefix + "dd", "Drawdown: " + DoubleToString(dd,2) + "%", x + 10, y, ddColor, 9);
    y += 18;
-
    // Adaptive params
    CreateLabel(prefix + "adapt", "Lot Mult: " + DoubleToString(g_adaptive.lotMultiplier,2) +
                " | Min Conf: " + DoubleToString(g_adaptive.minConfThreshold,1) + "%",
                x + 10, y, txtColor, 9);
    y += 18;
-
       // Total trades
    CreateLabel(prefix + "total", "Total Trades: " + IntegerToString(g_totalTrades), x + 10, y, txtColor, 9);
    y += 18;
-
    // Gate diagnostics
    CreateLabel(prefix + "diagSession", "Rejects Session/Cooldown: " +
                IntegerToString(g_gateDiagnostics.sessionRejects) + " / " +
@@ -10160,7 +8474,6 @@ void DrawStatsPanel()
                   " Unmatched:" + IntegerToString(g_rlUnmatchedCloses), x + 10, y, clrCyan, 9);
       y += 18;
    }
-
    // ML info
    if(INPUT_ENABLE_ML)
    {
@@ -10169,17 +8482,14 @@ void DrawStatsPanel()
    }
    CreateLabel(prefix + "comboCov", "Combo coverage: " + IntegerToString(g_comboObservedCount) + "/" + IntegerToString(MathMax(g_combinationStatsCount,1)), x + 10, y, clrCyan, 9);
    y += 18;
-
    // Settings summary
    CreateLabel(prefix + "settings", "MinSig:" + IntegerToString(INPUT_MIN_SIGNALS) +
                " MTF:" + IntegerToString(INPUT_MIN_MTF_SCORE) +
                " ADX:" + (INPUT_USE_ADX_FILTER ? "ON" : "OFF"),
                x + 10, y, clrGray, 8);
    y += 16;
-
    // Version line
    CreateLabel(prefix + "version", EA_VERSION_LABEL + " runtime", x + 10, y, clrGray, 8);
-
    ChartRedraw(0);
 }
 //+------------------------------------------------------------------+
@@ -10206,70 +8516,22 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode()
    #ifdef SYMBOL_FILLING_RETURN
    if((filling & SYMBOL_FILLING_RETURN) != 0) return ORDER_FILLING_RETURN;
 #endif
-
     // Broker did not advertise known modes; keep IOC fallback for safety.
    return ORDER_FILLING_IOC;
 }
-
 //+------------------------------------------------------------------+
 //| V7.6 FIX: Position Age Timeout Implementation (Critical Bug 4)   |
 //+------------------------------------------------------------------+
+// V8.0: CheckPositionAgeTimeout REMOVED. No timeout-based auto-close.
 void CheckPositionAgeTimeout()
 {
-   if(!IsCloseEnabled() || !INPUT_CLOSE_AGE_TIMEOUT_ON)
-      return;
-   static bool loggedDisabled = false;
-   if(!g_effClosePositionAgeTimeout)
-   {
-      if(!loggedDisabled)
-      {
-         Print("POSITION AGE TIMEOUT close disabled (INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT=OFF)");
-         loggedDisabled = true;
-      }
-      return;
-   }
-
-   if(INPUT_POSITION_AGE_HOURS <= 0) return;
-
-   datetime now = TimeCurrent();
-   if(g_lastPositionAgeCheck > 0 && (now - g_lastPositionAgeCheck) < INPUT_POSITION_AGE_CHECK_SECONDS)
-      return;
-   g_lastPositionAgeCheck = now;
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-       if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) continue;
-
-      string comment = PositionGetString(POSITION_COMMENT);
-      long magic = PositionGetInteger(POSITION_MAGIC);
-      bool isAux = IsAuxSubtypeByMagic(magic) ||
-                   (StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0 ||
-                    StringFind(comment, COMMENT_AVG_PREFIX)      >= 0 ||
-                    StringFind(comment, COMMENT_HEDGE_PREFIX)    >= 0);
-      if(isAux && !INPUT_AGE_TIMEOUT_INCLUDE_AUX)
-      {
-         if(INPUT_ENABLE_LOGGING)
-            Print("AGE TIMEOUT SKIP: aux/recovery position skipped | ticket=", ticket,
-                  " | comment=", comment,
-                  " | includeAux=", (INPUT_AGE_TIMEOUT_INCLUDE_AUX ? "true" : "false"));
-         continue;
-      }
-      datetime openTime = (datetime)PositionGetInteger(POSITION_TIME);
-      if(now - openTime > INPUT_POSITION_AGE_HOURS * 3600)
-      {
-         Print("Closing stale position (Age Timeout): ", ticket,
-               " | ageHours=", DoubleToString((now - openTime) / 3600.0, 2));
-         g_trade.PositionClose(ticket);
-      }
-   }
+   return; // V8.0: disabled
 }
-
 //+------------------------------------------------------------------+
 //| V7.6 FIX: Trailing Take Profit (Missing Feature 11)              |
 //+------------------------------------------------------------------+
-void ManageTrailingTP()
+// V8.0: ManageTrailingTP REMOVED. SL/TP are static after placement.
+void ManageTrailingTP_DISABLED()
 {
    if(!g_effModifyTrailingTP)
       return;
@@ -10277,7 +8539,6 @@ void ManageTrailingTP()
    // Removed IsTpModifyEnabled() gate - trailing TP is an SL-based trailing mechanism.
    if(!INPUT_ENABLE_TRAILING_TP_GAP)
       return;
-
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
@@ -10288,21 +8549,17 @@ void ManageTrailingTP()
       // permanently block the trailing SL mechanism. We still check CanModifyPosition for freeze level.
       if(!CanModifyPosition(ticket)) continue;
       if(IsTicketManagedThisTick(ticket)) continue;
-
       int idx = -1;
       for(int j = 0; j < g_positionCount; j++) if(g_positions[j].isActive && g_positions[j].ticket == ticket) { idx = j; break; }
       if(idx < 0) continue;
-
       string symbol = PositionGetString(POSITION_SYMBOL);
       ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
       int dir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
-
       double sl = PositionGetDouble(POSITION_SL);
       double current = PositionGetDouble(POSITION_PRICE_CURRENT);
       double newSL = NormalizeDouble(current - dir * INPUT_TRAILING_TP_GAP_POINTS * _Point, g_digits);
       double stepPrice = INPUT_TRAILING_TP_STEP_POINTS * _Point;
       double minDist = g_stopLevel * g_point;
-
       // --- ACTIVATION CHECK (two modes: pips or % TP progress) ---
       if(!g_positions[idx].trailingTPActive)
       {
@@ -10311,7 +8568,6 @@ void ManageTrailingTP()
          double profitPoints = (dir == 1) ? ((current - entry) / _Point) : ((entry - current) / _Point);
          if(profitPoints < 0.0)
             profitPoints = 0.0;
-
          bool activateTrailingTP = false;
          if(INPUT_TRAILING_TP_ACTIVATION_MODE == TRAILING_TP_ACTIVATE_BY_PIPS)
          {
@@ -10360,10 +8616,8 @@ void ManageTrailingTP()
                      " | mode=TP_PROGRESS skipped because TP is zero. Set a non-zero TP or switch activation mode to PIPS.");
             }
          }
-
          if(!activateTrailingTP)
             continue;
-
          g_positions[idx].trailingTPActive = true;
          g_positions[idx].closePathState = CLOSE_PATH_TRAILING_TP_MODE;
          if(INPUT_ENABLE_LOGGING)
@@ -10372,7 +8626,6 @@ void ManageTrailingTP()
                   " | dir=", (dir == 1 ? "BUY" : "SELL"),
                   " | mode=", (INPUT_TRAILING_TP_ACTIVATION_MODE == TRAILING_TP_ACTIVATE_BY_PIPS ? "PIPS" : "TP_PROGRESS_PERCENT"));
       }
-
       // --- TRAILING LOGIC: Move SL behind price with gap, zero out TP ---
       if(g_positions[idx].lastTrailingTPPrice > 0.0)
       {
@@ -10394,7 +8647,6 @@ void ManageTrailingTP()
             continue;
          }
       }
-
       // V7.34 FIX: Only move SL in the favorable direction
       bool shouldMove = (dir == 1) ? (newSL > sl) : (newSL < sl);
       if(!shouldMove)
@@ -10410,7 +8662,6 @@ void ManageTrailingTP()
                   " | shouldMove=false");
          continue;
       }
-
       bool brokerGuardBlocked = false;
       if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && dir == 1 && (current - newSL) < minDist)
          brokerGuardBlocked = true;
@@ -10430,7 +8681,6 @@ void ManageTrailingTP()
                   " | stopLevelPts=", DoubleToString((double)g_stopLevel, 1));
          continue;
       }
-
       if(g_trade.PositionModify(ticket, newSL, 0.0))
       {
          ResetTPFailureTracker(ticket);
@@ -10460,8 +8710,6 @@ void ManageTrailingTP()
       }
    }
 }
-
-
 //+------------------------------------------------------------------+
 //| V7.6 FIX: Multi-Level Partial Close (Missing Feature 12)        |
 //+------------------------------------------------------------------+
@@ -10474,26 +8722,21 @@ void HandleMultiLevelPartial(ulong ticket)
       return;
    if(ticket == 0 || IsTicketManagedThisTick(ticket)) return;
    if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) return;
-
    int idx = -1;
    for(int i = 0; i < g_positionCount; i++) if(g_positions[i].isActive && g_positions[i].ticket == ticket) { idx = i; break; }
    if(idx < 0 || g_positions[idx].closePathState == CLOSE_PATH_TERMINAL || g_positions[idx].trailingTPActive) return;
-
    double vol = PositionGetDouble(POSITION_VOLUME);
    double open = PositionGetDouble(POSITION_PRICE_OPEN);
    double tp = PositionGetDouble(POSITION_TP);
    double current = PositionGetDouble(POSITION_PRICE_CURRENT);
    ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-
    double totalDist = MathAbs(tp - open);
    if(totalDist <= 0) return;
    double progress = (posType == POSITION_TYPE_BUY && tp > open) ? ((current - open) / (tp - open)) : ((posType == POSITION_TYPE_SELL && tp < open) ? ((open - current) / (open - tp)) : 0.0);
    if(progress <= 0) return;
-
    bool level2 = (progress >= 0.60 && !g_positions[idx].multiPartialLevel2Done);
    bool level1 = (progress >= 0.30 && !g_positions[idx].multiPartialLevel1Done);
    if(!level1 && !level2) return;
-
    double lotsToClose = 0.0;
    bool fullExit = false;
    if(!ComputePartialCloseLots(vol, g_positions[idx].originalLots, 25.0, CLOSE_BASIS_REMAINING, lotsToClose, fullExit))
@@ -10506,7 +8749,6 @@ void HandleMultiLevelPartial(ulong ticket)
       }
       return;
    }
-
    if(g_trade.PositionClosePartial(ticket, lotsToClose))
    {
       g_positions[idx].currentLots = PositionGetDouble(POSITION_VOLUME);
