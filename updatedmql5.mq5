@@ -1,12 +1,12 @@
-#property copyright "HumanBrain EA V8.0 - Clean Signal-Only Edition"
+#property copyright "HumanBrain EA V9.0 - Grid & Martingale Edition"
 #property link      ""
-#property version   "8.00"
+#property version   "9.00"
 #property strict
-#property description "EA V8.0 HumanBrain - CLEAN BUILD: Signal entries with FIXED SL/TP only"
-#property description "REMOVED: Opposite flip override, partial closes, trailing SL/TP, breakeven,"
-#property description "         recovery/averaging/hedging/grid/martingale, protective liquidation"
+#property description "EA V9.0 HumanBrain - Signal entries + Grid + Martingale auxiliary systems"
+#property description "Grid: profit-side or both-sides placement with separate max order cap"
+#property description "Martingale: lot-escalation with separate max order cap"
 #property description "Q-Learning (108 states), Markov Chains, 9-Factor Threat, 6-Component Confidence"
-#property description "Positions close ONLY by broker SL/TP hit or manual operator action."
+#property description "Main orders capped separately from Grid/Martingale orders."
 #include <Trade/Trade.mqh>
 #include <Trade/PositionInfo.mqh>
 //+------------------------------------------------------------------+
@@ -33,11 +33,15 @@ enum ENUM_EXECUTION_MODE
 };
 enum ENUM_RECOVERY_MODE
 {
-   RECOVERY_OFF        = 0,
-   RECOVERY_AVERAGING  = 1,
-   RECOVERY_HEDGING    = 2,
-   RECOVERY_GRID       = 3,
-   RECOVERY_MARTINGALE = 4
+   RECOVERY_OFF        = 0,   // All auxiliary systems disabled
+   RECOVERY_AVERAGING  = 1,   // Legacy averaging only
+   RECOVERY_GRID       = 2,   // Grid placement system
+   RECOVERY_MARTINGALE = 3    // Martingale lot escalation
+};
+enum ENUM_GRID_PLACEMENT_MODE
+{
+   GRID_PROFIT_SIDE_ONLY = 0,  // Place grid orders only in profit direction
+   GRID_BOTH_SIDES       = 1   // Place grid orders on both sides of entry
 };
 enum ENUM_COMBO_RANK_MODE
 {
@@ -169,8 +173,8 @@ input bool     INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE = false;
 input bool     INPUT_ENABLE_CLOSE_PARTIAL_TP = false;
 input bool     INPUT_ENABLE_CLOSE_MULTI_LEVEL_PARTIAL = false;
 input bool     INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN = false;
-input bool     INPUT_ENABLE_MODIFY_TRAILING_SL = false;
-input bool     INPUT_ENABLE_MODIFY_TRAILING_TP = false;
+// V9.0: INPUT_ENABLE_MODIFY_TRAILING_SL removed (trailing SL gutted)
+// V9.0: INPUT_ENABLE_MODIFY_TRAILING_TP removed (trailing TP gutted)
 input bool     INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD = false;
 input bool     INPUT_USE_LEGACY_BEHAVIOR_MAPPING = true;
 input bool     INPUT_FORCE_NEW_TOGGLES_ONLY = false;
@@ -273,8 +277,8 @@ input bool     INPUT_CLOSE_AGE_TIMEOUT_ON = true;
 input bool     INPUT_CLOSE_RECOVERY_TIMEOUT_ON = true;
 input group    "=== Modify SL/TP Toggles ==="
 input bool     INPUT_MODIFY_BREAKEVEN_ON = true;
-input bool     INPUT_MODIFY_TRAILING_SL_ON = true;
-input bool     INPUT_MODIFY_TRAILING_TP_ON = true;
+// V9.0: INPUT_MODIFY_TRAILING_SL_ON removed (trailing SL gutted)
+// V9.0: INPUT_MODIFY_TRAILING_TP_ON removed (trailing TP gutted)
 input bool     INPUT_MODIFY_SUPPRESS_ON_HIGH_SPREAD_LOSS_ON = true;
 input bool     INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON = true; // WARNING: disable only for diagnostics
 input group    "=== Session Sub-Toggles ==="
@@ -327,13 +331,9 @@ input bool     INPUT_ENABLE_PARTIAL_CLOSE    = false; // DISABLED - Use V7.33 ne
 input double   INPUT_PARTIAL_TP_PERCENT      = 50.0; // Close portion at this % of TP
 input double   INPUT_PARTIAL_CLOSE_RATIO     = 0.5;  // Close this fraction of lots
 input bool     INPUT_MOVE_BE_AFTER_PARTIAL   = true; // Move SL to breakeven after partial
-//--- Trailing Stop
-input group    "=== Trailing Stop ==="
-input bool     INPUT_ENABLE_TRAILING         = true; // Enable trailing stop
-input double   INPUT_TRAIL_ATR_MULTIPLIER    = 1.0;  // Trail distance = ATR x this
-input double   INPUT_TRAIL_STEP_POINTS       = 50.0; // Min improvement step (points)
-input double   INPUT_TRAIL_ACTIVATION_POINTS = 200.0;// Activate after this profit (points)
-input bool     INPUT_ENABLE_TRAILING_TP      = true; // Enable trailing TP logic
+//--- Trailing Stop (V9.0: GUTTED - all trailing SL/TP removed)
+// V9.0: All INPUT_ENABLE_TRAILING, INPUT_TRAIL_* inputs removed. ManageTrailingStops() returns immediately.
+input group    "=== High Spread Protection ==="
 input bool     INPUT_ENABLE_HIGH_SPREAD_PROTECT = true; // Enable high-spread protective behavior
 input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = true; // Close profitable running positions when spread spikes
 input double   INPUT_HIGH_SPREAD_CLOSE_PERCENT = 50.0; // Percent of profitable position volume to close on high spread (1..100)
@@ -355,14 +355,10 @@ input int      INPUT_PROFIT_PARTS_COUNT = 1;              // Number of closing p
 input string   INPUT_PROFIT_PARTS_PERCENTAGES = "50";     // Close percentages per part (comma-separated, e.g. "33,33,34")
 input string   INPUT_PROFIT_PARTS_TRIGGERS = "50";        // Trigger percentages per part (comma-separated, e.g. "30,60,90")
 input ENUM_PARTIAL_CLOSE_BASIS INPUT_PARTIAL_CLOSE_BASIS = CLOSE_BASIS_ORIGINAL; // Percent basis for partial close sizing
-input group    "=== V7.33: Trailing TP Gap Feature ==="
-input bool     INPUT_ENABLE_TRAILING_TP_GAP = true;       // Enable trailing TP with gap
-input double   INPUT_TRAILING_TP_GAP_POINTS = 100.0;      // Gap between TP and current price (points)
-input double   INPUT_TRAILING_TP_STEP_POINTS = 50.0;      // Minimum movement step (points)
-input double   INPUT_TRAILING_TP_ACTIVATION_PIPS = 20.0; // Activate after this profit (pips)
-input ENUM_TRAILING_TP_ACTIVATION_MODE INPUT_TRAILING_TP_ACTIVATION_MODE = TRAILING_TP_ACTIVATE_BY_PIPS; // Activate trailing TP by pips or TP-progress
-input double   INPUT_TRAILING_TP_ACTIVATION_PERCENT = 50.0; // Activation threshold when mode=TP progress
-input bool     INPUT_PROGRESS_MILESTONE_ZERO_TP_ON = true; // At milestone, zero TP before trailing TP mode (backward compatible default)
+// V9.0: Trailing TP Gap Feature REMOVED. All trailing TP inputs gutted.
+// input bool INPUT_ENABLE_TRAILING_TP_GAP = false; // REMOVED
+// input double INPUT_TRAILING_TP_GAP_POINTS = 0; // REMOVED
+// input double INPUT_TRAILING_TP_STEP_POINTS = 0; // REMOVED
 input group    "=== Money Management / Streak Multiplier ==="
 input bool     INPUT_ENABLE_STREAK_LOT_MULTIPLIER = true; // Enable temporary lot multiplier after win streak
 input int      INPUT_STREAK_TRIGGER_WINS = 2; // Consecutive wins needed to arm streak multiplier
@@ -374,10 +370,31 @@ input double   INPUT_CONSEC_WIN_CONF_BOOST_PER_WIN = 1.5;
 input double   INPUT_CONSEC_WIN_CONF_BOOST_CAP = 8.0;
 input bool     INPUT_ENABLE_CONSEC_WIN_CONF_DECAY = true;
 input int      INPUT_CONSEC_WIN_CONF_DECAY_AFTER_TRADES = 3;
-//--- Recovery Averaging System
-input group    "=== Recovery Averaging System ==="
-input bool     INPUT_ENABLE_RECOVERY         = false; // Master recovery gate
-input ENUM_RECOVERY_MODE INPUT_RECOVERY_MODE = RECOVERY_AVERAGING; // Recovery mode selector
+//--- V9.0: Standalone Grid System
+input group    "=== Grid System (V9.0) ==="
+input bool     INPUT_ENABLE_GRID             = false; // Master grid toggle
+input ENUM_GRID_PLACEMENT_MODE INPUT_GRID_PLACEMENT_MODE = GRID_PROFIT_SIDE_ONLY; // Grid placement mode
+input double   INPUT_GRID_STEP_POINTS        = 150.0; // Distance between grid levels (points)
+input int      INPUT_GRID_MAX_ORDERS         = 3;     // Max grid orders (separate from main cap)
+input double   INPUT_GRID_LOT_SCALING        = 1.0;   // Grid lot multiplier vs base lot
+input double   INPUT_GRID_TRIGGER_PROFIT_POINTS = 50.0; // Profit-side: trigger after this profit (points)
+input double   INPUT_GRID_TRIGGER_LOSS_POINTS  = 100.0; // Loss-side: trigger after this adverse move (points)
+input int      INPUT_GRID_COOLDOWN_SECONDS   = 60;    // Cooldown between grid placements
+input double   INPUT_GRID_TP_POINTS          = 200.0; // Grid order TP (points from grid entry)
+input double   INPUT_GRID_SL_POINTS          = 300.0; // Grid order SL (points from grid entry)
+//--- V9.0: Standalone Martingale System
+input group    "=== Martingale System (V9.0) ==="
+input bool     INPUT_ENABLE_MARTINGALE       = false; // Master martingale toggle
+input double   INPUT_MARTINGALE_MULTIPLIER   = 1.6;   // Lot multiplier per layer
+input int      INPUT_MARTINGALE_MAX_ORDERS   = 2;     // Max martingale orders (separate from main cap)
+input double   INPUT_MARTINGALE_TRIGGER_LOSS_POINTS = 150.0; // Trigger after this adverse move (points)
+input int      INPUT_MARTINGALE_COOLDOWN_SECONDS = 120; // Cooldown between martingale placements
+input double   INPUT_MARTINGALE_TP_POINTS    = 150.0; // Martingale order TP (points from entry)
+input double   INPUT_MARTINGALE_SL_POINTS    = 400.0; // Martingale order SL (points from entry)
+input double   INPUT_MARTINGALE_MAX_TOTAL_LOTS = 10.0; // Safety cap on total martingale lots
+//--- Legacy Recovery (kept for averaging mode only)
+input group    "=== Legacy Recovery Averaging ==="
+input bool     INPUT_ENABLE_RECOVERY         = false; // Master recovery gate (averaging only)
 input int      INPUT_RECOVERY_THREAT_MIN     = 60;   // Minimum threat to trigger recovery
 input int      INPUT_MAX_RECOVERY_PER_POS    = 2;    // Max recovery orders per position
 input double   INPUT_RECOVERY_LOT_RATIO_SAFE = 0.33; // Lot ratio when threat < 50
@@ -385,19 +402,11 @@ input double   INPUT_RECOVERY_LOT_RATIO_MOD  = 0.50; // Lot ratio when threat 50
 input double   INPUT_RECOVERY_LOT_RATIO_HIGH = 0.75; // Lot ratio when threat > 70
 input int      INPUT_RECOVERY_TIMEOUT_MINUTES = 120; // Recovery order timeout (minutes)
 input double   INPUT_RECOVERY_TRIGGER_DEPTH  = 40.0; // Trigger at X% of SL distance
-input double   INPUT_RECOVERY_TP_BUFFER_POINTS = 60.0; // Add this many points beyond combined break-even for recovery TP
-input double   INPUT_RECOVERY_TP_TARGET_MULTIPLIER = 1.0; // Optional target model multiplier on (combined BE-to-SL) distance
+input double   INPUT_RECOVERY_TP_BUFFER_POINTS = 60.0; // Points beyond combined break-even for recovery TP
+input double   INPUT_RECOVERY_TP_TARGET_MULTIPLIER = 1.0; // Target model multiplier
 input int      INPUT_RECOVERY_COOLDOWN_SECONDS = 30; // Cooldown between recovery attempts
 input int      INPUT_RECOVERY_MAX_LAYERS = 3; // Safety cap for recovery layering
 input double   INPUT_RECOVERY_EMERGENCY_STOP_PERCENT = 20.0; // Halt recovery when drawdown exceeds this
-input double   INPUT_GRID_STEP_POINTS = 150.0; // Grid mode spacing
-input int      INPUT_GRID_MAX_ORDERS = 3; // Grid max recovery orders
-input double   INPUT_GRID_LOT_SCALING = 1.0; // Grid lot scaling
-input double   INPUT_HEDGE_TRIGGER_OFFSET_POINTS = 120.0; // Hedge trigger offset in points
-input double   INPUT_HEDGE_LOT_SCALING = 1.0; // Hedge lot scaling
-input int      INPUT_HEDGE_MAX_ORDERS = 2; // Hedge max recovery orders
-input double   INPUT_MARTINGALE_MULTIPLIER = 1.6; // Martingale lot multiplier
-input int      INPUT_MARTINGALE_MAX_ORDERS = 2; // Martingale max recovery orders
 //--- Session Filters
 input group    "=== Session Filters ==="
 input bool     INPUT_TRADE_ASIAN    = true;       // Trade Asian session
@@ -522,7 +531,8 @@ input int      INPUT_CLOSED_DEALS_MAX_ROWS = 5000; // Max rows to keep in closed
 #define COMMENT_RECOVERY_PREFIX   "V7_REC_"
 #define COMMENT_AVG_PREFIX        "V7_AVG_"
 #define COMMENT_HEDGE_PREFIX      "V7_HDG_"
-#define COMMENT_GRID_PREFIX       "V7_GRD_"
+#define COMMENT_GRID_PREFIX       "V9_GRD_"
+#define COMMENT_MART_PREFIX       "V9_MRT_"
 #define COMMENT_50PCT_PREFIX      "V7_50P_"
 #define MAX_POSITIONS             100
 #define MAX_FINGERPRINTS          500
@@ -533,7 +543,7 @@ input int      INPUT_CLOSED_DEALS_MAX_ROWS = 5000; // Max rows to keep in closed
 #define MARKOV_STATES             3
 #define QTABLE_SCHEMA_VERSION     3
 #define RUNTIME_SCHEMA_VERSION    8
-#define EA_VERSION_LABEL          "V7.3"
+#define EA_VERSION_LABEL          "V9.0"
 #define QTABLE_HASH_SENTINEL      0x51424C31
 #define RUNTIME_HASH_SENTINEL     0x52554E31
 enum ENUM_POSITION_SUBTYPE
@@ -1211,8 +1221,12 @@ string   g_treeSelectedFeatures[];
 int      g_treeSelectedFeatureCount = 0;
 double   g_treeParentEntropy = 0.0;
 int      g_consecWinBoostTrades = 0;
+// V9.0: Legacy recovery prefix for averaging mode only
 string   g_activeRecoveryPrefix = COMMENT_AVG_PREFIX;
 ENUM_POSITION_SUBTYPE g_activeRecoverySubtype = SUBTYPE_AVERAGING;
+// V9.0: Grid & Martingale runtime state
+datetime g_lastGridPlacementTime = 0;
+datetime g_lastMartingalePlacementTime = 0;
 //--- Q-Learning System (108 states x 4 actions)
 double   g_qTable[Q_TABLE_STATES][Q_TABLE_ACTIONS];
 int      g_qVisits[Q_TABLE_STATES][Q_TABLE_ACTIONS];
@@ -1327,8 +1341,8 @@ bool g_effClose50PctDefensive = false;
 bool g_effClosePartialTP = false;
 bool g_effCloseMultiLevelPartial = false;
 bool g_effModifyMoveToBE = false;
-bool g_effModifyTrailingSL = false;
-bool g_effModifyTrailingTP = false;
+// V9.0: g_effModifyTrailingSL and g_effModifyTrailingTP REMOVED (trailing gutted)
+bool g_effModifySkipLossOnHighSpread = false;
 bool g_effModifySkipLossOnHighSpread = false;
 struct EffectiveConfig
 {
@@ -2048,11 +2062,21 @@ if(!ValidateAndReportEffectiveConfig())
          " ML=", (INPUT_ENABLE_ML?"ON":"OFF"),
          " ComboAdaptive=", (INPUT_ENABLE_COMBINATION_ADAPTIVE?"ON":"OFF"),
          " Adaptive=", (INPUT_ENABLE_ADAPTIVE?"ON":"OFF"),
-         " Recovery=", (INPUT_ENABLE_RECOVERY?"ON":"OFF"),
-         " Partial=", (INPUT_ENABLE_PARTIAL_CLOSE?"ON":"OFF"),
-         " 50pct=", (INPUT_ENABLE_50PCT_CLOSE?"ON":"OFF"),
-         " TrailSL=", (INPUT_ENABLE_TRAILING?"ON":"OFF"),
-         " TrailTP=", (INPUT_ENABLE_TRAILING_TP?"ON":"OFF"));
+          " Recovery=", (INPUT_ENABLE_RECOVERY?"ON":"OFF"),
+          " Grid=", (INPUT_ENABLE_GRID?"ON":"OFF"),
+          " Martingale=", (INPUT_ENABLE_MARTINGALE?"ON":"OFF"),
+          " Partial=", (INPUT_ENABLE_PARTIAL_CLOSE?"ON":"OFF"),
+          " 50pct=", (INPUT_ENABLE_50PCT_CLOSE?"ON":"OFF"));
+   // V9.0: Grid/Martingale config summary
+   if(INPUT_ENABLE_GRID)
+      Print("GRID CONFIG: mode=", EnumToString(INPUT_GRID_PLACEMENT_MODE),
+            " step=", DoubleToString(INPUT_GRID_STEP_POINTS, 1),
+            " maxOrders=", INPUT_GRID_MAX_ORDERS,
+            " lotScale=", DoubleToString(INPUT_GRID_LOT_SCALING, 2));
+   if(INPUT_ENABLE_MARTINGALE)
+      Print("MARTINGALE CONFIG: mult=", DoubleToString(INPUT_MARTINGALE_MULTIPLIER, 2),
+            " maxOrders=", INPUT_MARTINGALE_MAX_ORDERS,
+            " maxTotalLots=", DoubleToString(INPUT_MARTINGALE_MAX_TOTAL_LOTS, 2));
    EventSetTimer(AI_TIMER_SECONDS);
    return INIT_SUCCEEDED;
 }
@@ -2239,8 +2263,13 @@ void OnTick()
       g_lastHeavyHistoryRun = now;
    }
    g_tickMsHistory = GetTickCount() - t0;
-   // V8.0: All position management removed (no trailing, partial, recovery, high-spread close)
-   // Positions close ONLY by broker SL/TP hit.
+    // V8.0: All position management removed (no trailing, partial, recovery, high-spread close)
+    // V9.0: Grid and Martingale monitor active positions
+    if(INPUT_ENABLE_GRID)
+       MonitorGridSystem();
+    if(INPUT_ENABLE_MARTINGALE)
+       MonitorMartingaleSystem();
+    // Positions close ONLY by broker SL/TP hit (for main orders).
    if(INPUT_ENABLE_ADAPTIVE)
       CheckAdaptiveOptimization();
    t0 = GetTickCount();
@@ -2667,6 +2696,7 @@ bool IsMainEntryComment(const string &comment)
    if(StringFind(comment, COMMENT_AVG_PREFIX) >= 0) return false;
    if(StringFind(comment, COMMENT_HEDGE_PREFIX) >= 0) return false;
    if(StringFind(comment, COMMENT_GRID_PREFIX) >= 0) return false;
+   if(StringFind(comment, COMMENT_MART_PREFIX) >= 0) return false;
    if(StringFind(comment, COMMENT_50PCT_PREFIX) >= 0) return false;
    return true;
 }
@@ -6220,56 +6250,10 @@ void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 //+------------------------------------------------------------------+
 void ManageTrailingStops()
 {
-  
-   if(!g_effModifyTrailingSL)
-  
-      return;
-   if(!IsStopModifyEnabled())
-      return;
-   static datetime lastTrailCheck = 0;
-   if(TimeCurrent() - lastTrailCheck < 5) return; // throttle to every 5?sec
-   lastTrailCheck = TimeCurrent();
-   double atr[];
-   if(CopyBuffer(g_hATR_M1, 0, 0, 1, atr) < 1 || atr[0] <= 0)
-      return;
-   double trailDistance = atr[0] * INPUT_TRAIL_ATR_MULTIPLIER +
-                          g_adaptive.trailAdjustPoints * g_point;
-   int total = PositionsTotal();
-   for(int i = 0; i < total; i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!IsOurPosition(ticket)) continue;
-      if(ShouldSkipStopAdjustmentsForTicket(ticket)) continue;
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double currentSL = PositionGetDouble(POSITION_SL);
-      double currentTP = PositionGetDouble(POSITION_TP);
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      double profit = (posType == POSITION_TYPE_BUY) ?
-                      currentPrice - entryPrice :
-                      entryPrice - currentPrice;
-      if(profit < INPUT_TRAIL_ACTIVATION_POINTS * g_point)
-         continue;
-      double newSL;
-      if(posType == POSITION_TYPE_BUY)
-         newSL = currentPrice - trailDistance;
-      else
-         newSL = currentPrice + trailDistance;
-      newSL = NormalizeDouble(newSL, g_digits);
-      double minDist = g_stopLevel * g_point;
-      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY && currentPrice - newSL < minDist)
-         continue;
-      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_SELL && newSL - currentPrice < minDist)
-         continue;
-      bool shouldMove = false;
-      if(posType == POSITION_TYPE_BUY && newSL > currentSL + INPUT_TRAIL_STEP_POINTS * g_point)
-         shouldMove = true;
-      else if(posType == POSITION_TYPE_SELL && newSL < currentSL - INPUT_TRAIL_STEP_POINTS * g_point)
-         shouldMove = true;
-      if(shouldMove && g_trade.PositionModify(ticket, newSL, currentTP))
-         Print("TRAILING: Ticket ", ticket, " SL moved from ", currentSL, " to ", newSL);
-   }
+   // V9.0: ManageTrailingStops GUTTED. No SL modifications from this function.
+   if(INPUT_ENABLE_LOGGING)
+      LogWithRestartGuard("ManageTrailingStops: V9.0 disabled - no trailing SL modifications");
+   return;
 }
 //+------------------------------------------------------------------+
 bool CanModifyPosition(ulong ticket)
@@ -6470,11 +6454,90 @@ bool BuildValidRecoveryTP(int parentType, double price, double sl,
    return true;
 }
 //+------------------------------------------------------------------+
-// V8.0: PlaceRecoveryOrder REMOVED. No recovery system.
+// V9.0: PlaceRecoveryOrder - working implementation for legacy averaging mode
 void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
                         double parentSL, double parentEntry)
 {
-   return; // V8.0: disabled
+   if(!IsPlacementEnabled()) return;
+   
+   double price = 0.0;
+   double sl = 0.0;
+   double tp = 0.0;
+   ENUM_ORDER_TYPE orderType;
+   int dir = (parentType == POSITION_TYPE_BUY) ? 1 : -1;
+   
+   // Get combined basket metrics for intelligent TP
+   double combinedBE = 0.0;
+   double combinedLots = 0.0;
+   
+   if(parentType == POSITION_TYPE_BUY)
+   {
+      price = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      orderType = ORDER_TYPE_BUY;
+   }
+   else
+   {
+      price = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      orderType = ORDER_TYPE_SELL;
+   }
+   price = NormalizeDouble(price, g_digits);
+   
+   // Calculate TP using basket break-even model
+   if(GetRecoveryBasketMetrics(parentTicket, parentType, lots, price, combinedBE, combinedLots))
+   {
+      double targetTP = 0.0;
+      if(BuildValidRecoveryTP(parentType, price, parentSL, combinedBE, targetTP))
+         tp = targetTP;
+   }
+   
+   // Fallback TP if basket model failed
+   if(tp <= 0.0)
+   {
+      double fallbackTP = INPUT_RECOVERY_TP_BUFFER_POINTS * g_point;
+      tp = (parentType == POSITION_TYPE_BUY) ? price + fallbackTP : price - fallbackTP;
+   }
+   tp = NormalizeDouble(tp, g_digits);
+   
+   // SL same as parent
+   sl = NormalizeDouble(parentSL, g_digits);
+   
+   // Broker distance validation
+   double minDist = (double)MathMax(g_stopLevel, g_freezeLevel) * g_point;
+   if(MathAbs(price - sl) < minDist)
+      sl = (parentType == POSITION_TYPE_BUY) ? price - minDist - g_point : price + minDist + g_point;
+   if(MathAbs(price - tp) < minDist)
+      tp = (parentType == POSITION_TYPE_BUY) ? price + minDist + g_point : price - minDist - g_point;
+   sl = NormalizeDouble(sl, g_digits);
+   tp = NormalizeDouble(tp, g_digits);
+   
+   // Margin check
+   if(!HasEnoughMargin(lots, price, orderType))
+   {
+      Print("RECOVERY ORDER REJECTED: insufficient margin | parentTicket=", parentTicket,
+            " lots=", DoubleToString(lots, g_lotDigits));
+      return;
+   }
+   
+   string comment = BuildUniqueOrderComment(COMMENT_AVG_PREFIX, dir);
+   g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_AVERAGING));
+   g_trade.SetTypeFilling(g_selectedFillingMode);
+   
+   if(g_trade.PositionOpen(_Symbol, orderType, lots, price, sl, tp, comment))
+   {
+      Print("RECOVERY ORDER PLACED: parentTicket=", parentTicket,
+            " dir=", (dir==1?"BUY":"SELL"),
+            " lot=", DoubleToString(lots, g_lotDigits),
+            " price=", DoubleToString(price, g_digits),
+            " SL=", DoubleToString(sl, g_digits),
+            " TP=", DoubleToString(tp, g_digits),
+            " comment=", comment);
+   }
+   else
+   {
+      Print("RECOVERY ORDER FAILED: parentTicket=", parentTicket,
+            " retcode=", g_trade.ResultRetcode(),
+            " comment=", g_trade.ResultComment());
+   }
 }
 //+------------------------------------------------------------------+
 // V8.0: CheckRecoveryTimeouts REMOVED. No recovery system.
