@@ -31,14 +31,7 @@ enum ENUM_EXECUTION_MODE
    MARKET       = 0,   // Immediate market order
    PENDING_STOP = 1    // Place stop pending order
 };
-enum ENUM_RECOVERY_MODE
-{
-   RECOVERY_OFF        = 0,
-   RECOVERY_AVERAGING  = 1,
-   RECOVERY_HEDGING    = 2,
-   RECOVERY_GRID       = 3,
-   RECOVERY_MARTINGALE = 4
-};
+// V8.1: ENUM_RECOVERY_MODE removed — recovery system permanently disabled in V8.0
 enum ENUM_COMBO_RANK_MODE
 {
    COMBO_RANK_HEURISTIC = 0,
@@ -63,13 +56,13 @@ enum ENUM_THREAT_ZONE
 };
 enum ENUM_EA_STATE
 {
-   STATE_IDLE           = 0,  // No positions, waiting
-   STATE_ENTRY_SEEKING  = 1,  // Signal detected, evaluating
-   STATE_POSITION_ACTIVE = 2, // Main position open
-   STATE_POSITION_REDUCED = 3,// After 50% close
-   STATE_RECOVERY_ACTIVE = 4, // Recovery orders placed
-   STATE_DRAWDOWN_PROTECT = 5,// Equity protection mode
-   STATE_EXTREME_RISK   = 6   // Emergency - closing all
+   STATE_IDLE           = 0,  // No positions, waiting for signals
+   STATE_POSITION_ACTIVE = 2, // Main position open, monitoring SL/TP
+   // V8.1: Removed STATE_ENTRY_SEEKING (unused in runtime), STATE_POSITION_REDUCED (no 50% close),
+   //        STATE_RECOVERY_ACTIVE (no recovery), STATE_DRAWDOWN_PROTECT (disabled),
+   //        STATE_EXTREME_RISK (disabled). Kept numeric values for persistence compat.
+   STATE_DRAWDOWN_PROTECT = 5,// Equity protection mode (retained for gate compat, never entered)
+   STATE_EXTREME_RISK   = 6   // Emergency (retained for gate compat, never entered)
 };
 enum ENUM_RL_ACTION
 {
@@ -99,7 +92,7 @@ int      INPUT_SAME_DIRECTION_BLOCK_SECONDS = 1; // Direction-specific re-entry 
 double   INPUT_PROXIMITY_POINTS      = 0.0; // Proximity rule disabled (timeout-only pacing)
 int      INPUT_POSITION_AGE_HOURS    = 240;  // Close stale positions after N hours (0=disabled)
 int      INPUT_MAGIC_NUMBER           = 770700; // Magic Number
- int      INPUT_ORDER_COOLDOWN_SECONDS = 1; // Cooldown between orders (seconds) FIXED: 5 minutes to prevent clustering
+ int      INPUT_ORDER_COOLDOWN_SECONDS = 300; // Cooldown between orders (seconds) — 5 minutes to prevent order clustering
 input ENUM_EXECUTION_MODE INPUT_EXECUTION_MODE = MARKET; // Order execution mode
  int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset from market (points)
 int      INPUT_PENDING_EXPIRY_MINUTES = 600; // Pending stop expiry in minutes
@@ -504,7 +497,69 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
 #define MARKOV_STATES             3
 #define QTABLE_SCHEMA_VERSION     3
 #define RUNTIME_SCHEMA_VERSION    8
-#define EA_VERSION_LABEL          "V7.3"
+#define EA_VERSION_LABEL          "V8.1"
+//+------------------------------------------------------------------+
+//| V8.1: CENTRALIZED ERROR HANDLING                                  |
+//+------------------------------------------------------------------+
+enum ENUM_ERROR_CATEGORY
+{
+   ERR_CAT_DATA_UNAVAILABLE  = 0,
+   ERR_CAT_BROKER_REJECT     = 1,
+   ERR_CAT_CONFIG_INVALID    = 2,
+   ERR_CAT_STATE_INTEGRITY   = 3,
+   ERR_CAT_INDICATOR_FAIL    = 4,
+   ERR_CAT_PERSISTENCE_FAIL  = 5,
+   ERR_CAT_ORDER_FAIL        = 6,
+   ERR_CAT_GATE_REJECT       = 7,
+   ERR_CAT_COUNT             = 8
+};
+int g_errorCounters[8];
+int g_errorCountersWindow[8];
+datetime g_errorWindowStart = 0;
+string GetErrorCategoryName(ENUM_ERROR_CATEGORY cat)
+{
+   switch(cat)
+   {
+      case ERR_CAT_DATA_UNAVAILABLE: return "DATA_UNAVAIL";
+      case ERR_CAT_BROKER_REJECT:    return "BROKER_REJ";
+      case ERR_CAT_CONFIG_INVALID:   return "CONFIG_INV";
+      case ERR_CAT_STATE_INTEGRITY:  return "STATE_INT";
+      case ERR_CAT_INDICATOR_FAIL:   return "INDICATOR";
+      case ERR_CAT_PERSISTENCE_FAIL: return "PERSIST";
+      case ERR_CAT_ORDER_FAIL:       return "ORDER_FAIL";
+      case ERR_CAT_GATE_REJECT:      return "GATE_REJ";
+      default:                       return "UNKNOWN";
+   }
+}
+void LogCategorizedError(ENUM_ERROR_CATEGORY cat, const string &context, const string &detail="")
+{
+   int idx = (int)cat;
+   if(idx < 0 || idx >= (int)ERR_CAT_COUNT) idx = 0;
+   g_errorCounters[idx]++;
+   // Rolling window
+   datetime now = TimeCurrent();
+   int windowSec = 300; // 5 min window
+   if(g_errorWindowStart == 0 || (now - g_errorWindowStart) > windowSec)
+   {
+      g_errorWindowStart = now;
+      ArrayInitialize(g_errorCountersWindow, 0);
+   }
+   g_errorCountersWindow[idx]++;
+   Print("[", GetErrorCategoryName(cat), "] ", context, (StringLen(detail) > 0 ? " | " + detail : ""));
+}
+string GetTopErrorCategories()
+{
+   string result = "";
+   for(int i = 0; i < (int)ERR_CAT_COUNT; i++)
+   {
+      if(g_errorCounters[i] > 0)
+      {
+         if(StringLen(result) > 0) result += " ";
+         result += GetErrorCategoryName((ENUM_ERROR_CATEGORY)i) + "=" + IntegerToString(g_errorCounters[i]);
+      }
+   }
+   return (StringLen(result) > 0 ? result : "none");
+}
 #define QTABLE_HASH_SENTINEL      0x51424C31
 #define RUNTIME_HASH_SENTINEL     0x52554E31
 enum ENUM_POSITION_SUBTYPE
@@ -717,8 +772,9 @@ struct DailyStats
 {
    datetime dayStart;
    double   dayStartBalance;
-   int      tradesPlaced;
-   int      pendingOrdersPlaced;
+   int      tradesPlaced;              // Confirmed fills today (reconciled by ProcessEntryDeals)
+   int      pendingOrdersPlaced;       // Pending stop orders placed today
+   int      pendingTodayCount;         // V8.1: Lightweight pending count incremented at placement, decremented on fill/cancel
    int      closedDealsToday;
    int      winsToday;
    int      lossesToday;
@@ -1426,6 +1482,17 @@ bool ValidateInputsStrict(string &err)
    if(INPUT_MAX_CONCURRENT_TRADES < 1) { err = "INPUT_MAX_CONCURRENT_TRADES must be >= 1"; return false; }
    if(INPUT_MAX_SAME_DIRECTION < 1) { err = "INPUT_MAX_SAME_DIRECTION must be >= 1"; return false; }
    if(INPUT_ORDER_COOLDOWN_SECONDS < 0) { err = "INPUT_ORDER_COOLDOWN_SECONDS must be >= 0"; return false; }
+   // V8.1: Warn if cooldown is suspiciously low for conservative mode
+   if(INPUT_ORDER_COOLDOWN_SECONDS > 0 && INPUT_ORDER_COOLDOWN_SECONDS < 10 && INPUT_MAX_CONCURRENT_TRADES <= 1)
+   {
+      Print("WARNING: INPUT_ORDER_COOLDOWN_SECONDS=", INPUT_ORDER_COOLDOWN_SECONDS, 
+            " is very low for single-slot mode. Consider 60-300s to prevent clustering.");
+   }
+   if(INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION && INPUT_ORDER_COOLDOWN_SECONDS < 60 && INPUT_MAX_CONCURRENT_TRADES <= 1)
+   {
+      err = "STRICT: Cooldown < 60s contradicts conservative single-slot mode (set >= 60 or disable strict)";
+      return false;
+   }
    if(INPUT_MAX_DAILY_TRADES < 1) { err = "INPUT_MAX_DAILY_TRADES must be >= 1"; return false; }
    if(INPUT_MAX_CONSECUTIVE_LOSSES < 1) { err = "INPUT_MAX_CONSECUTIVE_LOSSES must be >= 1 when consecutive-loss gate is enabled"; return false; }
    if(!(INPUT_DAILY_LOSS_LIMIT_PERCENT > 0.0 && INPUT_DAILY_LOSS_LIMIT_PERCENT <= 100.0)) { err = "INPUT_DAILY_LOSS_LIMIT_PERCENT must be > 0 and <= 100"; return false; }
@@ -2035,9 +2102,16 @@ if(!ValidateAndReportEffectiveConfig())
    SyncExistingPositions();
    //--- Calculate initial average ATR
    CalculateAverageATR();
+   ArrayInitialize(g_errorCounters, 0);
+   ArrayInitialize(g_errorCountersWindow, 0);
    Print("=== EA "+EA_VERSION_LABEL+" HumanBrain Complete - INITIALIZED ===");
    Print("Symbol: ", _Symbol, " | Magic: ", INPUT_MAGIC_NUMBER);
    Print("Risk: ", g_risk.riskPercent, "% | MaxTrades: ", g_adaptive.maxPositions);
+   // V8.1: Startup cooldown config log for live validation
+   Print("COOLDOWN CONFIG: orderCooldownSec=", INPUT_ORDER_COOLDOWN_SECONDS,
+         " | sameDirBlockSec=", INPUT_SAME_DIRECTION_BLOCK_SECONDS,
+         " | maxDailyTrades=", INPUT_MAX_DAILY_TRADES,
+         " | maxConsecLosses=", INPUT_MAX_CONSECUTIVE_LOSSES);
       Print("ENTRY POLICY: closeOnOpposite=", (INPUT_CLOSE_ON_OPPOSITE_SIGNAL ? "ON" : "OFF"),
          " | closeMaxSLPct=", DoubleToString(INPUT_FLIP_CLOSE_MAX_SL_PERCENT, 1),
          " | cleanupBlockActive=", (INPUT_CLOSE_ON_OPPOSITE_SIGNAL ? "ON" : "OFF"),
@@ -2608,6 +2682,10 @@ void UpdateEAState()
    else
       g_eaState = STATE_IDLE;
    g_prevEaState = previousState;
+   // V8.1: Compact transition log for operational transparency
+   if(g_eaState != previousState && INPUT_ENABLE_LOGGING)
+      Print("EA STATE TRANSITION: ", EnumToString(previousState), " -> ", EnumToString(g_eaState),
+            " | mainCount=", mainCount);
 }
 //+------------------------------------------------------------------+
 // V8.0: HandleExtremeRisk REMOVED. No protective liquidation.
@@ -5106,12 +5184,17 @@ bool CheckAllGates(string &rejectReason)
       rejectReason = "Outside trading session";
       return false;
    }
-   // Cooldown is enforced in ExecuteOrder so confirmed flip replacements can bypass when configured.
-   if(INPUT_GATE_MAX_DAILY_TRADES_ON && g_daily.tradesPlaced >= INPUT_MAX_DAILY_TRADES)
-   {
-      rejectReason = "Daily trade limit reached";
-      return false;
-   }
+    // V8.1: Gate on filledToday + pendingTodayCount for real-time enforcement
+    int effectiveDailyCount = g_daily.tradesPlaced + g_daily.pendingTodayCount;
+    if(INPUT_GATE_MAX_DAILY_TRADES_ON && effectiveDailyCount >= INPUT_MAX_DAILY_TRADES)
+    {
+       rejectReason = "Daily trade limit reached (filled=" + IntegerToString(g_daily.tradesPlaced) +
+                      " pending=" + IntegerToString(g_daily.pendingTodayCount) +
+                      " total=" + IntegerToString(effectiveDailyCount) +
+                      " limit=" + IntegerToString(INPUT_MAX_DAILY_TRADES) + ")";
+       LogCategorizedError(ERR_CAT_GATE_REJECT, "Daily limit", rejectReason);
+       return false;
+    }
    double dayLoss = g_daily.lossToday;
    double maxDayLoss = g_daily.dayStartBalance * (INPUT_DAILY_LOSS_LIMIT_PERCENT / 100.0);
    if(INPUT_GATE_DAILY_LOSS_ON && dayLoss >= maxDayLoss)
@@ -6105,12 +6188,16 @@ string riskReject = "";
       ConsumeStreakMultiplierOrder();
       datetime orderPlacedTime = TimeCurrent();
       g_daily.pendingOrdersPlaced++;
-        g_lastOrderTime = orderPlacedTime;
+      g_daily.pendingTodayCount++;  // V8.1: Increment pending count at placement
+      g_lastOrderTime = orderPlacedTime;
       if(decision.direction == 1)
          g_lastBuyOrderTime = orderPlacedTime;
       else
          g_lastSellOrderTime = orderPlacedTime;
       g_totalTrades++;
+      Print("COOLDOWN SNAPSHOT: cooldownSec=", INPUT_ORDER_COOLDOWN_SECONDS,
+            " | filledToday=", g_daily.tradesPlaced,
+            " | pendingToday=", g_daily.pendingTodayCount);
       return true;
    }
    if(!IsFeatureEnabled("market_orders"))
@@ -6167,6 +6254,10 @@ TrackNewPosition(positionId, trackedDecision, comment);
          else
             g_lastSellOrderTime = orderPlacedTime;
          g_totalTrades++;
+         // V8.1: Decrement pending count on successful fill (market orders don't go through pending)
+         Print("COOLDOWN SNAPSHOT: cooldownSec=", INPUT_ORDER_COOLDOWN_SECONDS,
+               " | filledToday=", g_daily.tradesPlaced,
+               " | pendingToday=", g_daily.pendingTodayCount);
          return true;
       }
        uint retcode = g_trade.ResultRetcode();
@@ -7668,6 +7759,7 @@ void ResetDailyCounters()
    g_daily.dayStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_daily.tradesPlaced = 0;
    g_daily.pendingOrdersPlaced = 0;
+   g_daily.pendingTodayCount = 0;  // V8.1: Reset pending counter
    g_daily.closedDealsToday = 0;
    g_daily.winsToday = 0;
    g_daily.lossesToday = 0;
@@ -8487,7 +8579,7 @@ void DrawStatsPanel()
    ObjectSetInteger(0, prefix + "bg", OBJPROP_XDISTANCE, x);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_YDISTANCE, y);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_XSIZE, 360);
-   ObjectSetInteger(0, prefix + "bg", OBJPROP_YSIZE, 430);
+   ObjectSetInteger(0, prefix + "bg", OBJPROP_YSIZE, 460);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_BGCOLOR, bgColor);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_BORDER_TYPE, BORDER_FLAT);
    ObjectSetInteger(0, prefix + "bg", OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -8495,12 +8587,12 @@ void DrawStatsPanel()
    // Title
    CreateLabel(prefix + "title", "EA " + EA_VERSION_LABEL + " HumanBrain", x + 10, y, clrGold, 10);
    y += 20;
-   // State
-   string stateStr = EnumToString(g_eaState);
+   // State — V8.1: Only show meaningful runtime states
+   string stateStr = "UNKNOWN";
    color stateColor = clrLime;
-   if(g_eaState == STATE_EXTREME_RISK) stateColor = clrRed;
-   else if(g_eaState == STATE_RECOVERY_ACTIVE) stateColor = clrOrange;
-   else if(g_eaState == STATE_DRAWDOWN_PROTECT) stateColor = clrYellow;
+   if(g_eaState == STATE_IDLE) { stateStr = "IDLE"; stateColor = clrLime; }
+   else if(g_eaState == STATE_POSITION_ACTIVE) { stateStr = "ACTIVE"; stateColor = clrCyan; }
+   else { stateStr = EnumToString(g_eaState) + " (legacy)"; stateColor = clrGray; }
    CreateLabel(prefix + "state", "State: " + stateStr, x + 10, y, stateColor, 9);
    y += 18;
    // Threat
@@ -8619,10 +8711,14 @@ void DrawStatsPanel()
    }
    CreateLabel(prefix + "comboCov", "Combo coverage: " + IntegerToString(g_comboObservedCount) + "/" + IntegerToString(MathMax(g_combinationStatsCount,1)), x + 10, y, clrCyan, 9);
    y += 18;
+   // V8.1: Error category summary
+   CreateLabel(prefix + "errors", "Errors: " + GetTopErrorCategories(), x + 10, y, clrOrange, 8);
+   y += 16;
    // Settings summary
    CreateLabel(prefix + "settings", "MinSig:" + IntegerToString(INPUT_MIN_SIGNALS) +
                " MTF:" + IntegerToString(INPUT_MIN_MTF_SCORE) +
-               " ADX:" + (INPUT_USE_ADX_FILTER ? "ON" : "OFF"),
+               " ADX:" + (INPUT_USE_ADX_FILTER ? "ON" : "OFF") +
+               " CD:" + IntegerToString(INPUT_ORDER_COOLDOWN_SECONDS) + "s",
                x + 10, y, clrGray, 8);
    y += 16;
    // Version line
