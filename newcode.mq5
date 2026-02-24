@@ -88,92 +88,90 @@ enum ENUM_MARKOV_STATE
 //| SECTION 2: INPUT PARAMETERS                                      |
 //+------------------------------------------------------------------+
 //--- Expiry Lock
-input group    "=== Expiry Lock ==="
-input int      INPUT_EXPIRY_YEAR  = 2030;         // Expiry Year (FIXED: Extended)
-input int      INPUT_EXPIRY_MONTH = 12;           // Expiry Month
-input int      INPUT_EXPIRY_DAY   = 31;           // Expiry Day
+ int      INPUT_EXPIRY_YEAR  = 2030;         // Expiry Year (FIXED: Extended)
+ int      INPUT_EXPIRY_MONTH = 12;           // Expiry Month
+ int      INPUT_EXPIRY_DAY   = 31;           // Expiry Day
 //--- Trading Configuration
-input group    "=== Trading Configuration ==="
-input int      INPUT_MAX_CONCURRENT_TRADES  = 3;  // Max concurrent MAIN trades (set 1 for strict single-slot flip behavior)
-input int      INPUT_MAX_CONCURRENT_RECOVERY_TRADES = 3; // Max concurrent recovery/aux trades
-input int      INPUT_MAX_SAME_DIRECTION    = 2;  // Max same-direction trades
-input int      INPUT_SAME_DIRECTION_BLOCK_SECONDS = 360; // Direction-specific re-entry block in seconds (0=disable)
-input double   INPUT_PROXIMITY_POINTS      = 0.0; // Proximity rule disabled (timeout-only pacing)
-input int      INPUT_POSITION_AGE_HOURS    = 0;  // Close stale positions after N hours (0=disabled)
-input int      INPUT_MAGIC_NUMBER           = 770700; // Magic Number
-input int      INPUT_ORDER_COOLDOWN_SECONDS = 300; // Cooldown between orders (seconds) FIXED: 5 minutes to prevent clustering
+
+int      INPUT_MAX_CONCURRENT_TRADES  = 1;  // Max concurrent MAIN trades (set 1 for strict single-slot flip behavior)
+ int      INPUT_MAX_CONCURRENT_RECOVERY_TRADES = 3; // Max concurrent recovery/aux trades
+int      INPUT_MAX_SAME_DIRECTION    = 2000;  // Max same-direction trades
+int      INPUT_SAME_DIRECTION_BLOCK_SECONDS = 1; // Direction-specific re-entry block in seconds (0=disable)
+double   INPUT_PROXIMITY_POINTS      = 0.0; // Proximity rule disabled (timeout-only pacing)
+int      INPUT_POSITION_AGE_HOURS    = 240;  // Close stale positions after N hours (0=disabled)
+int      INPUT_MAGIC_NUMBER           = 770700; // Magic Number
+ int      INPUT_ORDER_COOLDOWN_SECONDS = 1; // Cooldown between orders (seconds) FIXED: 5 minutes to prevent clustering
 input ENUM_EXECUTION_MODE INPUT_EXECUTION_MODE = MARKET; // Order execution mode
-input int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset from market (points)
-input int      INPUT_PENDING_EXPIRY_MINUTES = 60; // Pending stop expiry in minutes
-input bool     INPUT_RESET_ALL_PERSISTED_STATE = false; // Delete all persisted symbol+magic files on init
-input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // deprecated // Close previous position when opposite signal appears
-input bool     INPUT_STRICT_OPPOSITE_FLIP_MODE = false; // deprecated // When max main=1: force close/cancel opposite exposure before new opposite entry
-input bool     INPUT_MAX_MAIN_HARD_CAP_ON = true; // Hard cap: INPUT_MAX_CONCURRENT_TRADES is absolute entry limit (no adaptive expansion in gating)
-input bool     INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON = false; // deprecated // On opposite flip, cancel opposite-direction MAIN pending stop orders
-input bool     INPUT_FLIP_BYPASS_COOLDOWN_ON = false; // deprecated // Confirmed opposite flip may bypass global cooldown for replacement entry
-input bool     INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION = false; // Allow adaptive max-position expansion above input cap when hard-cap is OFF
-input double   INPUT_FLIP_CLOSE_MAX_SL_PERCENT = 50.0; // Opposite close allowed only if adverse move is below this % of SL distance
-input bool     INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN = false; // deprecated // Force-close opposite MAIN positions even when SL-loss threshold block would skip
-input bool     INPUT_FLIP_ZERO_TP_ON = true; // Flip TP reset mode: true=zero TP, false=reset to INPUT_FLIP_TP_RESET_PRICE
-input double   INPUT_FLIP_TP_RESET_PRICE = 0.0; // TP value used when INPUT_FLIP_ZERO_TP_ON=false (normalized to symbol digits)
-input bool     INPUT_FLIP_TP_RESET_CLAMP_ON = true; // If TP reset price violates stop distance: true=clamp outward, false=fallback to 0.0/
+ int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset from market (points)
+int      INPUT_PENDING_EXPIRY_MINUTES = 600; // Pending stop expiry in minutes
+ bool     INPUT_RESET_ALL_PERSISTED_STATE = false; // Delete all persisted symbol+magic files on init
+bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // Close previous position when opposite signal appears
+ bool     INPUT_STRICT_OPPOSITE_FLIP_MODE = false; // When max main=1: force close/cancel opposite exposure before new opposite entry
+bool     INPUT_MAX_MAIN_HARD_CAP_ON = true; // Hard cap: INPUT_MAX_CONCURRENT_TRADES is absolute entry limit (no adaptive expansion in gating)
+ bool     INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON = false; // On opposite flip, cancel opposite-direction MAIN pending stop orders
+ bool     INPUT_FLIP_BYPASS_COOLDOWN_ON = false; // Confirmed opposite flip may bypass global cooldown for replacement entry
+bool     INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION = false; // Allow adaptive max-position expansion above input cap when hard-cap is OFF
+double   INPUT_FLIP_CLOSE_MAX_SL_PERCENT = 50.0; // Opposite close allowed only if adverse move is below this % of SL distance
+bool     INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN = false; // Force-close opposite MAIN positions even when SL-loss threshold block would skip
+bool     INPUT_FLIP_ZERO_TP_ON = false; // Flip TP reset mode: true=zero TP, false=reset to INPUT_FLIP_TP_RESET_PRICE
+double   INPUT_FLIP_TP_RESET_PRICE = 0.0; // TP value used when INPUT_FLIP_ZERO_TP_ON=false (normalized to symbol digits)
+ bool     INPUT_FLIP_TP_RESET_CLAMP_ON = true; // If TP reset price violates stop distance: true=clamp outward, false=fallback to 0.0/
 //--- Risk Management
-input group    "=== Risk Management ==="
-input ENUM_RISK_PROFILE INPUT_RISK_PROFILE = RISK_MEDIUM; // Risk Profile
-input double   INPUT_RISK_PERCENT          = 1.0; // Risk % per trade (0=use profile)
-input double   INPUT_MAX_LOT_SIZE          = 5.0; // Maximum lot size
+
+ ENUM_RISK_PROFILE INPUT_RISK_PROFILE = RISK_MEDIUM; // Risk Profile
+ double   INPUT_RISK_PERCENT          = 90.0; // Risk % per trade (0=use profile)
+input double   INPUT_MAX_LOT_SIZE          = 1.0; // Maximum lot size
 input double   INPUT_MIN_LOT_SIZE          = 0.01;// Minimum lot size
-input double   INPUT_MAX_TOTAL_RISK_PERCENT = 5.0;// Max total portfolio risk %
+ double   INPUT_MAX_TOTAL_RISK_PERCENT = 99.0;// Max total portfolio risk %
 //--- Equity Protection
-input group    "=== Equity Protection ==="
-input double   INPUT_EQUITY_FLOOR_PERCENT    = 85.0; // Equity floor % (close all below)
-input double   INPUT_DAILY_LOSS_LIMIT_PERCENT = 3.0; // Max daily loss %
-input int      INPUT_MAX_DAILY_TRADES        = 50;   // Max trades per day (FIXED: Increased from 20)
-input int      INPUT_MAX_CONSECUTIVE_LOSSES  = 10;   // Max consecutive losses before pause (FIXED: Increased from 5)
-input bool     INPUT_RESET_CONSEC_DAILY      = true; // Reset consecutive losses daily
-//--- Extreme Risk Controls (Default OFF)
-input group    "=== Extreme Risk Controls (Default OFF) ==="
-input bool     INPUT_ENABLE_EXTREME_BY_THREAT = false;
-input bool     INPUT_ENABLE_EXTREME_BY_DRAWDOWN = false;
-input bool     INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT = false;
-input bool     INPUT_ENABLE_DRAWDOWN_PROTECT_STATE = false;
-input double   INPUT_EXTREME_ENTER_THREAT = 80.0;
-input double   INPUT_EXTREME_ENTER_DRAWDOWN = 10.0;
-input double   INPUT_EXTREME_EXIT_THREAT = 70.0;
-input double   INPUT_EXTREME_EXIT_DRAWDOWN = 7.0;
-input int      INPUT_EXTREME_EXIT_MAX_TOTAL_POSITIONS = 1;
-input bool     INPUT_ENABLE_EXTREME_ON_TICK_HANDLER = false;
-input bool     INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN = false;
-input bool     INPUT_ENABLE_EXTREME_CLOSE_OLDEST = false;
-input bool     INPUT_ENABLE_EXTREME_FILTER_SYMBOL = false;
-input bool     INPUT_ENABLE_EXTREME_FILTER_MAGIC = false;
-input bool     INPUT_ENABLE_EXTREME_THROTTLE = false;
-input int      INPUT_EXTREME_CLOSE_INTERVAL_SECONDS = 5;
-input int      INPUT_EXTREME_MAX_CLOSES_PER_CALL = 1;
-input bool     INPUT_ENABLE_EQUITY_FLOOR_TRIGGER = false;
-input bool     INPUT_ENABLE_EQUITY_FLOOR_FORCE_EXTREME_STATE = false;
-input bool     INPUT_ENABLE_EQUITY_FLOOR_CLOSE_ALL = false;
-input bool     INPUT_ENABLE_EQUITY_FLOOR_RETURN_AFTER_ACTION = false;
-input bool     INPUT_ENABLE_CLOSE_ALL_POSITIONS_API = false;
-input bool     INPUT_ENABLE_CLOSE_ALL_ONLY_OUR_POSITIONS = false; // RISK: false can close positions not created by this EA
-input bool     INPUT_ENABLE_CLOSE_ALL_SYMBOL_FILTER = false;
-input bool     INPUT_CLOSE_ALL_SYMBOL_SCOPE_CURRENT = true;
-input bool     INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE = false;
-input bool     INPUT_ENABLE_THREAT_HARD_BLOCK = false;
-input bool     INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK = false;
-input bool     INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK = false;
-input bool     INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT = false;
-input bool     INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT = false;
-input bool     INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT = false;
-input bool     INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE = false;
-input bool     INPUT_ENABLE_CLOSE_PARTIAL_TP = false;
-input bool     INPUT_ENABLE_CLOSE_MULTI_LEVEL_PARTIAL = false;
-input bool     INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN = false;
-input bool     INPUT_ENABLE_MODIFY_TRAILING_SL = false;
-input bool     INPUT_ENABLE_MODIFY_TRAILING_TP = false;
-input bool     INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD = false;
-input bool     INPUT_USE_LEGACY_BEHAVIOR_MAPPING = true;
-input bool     INPUT_FORCE_NEW_TOGGLES_ONLY = false;
+
+double   INPUT_EQUITY_FLOOR_PERCENT    = 95.0; // Equity floor % (close all below)
+double   INPUT_DAILY_LOSS_LIMIT_PERCENT = 99.0; // Max daily loss %
+ int      INPUT_MAX_DAILY_TRADES        = 5000;   // Max trades per day (FIXED: Increased from 20)
+ int      INPUT_MAX_CONSECUTIVE_LOSSES  = 1000;   // Max consecutive losses before pause (FIXED: Increased from 5)
+bool     INPUT_RESET_CONSEC_DAILY      = true; // Reset consecutive losses daily
+
+bool     INPUT_ENABLE_EXTREME_BY_THREAT = false;
+ bool     INPUT_ENABLE_EXTREME_BY_DRAWDOWN = false;
+bool     INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT = false;
+ bool     INPUT_ENABLE_DRAWDOWN_PROTECT_STATE = false;
+double   INPUT_EXTREME_ENTER_THREAT = 80.0;
+double   INPUT_EXTREME_ENTER_DRAWDOWN = 100.0;
+ double   INPUT_EXTREME_EXIT_THREAT = 90.0;
+ double   INPUT_EXTREME_EXIT_DRAWDOWN = 90.0;
+ int      INPUT_EXTREME_EXIT_MAX_TOTAL_POSITIONS = 1;
+ bool     INPUT_ENABLE_EXTREME_ON_TICK_HANDLER = false;
+ bool     INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN = false;
+ bool     INPUT_ENABLE_EXTREME_CLOSE_OLDEST = false;
+ bool     INPUT_ENABLE_EXTREME_FILTER_SYMBOL = false;
+ bool     INPUT_ENABLE_EXTREME_FILTER_MAGIC = false;
+ bool     INPUT_ENABLE_EXTREME_THROTTLE = false;
+ int      INPUT_EXTREME_CLOSE_INTERVAL_SECONDS = 5;
+ int      INPUT_EXTREME_MAX_CLOSES_PER_CALL = 1;
+ bool     INPUT_ENABLE_EQUITY_FLOOR_TRIGGER = false;
+ bool     INPUT_ENABLE_EQUITY_FLOOR_FORCE_EXTREME_STATE = false;
+ bool     INPUT_ENABLE_EQUITY_FLOOR_CLOSE_ALL = false;
+ bool     INPUT_ENABLE_EQUITY_FLOOR_RETURN_AFTER_ACTION = false;
+ bool     INPUT_ENABLE_CLOSE_ALL_POSITIONS_API = false;
+ bool     INPUT_ENABLE_CLOSE_ALL_ONLY_OUR_POSITIONS = false; // RISK: false can close positions not created by this EA
+ bool     INPUT_ENABLE_CLOSE_ALL_SYMBOL_FILTER = false;
+ bool     INPUT_CLOSE_ALL_SYMBOL_SCOPE_CURRENT = true;
+ bool     INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE = false;
+ bool     INPUT_ENABLE_THREAT_HARD_BLOCK = false;
+ bool     INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK = false;
+ bool     INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK = false;
+ bool     INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT = false;
+ bool     INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT = false;
+ bool     INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT = false;
+ bool     INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE = false;
+ bool     INPUT_ENABLE_CLOSE_PARTIAL_TP = false;
+ bool     INPUT_ENABLE_CLOSE_MULTI_LEVEL_PARTIAL = false;
+ bool     INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN = false;
+ bool     INPUT_ENABLE_MODIFY_TRAILING_SL = false;
+ bool     INPUT_ENABLE_MODIFY_TRAILING_TP = false;
+ bool     INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD = false;
+ bool     INPUT_USE_LEGACY_BEHAVIOR_MAPPING = true;
+ bool     INPUT_FORCE_NEW_TOGGLES_ONLY = false;
 enum ENUM_TOGGLE_RESOLUTION_MODE
 {
    TOGGLE_RESOLUTION_MIGRATION = 0, // legacy OR new
@@ -203,318 +201,318 @@ input bool     INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION = false;
 //--- V7.31 Migration Notes (Toggle Semantics)
 // New master/sub-feature toggles default to ON to preserve legacy runtime behavior.
 // Existing INPUT_ENABLE_* flags remain backward-compatible umbrella controls.
-input group    "=== Master Feature Toggles ==="
-input bool     INPUT_TOGGLE_PLACE_ORDERS = true;
-input bool     INPUT_TOGGLE_CLOSE_ORDERS = true;
-input bool     INPUT_TOGGLE_MODIFY_STOPS = true;
-input bool     INPUT_TOGGLE_MODIFY_TPS = true;
-input bool     INPUT_TOGGLE_PENDING_ORDERS = true;
-input bool     INPUT_TOGGLE_MARKET_ORDERS = true;
-input bool     INPUT_PENDING_EXPIRY_CLEANUP_ON = true;
-input group    "=== Gate Toggles (Entry / Risk) ==="
-input bool     INPUT_GATE_TERMINAL_CONNECTED_ON = true;
-input bool     INPUT_GATE_AUTOTRADING_ALLOWED_ON = true;
-input bool     INPUT_GATE_SESSION_ON = true;
-input bool     INPUT_GATE_SESSION_WINDOW_ON = true;
-input bool     INPUT_GATE_COOLDOWN_ON = true;
-input bool     INPUT_GATE_MAX_DAILY_TRADES_ON = true;
-input bool     INPUT_GATE_DAILY_LOSS_ON = true;
-input bool     INPUT_GATE_CONSECUTIVE_LOSS_ON = true;
-input bool     INPUT_GATE_SPREAD_ON = true;
-input bool     INPUT_GATE_MAX_POSITIONS_ON = true;
-input bool     INPUT_GATE_EA_PROTECTION_STATE_ON = true;
-input bool     INPUT_GATE_DATA_ANOMALY_KILLSWITCH_ON = true;
-input bool     INPUT_GATE_SIGNAL_DETECTION_ON = true;
-input bool     INPUT_GATE_MIN_SIGNALS_ON = true;
-input bool     INPUT_GATE_MTF_WEIGHTING_ON = true;
-input bool     INPUT_GATE_ADX_FILTER_ON = true;
-input bool     INPUT_GATE_SAME_DIRECTION_ON = true;
-input bool     INPUT_GATE_PROXIMITY_ON = true;
-input bool     INPUT_GATE_MTF_ALIGNMENT_ON = true;
-input bool     INPUT_GATE_THREAT_HARD_BLOCK_ON = true;
-input bool     INPUT_GATE_THREAT_EXTREME_BLOCK_ON = true;
-input bool     INPUT_GATE_CONFIDENCE_MIN_ON = true;
-input bool     INPUT_GATE_EFFECTIVE_RR_ON = true;
-input group    "=== Threat Factor Toggles ==="
-input bool     INPUT_THREAT_FACTOR_LOSING_COUNT_ON = true;
-input bool     INPUT_THREAT_FACTOR_MAJORITY_LOSING_ON = true;
-input bool     INPUT_THREAT_FACTOR_DRAWDOWN_ON = true;
-input bool     INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON = true;
-input bool     INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON = true;
-input bool     INPUT_THREAT_FACTOR_NEWS_WINDOW_ON = true;
-input bool     INPUT_THREAT_FACTOR_RECOVERY_POSITION_ON = true;
-input bool     INPUT_THREAT_FACTOR_WIN_STREAK_ON = true;
-input bool     INPUT_THREAT_FRIDAY_LATE_PENALTY_ON = true;
-input bool     INPUT_THREAT_END_OF_MONTH_PENALTY_ON = true;
-input bool     INPUT_THREAT_SOFT_LOT_SHRINK_ON = true;
-input bool     INPUT_THREAT_HARD_ENTRY_BLOCK_ON = true;
-input group    "=== Lot Sizing Toggles ==="
-input bool     INPUT_LOT_BASE_RISK_ON = true;
-input bool     INPUT_LOT_RL_SCALING_ON = true;
-input bool     INPUT_LOT_ADAPTIVE_MULTIPLIER_ON = true;
-input bool     INPUT_LOT_STREAK_BOOST_ON = true;
-input bool     INPUT_LOT_HIGH_ADX_BOOST_ON = true;
-input bool     INPUT_LOT_RISK_PARITY_CAP_ON = true;
-input bool     INPUT_LOT_MARGIN_DOWNSCALE_ON = true;
-input group    "=== Execution Path Toggles ==="
-input bool     INPUT_EXEC_MARKET_PATH_ON = true;
-input bool     INPUT_EXEC_PENDING_PATH_ON = true;
-input bool     INPUT_EXEC_PENDING_DUPLICATE_BLOCK_ON = true;
-input bool     INPUT_EXEC_PENDING_EXPIRY_ON = true;
-input bool     INPUT_EXEC_MARKET_RETRY_ON = true;
-input bool     INPUT_EXEC_RECORD_RL_ON_SUBMIT = true;
-input group    "=== Close Trigger Toggles ==="
-input bool     INPUT_CLOSE_EQUITY_FLOOR_ON = true;
-input bool     INPUT_CLOSE_HIGH_SPREAD_PROFIT_ON = true;
-input bool     INPUT_CLOSE_50PCT_DEFENSIVE_ON = true;
-input bool     INPUT_CLOSE_PARTIAL_TP_ON = true;
-input bool     INPUT_CLOSE_MULTI_LEVEL_PARTIAL_ON = true;
-input bool     INPUT_CLOSE_AGE_TIMEOUT_ON = true;
-input bool     INPUT_CLOSE_RECOVERY_TIMEOUT_ON = true;
-input group    "=== Modify SL/TP Toggles ==="
-input bool     INPUT_MODIFY_BREAKEVEN_ON = true;
-input bool     INPUT_MODIFY_TRAILING_SL_ON = true;
-input bool     INPUT_MODIFY_TRAILING_TP_ON = true;
-input bool     INPUT_MODIFY_SUPPRESS_ON_HIGH_SPREAD_LOSS_ON = true;
-input bool     INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON = true; // WARNING: disable only for diagnostics
-input group    "=== Session Sub-Toggles ==="
-input bool     INPUT_SESSION_ASIAN_ON = true;
-input bool     INPUT_SESSION_LONDON_ON = true;
-input bool     INPUT_SESSION_NY_ON = true;
-input bool     INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES = true;
-input group    "=== Learning / Inference Sub-Toggles ==="
-input bool     INPUT_RL_INFERENCE_ON = true;
-input bool     INPUT_RL_LEARNING_ON = true;
-input bool     INPUT_RL_RECORD_ON = true;
-input bool     INPUT_MARKOV_INFERENCE_ON = true;
-input bool     INPUT_MARKOV_UPDATE_ON = true;
-input bool     INPUT_ML_INFERENCE_ON = true;
-input bool     INPUT_ML_RECORD_ON = true;
-input bool     INPUT_COMBO_ADAPTIVE_INFERENCE_ON = true;
-input bool     INPUT_COMBO_ADAPTIVE_RECORD_ON = true;
-input bool     INPUT_AI_QUERY_ON = true;
-input bool     INPUT_AI_BLEND_ON = true;
+
+ bool     INPUT_TOGGLE_PLACE_ORDERS = true;
+ bool     INPUT_TOGGLE_CLOSE_ORDERS = true;
+ bool     INPUT_TOGGLE_MODIFY_STOPS = true;
+ bool     INPUT_TOGGLE_MODIFY_TPS = true;
+ bool     INPUT_TOGGLE_PENDING_ORDERS = true;
+ bool     INPUT_TOGGLE_MARKET_ORDERS = true;
+ bool     INPUT_PENDING_EXPIRY_CLEANUP_ON = true;
+
+ bool     INPUT_GATE_TERMINAL_CONNECTED_ON = true;
+ bool     INPUT_GATE_AUTOTRADING_ALLOWED_ON = true;
+ bool     INPUT_GATE_SESSION_ON = true;
+ bool     INPUT_GATE_SESSION_WINDOW_ON = true;
+ bool     INPUT_GATE_COOLDOWN_ON = true;
+ bool     INPUT_GATE_MAX_DAILY_TRADES_ON = true;
+bool     INPUT_GATE_DAILY_LOSS_ON = true;
+ bool     INPUT_GATE_CONSECUTIVE_LOSS_ON = true;
+ bool     INPUT_GATE_SPREAD_ON = true;
+ bool     INPUT_GATE_MAX_POSITIONS_ON = true;
+ bool     INPUT_GATE_EA_PROTECTION_STATE_ON = true;
+ bool     INPUT_GATE_DATA_ANOMALY_KILLSWITCH_ON = true;
+ bool     INPUT_GATE_SIGNAL_DETECTION_ON = true;
+ bool     INPUT_GATE_MIN_SIGNALS_ON = true;
+ bool     INPUT_GATE_MTF_WEIGHTING_ON = true;
+ bool     INPUT_GATE_ADX_FILTER_ON = true;
+ bool     INPUT_GATE_SAME_DIRECTION_ON = true;
+ bool     INPUT_GATE_PROXIMITY_ON = true;
+ bool     INPUT_GATE_MTF_ALIGNMENT_ON = true;
+ bool     INPUT_GATE_THREAT_HARD_BLOCK_ON = false;
+ bool     INPUT_GATE_THREAT_EXTREME_BLOCK_ON = false;
+ bool     INPUT_GATE_CONFIDENCE_MIN_ON = true;
+ bool     INPUT_GATE_EFFECTIVE_RR_ON = false;
+ 
+ bool     INPUT_THREAT_FACTOR_LOSING_COUNT_ON = false;
+ bool     INPUT_THREAT_FACTOR_MAJORITY_LOSING_ON = false;
+ bool     INPUT_THREAT_FACTOR_DRAWDOWN_ON = false;
+ bool     INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON = false;
+ bool     INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON = false;
+ bool     INPUT_THREAT_FACTOR_NEWS_WINDOW_ON = false;
+ bool     INPUT_THREAT_FACTOR_RECOVERY_POSITION_ON = false;
+ bool     INPUT_THREAT_FACTOR_WIN_STREAK_ON = false;
+ bool     INPUT_THREAT_FRIDAY_LATE_PENALTY_ON = false;
+ bool     INPUT_THREAT_END_OF_MONTH_PENALTY_ON = false;
+ bool     INPUT_THREAT_SOFT_LOT_SHRINK_ON = false;
+ bool     INPUT_THREAT_HARD_ENTRY_BLOCK_ON = false;
+
+ bool     INPUT_LOT_BASE_RISK_ON = true;
+ bool     INPUT_LOT_RL_SCALING_ON = true;
+ bool     INPUT_LOT_ADAPTIVE_MULTIPLIER_ON = false;
+ bool     INPUT_LOT_STREAK_BOOST_ON = false;
+ bool     INPUT_LOT_HIGH_ADX_BOOST_ON = true;
+ bool     INPUT_LOT_RISK_PARITY_CAP_ON = false;
+ bool     INPUT_LOT_MARGIN_DOWNSCALE_ON = false;
+
+ bool     INPUT_EXEC_MARKET_PATH_ON = true;
+ bool     INPUT_EXEC_PENDING_PATH_ON = true;
+ bool     INPUT_EXEC_PENDING_DUPLICATE_BLOCK_ON = true;
+ bool     INPUT_EXEC_PENDING_EXPIRY_ON = true;
+ bool     INPUT_EXEC_MARKET_RETRY_ON = true;
+ bool     INPUT_EXEC_RECORD_RL_ON_SUBMIT = true;
+
+ bool     INPUT_CLOSE_EQUITY_FLOOR_ON = true;
+ bool     INPUT_CLOSE_HIGH_SPREAD_PROFIT_ON = false;
+ bool     INPUT_CLOSE_50PCT_DEFENSIVE_ON = false;
+ bool     INPUT_CLOSE_PARTIAL_TP_ON = false;
+ bool     INPUT_CLOSE_MULTI_LEVEL_PARTIAL_ON = false;
+ bool     INPUT_CLOSE_AGE_TIMEOUT_ON = true;
+ bool     INPUT_CLOSE_RECOVERY_TIMEOUT_ON = true;
+
+ bool     INPUT_MODIFY_BREAKEVEN_ON = false;
+ bool     INPUT_MODIFY_TRAILING_SL_ON = false;
+ bool     INPUT_MODIFY_TRAILING_TP_ON = false;
+ bool     INPUT_MODIFY_SUPPRESS_ON_HIGH_SPREAD_LOSS_ON = false;
+ bool     INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON = false; // WARNING: disable only for diagnostics
+
+ bool     INPUT_SESSION_ASIAN_ON = true;
+ bool     INPUT_SESSION_LONDON_ON = true;
+ bool     INPUT_SESSION_NY_ON = true;
+ bool     INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES = true;
+
+ bool     INPUT_RL_INFERENCE_ON = true;
+ bool     INPUT_RL_LEARNING_ON = true;
+ bool     INPUT_RL_RECORD_ON = true;
+ bool     INPUT_MARKOV_INFERENCE_ON = true;
+ bool     INPUT_MARKOV_UPDATE_ON = true;
+ bool     INPUT_ML_INFERENCE_ON = true;
+ bool     INPUT_ML_RECORD_ON = true;
+ bool     INPUT_COMBO_ADAPTIVE_INFERENCE_ON = true;
+ bool     INPUT_COMBO_ADAPTIVE_RECORD_ON = true;
+ bool     INPUT_AI_QUERY_ON = true;
+ bool     INPUT_AI_BLEND_ON = true;
 //--- Entry Conditions (FIXED: Relaxed thresholds)
-input group    "=== Entry Conditions ==="
+
 input int      INPUT_MIN_SIGNALS       = 3;       // Minimum signals required (FIXED: Raised to prevent false entries)
-input double   INPUT_MIN_CONFIDENCE    = 55.0;    // Minimum confidence % (FIXED: Raised for quality entries)
-input double   INPUT_MAX_THREAT_ENTRY  = 70.0;    // Max threat for new entry
-input int      INPUT_MIN_MTF_SCORE     = 2;       // Minimum MTF alignment score (FIXED: Require at least H1 agreement)
-input double   INPUT_MTF_CONSENSUS_VOTE_WEIGHT = 2.0; // Extra bull/bear vote weight when H1/H4/D1 directional consensus aligns
-input bool     INPUT_USE_ADX_FILTER    = false;   // Use ADX trend filter (FIXED: Disabled by default)
-input double   INPUT_ADX_MIN_THRESHOLD = 15.0;    // ADX minimum for trend (FIXED: Reduced from 20)
-input bool     INPUT_ENABLE_HIGH_ADX_RISK_MODE = false; // Priority 1: boost confidence/size only when ADX is strong
-input double   INPUT_HIGH_ADX_THRESHOLD = 35.0;   // High ADX threshold for risk mode
-input double   INPUT_HIGH_ADX_CONFIDENCE_BOOST = 6.0; // Confidence boost when ADX >= threshold
-input double   INPUT_HIGH_ADX_LOT_MULTIPLIER = 1.15;  // Extra lot multiplier in high ADX mode
+ double   INPUT_MIN_CONFIDENCE    = 55.0;    // Minimum confidence % (FIXED: Raised for quality entries)
+ double   INPUT_MAX_THREAT_ENTRY  = 70.0;    // Max threat for new entry
+ int      INPUT_MIN_MTF_SCORE     = 2;       // Minimum MTF alignment score (FIXED: Require at least H1 agreement)
+ double   INPUT_MTF_CONSENSUS_VOTE_WEIGHT = 2.0; // Extra bull/bear vote weight when H1/H4/D1 directional consensus aligns
+ bool     INPUT_USE_ADX_FILTER    = false;   // Use ADX trend filter (FIXED: Disabled by default)
+ double   INPUT_ADX_MIN_THRESHOLD = 15.0;    // ADX minimum for trend (FIXED: Reduced from 20)
+ bool     INPUT_ENABLE_HIGH_ADX_RISK_MODE = false; // Priority 1: boost confidence/size only when ADX is strong
+ double   INPUT_HIGH_ADX_THRESHOLD = 35.0;   // High ADX threshold for risk mode
+ double   INPUT_HIGH_ADX_CONFIDENCE_BOOST = 6.0; // Confidence boost when ADX >= threshold
+ double   INPUT_HIGH_ADX_LOT_MULTIPLIER = 1.15;  // Extra lot multiplier in high ADX mode
 //--- Stop Loss & Take Profit
 input group    "=== Stop Loss & Take Profit ==="
-input double   INPUT_SL_ATR_MULTIPLIER = 2.0;     // SL = ATR x this
+input double   INPUT_SL_ATR_MULTIPLIER = 5.0;     // SL = ATR x this
 input double   INPUT_TP_ATR_MULTIPLIER = 3.0;     // TP = ATR x this
-input double   INPUT_MIN_SL_POINTS     = 200.0;   // Minimum SL in points (FIXED: 200 pts min for XAUUSD ~$2 SL)
-input double   INPUT_MAX_SL_POINTS     = 5000.0;  // Maximum SL in points
-input double   INPUT_MIN_TP_POINTS     = 300.0;   // Minimum TP in points (FIXED: 300 pts min for viable R:R)
+input double   INPUT_MIN_SL_POINTS     = 50000.0;   // Minimum SL in points (FIXED: 200 pts min for XAUUSD ~$2 SL)
+input double   INPUT_MAX_SL_POINTS     = 90000;  // Maximum SL in points
+input double   INPUT_MIN_TP_POINTS     = 5000.0;   // Minimum TP in points (FIXED: 300 pts min for viable R:R)
 input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
 //--- 50% Lot Close System
-input group    "=== 50% Lot Close System ==="
-input bool     INPUT_ENABLE_50PCT_CLOSE      = false; // DISABLED - Use V7.33 new system (was buggy)
-input double   INPUT_50PCT_TRIGGER_LOW       = 45.0; // Trigger zone lower bound %
-input double   INPUT_50PCT_TRIGGER_HIGH      = 55.0; // Trigger zone upper bound %
-input bool     INPUT_CONFIDENCE_BASED_CLOSE  = false; // DISABLED - This caused the 25% bug!
+
+ bool     INPUT_ENABLE_50PCT_CLOSE      = false; // DISABLED - Use V7.33 new system (was buggy)
+ double   INPUT_50PCT_TRIGGER_LOW       = 45.0; // Trigger zone lower bound %
+ double   INPUT_50PCT_TRIGGER_HIGH      = 55.0; // Trigger zone upper bound %
+ bool     INPUT_CONFIDENCE_BASED_CLOSE  = false; // DISABLED - This caused the 25% bug!
 //--- Partial Close at TP%
-input group    "=== Partial Close at TP ==="
-input bool     INPUT_ENABLE_PARTIAL_CLOSE    = false; // DISABLED - Use V7.33 new system
-input double   INPUT_PARTIAL_TP_PERCENT      = 50.0; // Close portion at this % of TP
-input double   INPUT_PARTIAL_CLOSE_RATIO     = 0.5;  // Close this fraction of lots
-input bool     INPUT_MOVE_BE_AFTER_PARTIAL   = true; // Move SL to breakeven after partial
+
+ bool     INPUT_ENABLE_PARTIAL_CLOSE    = false; // DISABLED - Use V7.33 new system
+ double   INPUT_PARTIAL_TP_PERCENT      = 50.0; // Close portion at this % of TP
+ double   INPUT_PARTIAL_CLOSE_RATIO     = 0.5;  // Close this fraction of lots
+ bool     INPUT_MOVE_BE_AFTER_PARTIAL   = false; // Move SL to breakeven after partial
 //--- Trailing Stop
-input group    "=== Trailing Stop ==="
-input bool     INPUT_ENABLE_TRAILING         = true; // Enable trailing stop
-input double   INPUT_TRAIL_ATR_MULTIPLIER    = 1.0;  // Trail distance = ATR x this
-input double   INPUT_TRAIL_STEP_POINTS       = 50.0; // Min improvement step (points)
-input double   INPUT_TRAIL_ACTIVATION_POINTS = 200.0;// Activate after this profit (points)
-input bool     INPUT_ENABLE_TRAILING_TP      = true; // Enable trailing TP logic
-input bool     INPUT_ENABLE_HIGH_SPREAD_PROTECT = false; // deprecated // Enable high-spread protective behavior
-input bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = false; // deprecated // Close profitable running positions when spread spikes
-input double   INPUT_HIGH_SPREAD_CLOSE_PERCENT = 50.0; // Percent of profitable position volume to close on high spread (1..100)
-input bool     INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD = true; // Do not adjust losing-position SL/TP during spread spikes
-input double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
+
+ bool     INPUT_ENABLE_TRAILING         = false; // Enable trailing stop
+ double   INPUT_TRAIL_ATR_MULTIPLIER    = 1.0;  // Trail distance = ATR x this
+ double   INPUT_TRAIL_STEP_POINTS       = 50.0; // Min improvement step (points)
+ double   INPUT_TRAIL_ACTIVATION_POINTS = 200.0;// Activate after this profit (points)
+ bool     INPUT_ENABLE_TRAILING_TP      = false; // Enable trailing TP logic
+ bool     INPUT_ENABLE_HIGH_SPREAD_PROTECT = false; // Enable high-spread protective behavior
+ bool     INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD = false; // Close profitable running positions when spread spikes
+ double   INPUT_HIGH_SPREAD_CLOSE_PERCENT = 50.0; // Percent of profitable position volume to close on high spread (1..100)
+ bool     INPUT_KEEP_LOSS_STOPS_ON_HIGH_SPREAD = false; // Do not adjust losing-position SL/TP during spread spikes
+ double   INPUT_HIGH_SPREAD_MULTIPLIER = 5.0; // Spread spike threshold as multiple of rolling average
 //+------------------------------------------------------------------+
 //| V7.33 NEW: ADVANCED PARTIAL CLOSING SYSTEM                        |
 //+------------------------------------------------------------------+
-input group    "=== V7.33: LOSS-Based Partial Closing ==="
-input bool     INPUT_ENABLE_LOSS_PARTIAL_CLOSE = true;  // Enable loss partial closing
-input double   INPUT_LOSS_CLOSE_PERCENT = 50.0;          // % of lots to close when loss trigger hit
-input int      INPUT_LOSS_PARTS_COUNT = 1;               // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
-input string   INPUT_LOSS_PARTS_PERCENTAGES = "50";      // Close percentages per part (comma-separated, e.g. "33,33,34" for 3 parts)
-input string   INPUT_LOSS_PARTS_TRIGGERS = "50";         // Trigger percentages per part (comma-separated, e.g. "30,60,90")
-input group    "=== V7.33: PROFIT-Based Partial Closing ==="
-input bool     INPUT_ENABLE_PROFIT_PARTIAL_CLOSE = true; // Enable profit partial closing
-input double   INPUT_PROFIT_CLOSE_PERCENT = 50.0;         // % of lots to close when profit trigger hit
-input int      INPUT_PROFIT_PARTS_COUNT = 1;              // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
-input string   INPUT_PROFIT_PARTS_PERCENTAGES = "50";     // Close percentages per part (comma-separated, e.g. "33,33,34")
-input string   INPUT_PROFIT_PARTS_TRIGGERS = "50";        // Trigger percentages per part (comma-separated, e.g. "30,60,90")
-input ENUM_PARTIAL_CLOSE_BASIS INPUT_PARTIAL_CLOSE_BASIS = CLOSE_BASIS_ORIGINAL; // Percent basis for partial close sizing
-input group    "=== V7.33: Trailing TP Gap Feature ==="
-input bool     INPUT_ENABLE_TRAILING_TP_GAP = true;       // Enable trailing TP with gap
-input double   INPUT_TRAILING_TP_GAP_POINTS = 100.0;      // Gap between TP and current price (points)
-input double   INPUT_TRAILING_TP_STEP_POINTS = 50.0;      // Minimum movement step (points)
-input double   INPUT_TRAILING_TP_ACTIVATION_PIPS = 20.0; // Activate after this profit (pips)
-input ENUM_TRAILING_TP_ACTIVATION_MODE INPUT_TRAILING_TP_ACTIVATION_MODE = TRAILING_TP_ACTIVATE_BY_PIPS; // Activate trailing TP by pips or TP-progress
-input double   INPUT_TRAILING_TP_ACTIVATION_PERCENT = 50.0; // Activation threshold when mode=TP progress
-input bool     INPUT_PROGRESS_MILESTONE_ZERO_TP_ON = true; // At milestone, zero TP before trailing TP mode (backward compatible default)
-input group    "=== Money Management / Streak Multiplier ==="
-input bool     INPUT_ENABLE_STREAK_LOT_MULTIPLIER = true; // Enable temporary lot multiplier after win streak
-input int      INPUT_STREAK_TRIGGER_WINS = 2; // Consecutive wins needed to arm streak multiplier
-input double   INPUT_STREAK_LOT_MULTIPLIER = 1.5; // Lot multiplier during armed streak window
-input int      INPUT_STREAK_MULTIPLIER_ORDERS = 3; // Number of successful orders that use streak multiplier
-input bool     INPUT_ENABLE_CONSEC_WIN_CONF_BOOST = false;
-input int      INPUT_CONSEC_WIN_CONF_TRIGGER = 3;
-input double   INPUT_CONSEC_WIN_CONF_BOOST_PER_WIN = 1.5;
-input double   INPUT_CONSEC_WIN_CONF_BOOST_CAP = 8.0;
-input bool     INPUT_ENABLE_CONSEC_WIN_CONF_DECAY = true;
-input int      INPUT_CONSEC_WIN_CONF_DECAY_AFTER_TRADES = 3;
+
+ bool     INPUT_ENABLE_LOSS_PARTIAL_CLOSE = false;  // Enable loss partial closing
+ double   INPUT_LOSS_CLOSE_PERCENT = 50.0;          // % of lots to close when loss trigger hit
+ int      INPUT_LOSS_PARTS_COUNT = 1;               // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
+ string   INPUT_LOSS_PARTS_PERCENTAGES = "50";      // Close percentages per part (comma-separated, e.g. "33,33,34" for 3 parts)
+ string   INPUT_LOSS_PARTS_TRIGGERS = "50";         // Trigger percentages per part (comma-separated, e.g. "30,60,90")
+
+ bool     INPUT_ENABLE_PROFIT_PARTIAL_CLOSE = false; // Enable profit partial closing
+ double   INPUT_PROFIT_CLOSE_PERCENT = 50.0;         // % of lots to close when profit trigger hit
+ int      INPUT_PROFIT_PARTS_COUNT = 1;              // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
+ string   INPUT_PROFIT_PARTS_PERCENTAGES = "50";     // Close percentages per part (comma-separated, e.g. "33,33,34")
+ string   INPUT_PROFIT_PARTS_TRIGGERS = "50";        // Trigger percentages per part (comma-separated, e.g. "30,60,90")
+ ENUM_PARTIAL_CLOSE_BASIS INPUT_PARTIAL_CLOSE_BASIS = CLOSE_BASIS_ORIGINAL; // Percent basis for partial close sizing
+ 
+ bool     INPUT_ENABLE_TRAILING_TP_GAP = false;       // Enable trailing TP with gap
+ double   INPUT_TRAILING_TP_GAP_POINTS = 100.0;      // Gap between TP and current price (points)
+ double   INPUT_TRAILING_TP_STEP_POINTS = 50.0;      // Minimum movement step (points)
+ double   INPUT_TRAILING_TP_ACTIVATION_PIPS = 20.0; // Activate after this profit (pips)
+ ENUM_TRAILING_TP_ACTIVATION_MODE INPUT_TRAILING_TP_ACTIVATION_MODE = TRAILING_TP_ACTIVATE_BY_PIPS; // Activate trailing TP by pips or TP-progress
+ double   INPUT_TRAILING_TP_ACTIVATION_PERCENT = 50.0; // Activation threshold when mode=TP progress
+ bool     INPUT_PROGRESS_MILESTONE_ZERO_TP_ON = false; // At milestone, zero TP before trailing TP mode (backward compatible default)
+
+ bool     INPUT_ENABLE_STREAK_LOT_MULTIPLIER = false; // Enable temporary lot multiplier after win streak
+ int      INPUT_STREAK_TRIGGER_WINS = 2; // Consecutive wins needed to arm streak multiplier
+ double   INPUT_STREAK_LOT_MULTIPLIER = 1.5; // Lot multiplier during armed streak window
+ int      INPUT_STREAK_MULTIPLIER_ORDERS = 3; // Number of successful orders that use streak multiplier
+ bool     INPUT_ENABLE_CONSEC_WIN_CONF_BOOST = false;
+ int      INPUT_CONSEC_WIN_CONF_TRIGGER = 3;
+ double   INPUT_CONSEC_WIN_CONF_BOOST_PER_WIN = 1.5;
+ double   INPUT_CONSEC_WIN_CONF_BOOST_CAP = 8.0;
+ bool     INPUT_ENABLE_CONSEC_WIN_CONF_DECAY = false;
+ int      INPUT_CONSEC_WIN_CONF_DECAY_AFTER_TRADES = 3;
 //--- Recovery Averaging System
-input group    "=== Recovery Averaging System ==="
-input bool     INPUT_ENABLE_RECOVERY         = false; // deprecated // Master recovery gate
-input ENUM_RECOVERY_MODE INPUT_RECOVERY_MODE = RECOVERY_AVERAGING; // Recovery mode selector
-input int      INPUT_RECOVERY_THREAT_MIN     = 60;   // Minimum threat to trigger recovery
-input int      INPUT_MAX_RECOVERY_PER_POS    = 2;    // Max recovery orders per position
-input double   INPUT_RECOVERY_LOT_RATIO_SAFE = 0.33; // Lot ratio when threat < 50
-input double   INPUT_RECOVERY_LOT_RATIO_MOD  = 0.50; // Lot ratio when threat 50-70
-input double   INPUT_RECOVERY_LOT_RATIO_HIGH = 0.75; // Lot ratio when threat > 70
-input int      INPUT_RECOVERY_TIMEOUT_MINUTES = 120; // Recovery order timeout (minutes)
-input double   INPUT_RECOVERY_TRIGGER_DEPTH  = 40.0; // Trigger at X% of SL distance
-input double   INPUT_RECOVERY_TP_BUFFER_POINTS = 60.0; // Add this many points beyond combined break-even for recovery TP
-input double   INPUT_RECOVERY_TP_TARGET_MULTIPLIER = 1.0; // Optional target model multiplier on (combined BE-to-SL) distance
-input int      INPUT_RECOVERY_COOLDOWN_SECONDS = 30; // Cooldown between recovery attempts
-input int      INPUT_RECOVERY_MAX_LAYERS = 3; // Safety cap for recovery layering
-input double   INPUT_RECOVERY_EMERGENCY_STOP_PERCENT = 20.0; // Halt recovery when drawdown exceeds this
-input double   INPUT_GRID_STEP_POINTS = 150.0; // Grid mode spacing
-input int      INPUT_GRID_MAX_ORDERS = 3; // Grid max recovery orders
-input double   INPUT_GRID_LOT_SCALING = 1.0; // Grid lot scaling
-input double   INPUT_HEDGE_TRIGGER_OFFSET_POINTS = 120.0; // Hedge trigger offset in points
-input double   INPUT_HEDGE_LOT_SCALING = 1.0; // Hedge lot scaling
-input int      INPUT_HEDGE_MAX_ORDERS = 2; // Hedge max recovery orders
-input double   INPUT_MARTINGALE_MULTIPLIER = 1.6; // Martingale lot multiplier
-input int      INPUT_MARTINGALE_MAX_ORDERS = 2; // Martingale max recovery orders
+
+ bool     INPUT_ENABLE_RECOVERY         = false; // Master recovery gate
+ ENUM_RECOVERY_MODE INPUT_RECOVERY_MODE = RECOVERY_AVERAGING; // Recovery mode selector
+ int      INPUT_RECOVERY_THREAT_MIN     = 60;   // Minimum threat to trigger recovery
+ int      INPUT_MAX_RECOVERY_PER_POS    = 2;    // Max recovery orders per position
+ double   INPUT_RECOVERY_LOT_RATIO_SAFE = 0.33; // Lot ratio when threat < 50
+ double   INPUT_RECOVERY_LOT_RATIO_MOD  = 0.50; // Lot ratio when threat 50-70
+ double   INPUT_RECOVERY_LOT_RATIO_HIGH = 0.75; // Lot ratio when threat > 70
+ int      INPUT_RECOVERY_TIMEOUT_MINUTES = 120; // Recovery order timeout (minutes)
+ double   INPUT_RECOVERY_TRIGGER_DEPTH  = 40.0; // Trigger at X% of SL distance
+ double   INPUT_RECOVERY_TP_BUFFER_POINTS = 60.0; // Add this many points beyond combined break-even for recovery TP
+ double   INPUT_RECOVERY_TP_TARGET_MULTIPLIER = 1.0; // Optional target model multiplier on (combined BE-to-SL) distance
+ int      INPUT_RECOVERY_COOLDOWN_SECONDS = 30; // Cooldown between recovery attempts
+ int      INPUT_RECOVERY_MAX_LAYERS = 3; // Safety cap for recovery layering
+ double   INPUT_RECOVERY_EMERGENCY_STOP_PERCENT = 20.0; // Halt recovery when drawdown exceeds this
+ double   INPUT_GRID_STEP_POINTS = 150.0; // Grid mode spacing
+ int      INPUT_GRID_MAX_ORDERS = 3; // Grid max recovery orders
+ double   INPUT_GRID_LOT_SCALING = 1.0; // Grid lot scaling
+ double   INPUT_HEDGE_TRIGGER_OFFSET_POINTS = 120.0; // Hedge trigger offset in points
+ double   INPUT_HEDGE_LOT_SCALING = 1.0; // Hedge lot scaling
+ int      INPUT_HEDGE_MAX_ORDERS = 2; // Hedge max recovery orders
+ double   INPUT_MARTINGALE_MULTIPLIER = 1.6; // Martingale lot multiplier
+ int      INPUT_MARTINGALE_MAX_ORDERS = 2; // Martingale max recovery orders
 //--- Session Filters
-input group    "=== Session Filters ==="
-input bool     INPUT_TRADE_ASIAN    = true;       // Trade Asian session
-input bool     INPUT_TRADE_LONDON   = true;       // Trade London session
-input bool     INPUT_TRADE_NEWYORK  = true;       // Trade New York session
-input int      INPUT_ASIAN_START    = 0;          // Asian start hour (server)
-input int      INPUT_ASIAN_END      = 8;          // Asian end hour
-input int      INPUT_LONDON_START   = 8;          // London start hour
-input int      INPUT_LONDON_END     = 16;         // London end hour
-input int      INPUT_NY_START       = 13;         // NY start hour
-input int      INPUT_NY_END         = 22;         // NY end hour (FIXED: Extended from 21)
-input int      INPUT_FRIDAY_LATE_HOUR_UTC = 18;   // Factor 7: apply Friday liquidity penalty only after this UTC hour
-input double   INPUT_FRIDAY_LATE_PENALTY = 5.0;     // Factor 7: late-Friday liquidity penalty points
-input bool     INPUT_ENABLE_END_OF_MONTH_PENALTY = true; // Factor 7: toggle month-end risk uplift
-input int      INPUT_END_OF_MONTH_START_DAY = 29;   // Factor 7: apply month-end penalty from this day onward
-input double   INPUT_END_OF_MONTH_PENALTY = 2.0;    // Factor 7: lower default month-end penalty
+
+ bool     INPUT_TRADE_ASIAN    = true;       // Trade Asian session
+ bool     INPUT_TRADE_LONDON   = true;       // Trade London session
+ bool     INPUT_TRADE_NEWYORK  = true;       // Trade New York session
+ int      INPUT_ASIAN_START    = 0;          // Asian start hour (server)
+ int      INPUT_ASIAN_END      = 8;          // Asian end hour
+ int      INPUT_LONDON_START   = 8;          // London start hour
+ int      INPUT_LONDON_END     = 16;         // London end hour
+ int      INPUT_NY_START       = 13;         // NY start hour
+ int      INPUT_NY_END         = 22;         // NY end hour (FIXED: Extended from 21)
+ int      INPUT_FRIDAY_LATE_HOUR_UTC = 18;   // Factor 7: apply Friday liquidity penalty only after this UTC hour
+ double   INPUT_FRIDAY_LATE_PENALTY = 5.0;     // Factor 7: late-Friday liquidity penalty points
+ bool     INPUT_ENABLE_END_OF_MONTH_PENALTY = true; // Factor 7: toggle month-end risk uplift
+ int      INPUT_END_OF_MONTH_START_DAY = 29;   // Factor 7: apply month-end penalty from this day onward
+ double   INPUT_END_OF_MONTH_PENALTY = 2.0;    // Factor 7: lower default month-end penalty
 //--- Q-Learning System
-input group    "=== Q-Learning System ==="
-input bool     INPUT_ENABLE_RL          = false;  // Enable Reinforcement Learning (FIXED: Disabled for backtesting)
-input double   INPUT_RL_ALPHA           = 0.1;    // Learning rate (alpha)
-input double   INPUT_RL_GAMMA           = 0.9;    // Discount factor (gamma)
-input double   INPUT_RL_EPSILON         = 0.1;    // Exploration rate (epsilon)
-input int      INPUT_RL_MIN_TRADES      = 20;     // Min trades before RL applies
-input double   INPUT_RL_WEIGHT          = 0.3;    // RL weight in final decision (0-1)
-input bool     INPUT_RL_USE_RAW_REWARD  = false;  // Use raw netProfit reward instead of normalized profit/risk
-input int      INPUT_RL_PENDING_HARD_CAP = 500;   // Hard cap for pending RL entries
-input bool     INPUT_STRICT_STATE_LOAD  = true;   // Strict runtime load: reset pending RL/watermarks on checksum mismatch
+
+ bool     INPUT_ENABLE_RL          = false;  // Enable Reinforcement Learning (FIXED: Disabled for backtesting)
+ double   INPUT_RL_ALPHA           = 0.1;    // Learning rate (alpha)
+ double   INPUT_RL_GAMMA           = 0.9;    // Discount factor (gamma)
+ double   INPUT_RL_EPSILON         = 0.1;    // Exploration rate (epsilon)
+ int      INPUT_RL_MIN_TRADES      = 20;     // Min trades before RL applies
+ double   INPUT_RL_WEIGHT          = 0.3;    // RL weight in final decision (0-1)
+ bool     INPUT_RL_USE_RAW_REWARD  = false;  // Use raw netProfit reward instead of normalized profit/risk
+ int      INPUT_RL_PENDING_HARD_CAP = 500;   // Hard cap for pending RL entries
+ bool     INPUT_STRICT_STATE_LOAD  = true;   // Strict runtime load: reset pending RL/watermarks on checksum mismatch
 //--- Markov Chain Analysis
-input group    "=== Markov Chain Analysis ==="
-input bool     INPUT_ENABLE_MARKOV      = false;  // Enable Markov chain analysis (FIXED: Disabled for backtesting)
-input int      INPUT_MARKOV_LOOKBACK    = 100;    // Lookback for transition matrix
-input double   INPUT_STREAK_FATIGUE_ADJ = 0.05;   // Confidence reduction per streak trade
-input double   INPUT_MARKOV_WIN_R       = 0.1;    // Win threshold in normalized R units
-input double   INPUT_MARKOV_LOSS_R      = -0.1;   // Loss threshold in normalized R units
+
+ bool     INPUT_ENABLE_MARKOV      = false;  // Enable Markov chain analysis (FIXED: Disabled for backtesting)
+ int      INPUT_MARKOV_LOOKBACK    = 100;    // Lookback for transition matrix
+ double   INPUT_STREAK_FATIGUE_ADJ = 0.05;   // Confidence reduction per streak trade
+ double   INPUT_MARKOV_WIN_R       = 0.1;    // Win threshold in normalized R units
+ double   INPUT_MARKOV_LOSS_R      = -0.1;   // Loss threshold in normalized R units
 //--- Machine Learning
-input group    "=== Machine Learning ==="
-input bool     INPUT_ENABLE_ML          = false;  // Enable ML signal analysis (FIXED: Disabled for backtesting)
-input bool     INPUT_ENABLE_FINGERPRINT = false;  // Enable fingerprint learning (FIXED: Disabled for backtesting)
-input int      INPUT_MIN_TRADES_FOR_ML  = 10;     // Min trades before ML applies
-input double   INPUT_LEARNING_DECAY     = 0.98;   // Learning decay factor
-input int      INPUT_MAX_TRAINING_DATA  = 1000;   // Max training records
-input bool     INPUT_RESET_LEGACY_SESSION_DATA = false; // Reset legacy datasets saved with wrong session/day attribution
+
+ bool     INPUT_ENABLE_ML          = false;  // Enable ML signal analysis (FIXED: Disabled for backtesting)
+ bool     INPUT_ENABLE_FINGERPRINT = false;  // Enable fingerprint learning (FIXED: Disabled for backtesting)
+ int      INPUT_MIN_TRADES_FOR_ML  = 10;     // Min trades before ML applies
+ double   INPUT_LEARNING_DECAY     = 0.98;   // Learning decay factor
+ int      INPUT_MAX_TRAINING_DATA  = 1000;   // Max training records
+ bool     INPUT_RESET_LEGACY_SESSION_DATA = false; // Reset legacy datasets saved with wrong session/day attribution
 //--- DeepSeek AI Integration
-input group    "=== DeepSeek AI Integration ==="
-input ENUM_AI_MODE INPUT_AI_MODE = AI_OFF;        // AI Mode
-input string   INPUT_AI_API_KEY  = "";            // DeepSeek API Key (sk-...)
-input string   INPUT_AI_URL      = "https://api.deepseek.com/v1/chat/completions";
-input int      INPUT_AI_INTERVAL_MINUTES = 15;    // API query interval (minutes)
-input double   INPUT_AI_WEIGHT   = 0.2;           // AI weight in confidence (0-1)
+
+ ENUM_AI_MODE INPUT_AI_MODE = AI_OFF;        // AI Mode
+ string   INPUT_AI_API_KEY  = "";            // DeepSeek API Key (sk-...)
+ string   INPUT_AI_URL      = "https://api.deepseek.com/v1/chat/completions";
+ int      INPUT_AI_INTERVAL_MINUTES = 15;    // API query interval (minutes)
+ double   INPUT_AI_WEIGHT   = 0.2;           // AI weight in confidence (0-1)
 //--- Adaptive Parameters
-input group    "=== Adaptive Parameters ==="
-input bool     INPUT_ENABLE_ADAPTIVE    = false;  // Enable adaptive optimization (FIXED: Disabled for backtesting)
-input int      INPUT_ADAPT_INTERVAL     = 50;     // Optimize every N trades
-input double   INPUT_ADAPT_UNDERPERF_LOT_REDUCE = 0.1; // Reduce lots by X when underperforming
-input double   INPUT_ADAPT_OVERPERF_TRAIL_ADD   = 2.0; // Add X pips to trail when outperforming
-input bool     INPUT_ENABLE_COMBINATION_ADAPTIVE = true; // Priority 2: learn per-signal-combination behavior
-input bool     INPUT_ENABLE_FULL_COMBO_UNIVERSE = true; // Pre-seed deterministic nCk universe
-input int      INPUT_TOTAL_SIGNALS = 8;           // Total available signal factors (n)
-input int      INPUT_TOTAL_SIGNAL_FACTORS = 8;    // Alias for total factors (n)
-input int      INPUT_COMBO_MIN_TRADES   = 10;     // Minimum trades required per combination for analysis
-input double   INPUT_COMBO_CONFIDENCE_WEIGHT = 0.3; // How strongly combo strength affects confidence
-input ENUM_COMBO_RANK_MODE INPUT_COMBO_RANK_MODE = COMBO_RANK_HEURISTIC;
-input bool     INPUT_LOG_COMBINATION_INSIGHTS = true; // Print best/worst combination insights
-input int      INPUT_COMBO_INSIGHT_TOP_N = 1;     // Number of best/worst combos to log per refresh
-input bool     INPUT_ENABLE_TREE_FEATURE_MODULE = false; // Decision-tree subset feature ranking
-input bool     INPUT_TREE_ADJUST_CONFIDENCE_ON = false; // Apply selected tree features to confidence
-input bool     INPUT_TREE_ENTRY_GATE_ON = false; // Require minimum selected-feature matches
-input int      INPUT_TREE_BRANCH_MIN_SUPPORT = 10; // Minimum branch support for feature IG
-input int      INPUT_TREE_MAX_SELECTED_FEATURES = 5; // Max features selected by greedy IG
-input int      INPUT_TREE_MIN_SELECTED_MATCH = 1; // Minimum selected-feature matches for entry gate
-input double   INPUT_TREE_MIN_IG = 0.0001; // Minimum IG to keep feature
-input double   INPUT_TREE_CONFIDENCE_WEIGHT = 0.15; // Confidence adjustment weight from selected features
-input bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include recovery/aux positions in age-timeout close
-input int      INPUT_POSITION_AGE_CHECK_SECONDS = 5; // Throttle stale-position timeout checks
-input int      INPUT_HISTORY_PROCESS_INTERVAL_SECONDS = 2; // Throttle closed-deal history scan
-input int      INPUT_HISTORY_BOOTSTRAP_DAYS = 7; // Initial history window (days) when no watermark exists
-input int      INPUT_HISTORY_SAFETY_MARGIN_SECONDS = 300; // History overlap to avoid missing boundary deals
-input int      INPUT_STATE_CHECKPOINT_MINUTES = 5; // Periodic persistence checkpoint
-input int      INPUT_RL_PENDING_MAX_AGE_HOURS = 72; // Expire unmatched RL pending entries
-input int      INPUT_ON_TICK_BUDGET_MS = 30;      // Soft per-tick budget for non-critical work
-input double   INPUT_MIN_EFFECTIVE_RR_AFTER_SPREAD = 1.05; // Minimum net RR after spread for new entries
-input int      INPUT_SERVER_UTC_OFFSET_HOURS = 0; // Broker server UTC offset for DST-aware session mapping
-input bool     INPUT_ENABLE_META_POLICY = true; // Blend rule policy + RL using state confidence
-input int      INPUT_RL_MIN_STATE_VISITS = 8; // Minimum state visits before RL can override baseline
-input bool     INPUT_ENABLE_RISK_PARITY_CAP = true; // Volatility/session normalized lot cap
-input double   INPUT_RISK_PARITY_BASE_CAP_LOTS = 1.0; // Base lot cap for risk-parity normalizer
-input int      INPUT_DATA_WARNING_KILL_SWITCH = 25; // Halt entries when rolling integrity warnings exceed threshold
-input int      INPUT_DATA_WARNING_WINDOW_MINUTES = 30; // Rolling window length for anomaly kill-switch
-input int      INPUT_HEAVY_BASE_INTERVAL_SECONDS = 2; // Base throttle for expensive maintenance tasks
+
+ bool     INPUT_ENABLE_ADAPTIVE    = false;  // Enable adaptive optimization (FIXED: Disabled for backtesting)
+ int      INPUT_ADAPT_INTERVAL     = 50;     // Optimize every N trades
+ double   INPUT_ADAPT_UNDERPERF_LOT_REDUCE = 0.1; // Reduce lots by X when underperforming
+ double   INPUT_ADAPT_OVERPERF_TRAIL_ADD   = 2.0; // Add X pips to trail when outperforming
+ bool     INPUT_ENABLE_COMBINATION_ADAPTIVE = true; // Priority 2: learn per-signal-combination behavior
+ bool     INPUT_ENABLE_FULL_COMBO_UNIVERSE = true; // Pre-seed deterministic nCk universe
+ int      INPUT_TOTAL_SIGNALS = 8;           // Total available signal factors (n)
+ int      INPUT_TOTAL_SIGNAL_FACTORS = 8;    // Alias for total factors (n)
+ int      INPUT_COMBO_MIN_TRADES   = 10;     // Minimum trades required per combination for analysis
+ double   INPUT_COMBO_CONFIDENCE_WEIGHT = 0.3; // How strongly combo strength affects confidence
+ ENUM_COMBO_RANK_MODE INPUT_COMBO_RANK_MODE = COMBO_RANK_HEURISTIC;
+ bool     INPUT_LOG_COMBINATION_INSIGHTS = true; // Print best/worst combination insights
+ int      INPUT_COMBO_INSIGHT_TOP_N = 1;     // Number of best/worst combos to log per refresh
+ bool     INPUT_ENABLE_TREE_FEATURE_MODULE = false; // Decision-tree subset feature ranking
+ bool     INPUT_TREE_ADJUST_CONFIDENCE_ON = false; // Apply selected tree features to confidence
+ bool     INPUT_TREE_ENTRY_GATE_ON = false; // Require minimum selected-feature matches
+ int      INPUT_TREE_BRANCH_MIN_SUPPORT = 10; // Minimum branch support for feature IG
+ int      INPUT_TREE_MAX_SELECTED_FEATURES = 5; // Max features selected by greedy IG
+ int      INPUT_TREE_MIN_SELECTED_MATCH = 1; // Minimum selected-feature matches for entry gate
+ double   INPUT_TREE_MIN_IG = 0.0001; // Minimum IG to keep feature
+ double   INPUT_TREE_CONFIDENCE_WEIGHT = 0.15; // Confidence adjustment weight from selected features
+ bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include recovery/aux positions in age-timeout close
+ int      INPUT_POSITION_AGE_CHECK_SECONDS = 5; // Throttle stale-position timeout checks
+ int      INPUT_HISTORY_PROCESS_INTERVAL_SECONDS = 2; // Throttle closed-deal history scan
+ int      INPUT_HISTORY_BOOTSTRAP_DAYS = 7; // Initial history window (days) when no watermark exists
+ int      INPUT_HISTORY_SAFETY_MARGIN_SECONDS = 300; // History overlap to avoid missing boundary deals
+ int      INPUT_STATE_CHECKPOINT_MINUTES = 5; // Periodic persistence checkpoint
+ int      INPUT_RL_PENDING_MAX_AGE_HOURS = 72; // Expire unmatched RL pending entries
+ int      INPUT_ON_TICK_BUDGET_MS = 30;      // Soft per-tick budget for non-critical work
+ double   INPUT_MIN_EFFECTIVE_RR_AFTER_SPREAD = 1.05; // Minimum net RR after spread for new entries
+ int      INPUT_SERVER_UTC_OFFSET_HOURS = 0; // Broker server UTC offset for DST-aware session mapping
+ bool     INPUT_ENABLE_META_POLICY = true; // Blend rule policy + RL using state confidence
+ int      INPUT_RL_MIN_STATE_VISITS = 8; // Minimum state visits before RL can override baseline
+ bool     INPUT_ENABLE_RISK_PARITY_CAP = true; // Volatility/session normalized lot cap
+ double   INPUT_RISK_PARITY_BASE_CAP_LOTS = 1.0; // Base lot cap for risk-parity normalizer
+ int      INPUT_DATA_WARNING_KILL_SWITCH = 25; // Halt entries when rolling integrity warnings exceed threshold
+ int      INPUT_DATA_WARNING_WINDOW_MINUTES = 30; // Rolling window length for anomaly kill-switch
+ int      INPUT_HEAVY_BASE_INTERVAL_SECONDS = 2; // Base throttle for expensive maintenance tasks
 //--- Indicator Settings
-input group    "=== Indicator Settings ==="
-input int      INPUT_EMA_FAST        = 8;         // Fast EMA period
-input int      INPUT_EMA_SLOW        = 21;        // Slow EMA period
-input int      INPUT_EMA_TREND       = 200;       // Trend EMA period
-input int      INPUT_RSI_PERIOD      = 14;        // RSI period
-input int      INPUT_STOCH_K         = 14;        // Stochastic %K
-input int      INPUT_STOCH_D         = 3;         // Stochastic %D
-input int      INPUT_STOCH_SLOW      = 3;         // Stochastic slowing
-input int      INPUT_MACD_FAST       = 12;        // MACD fast
-input int      INPUT_MACD_SLOW       = 26;        // MACD slow
-input int      INPUT_MACD_SIGNAL     = 9;         // MACD signal
-input int      INPUT_WPR_PERIOD      = 14;        // Williams %R period
-input int      INPUT_ATR_PERIOD      = 14;        // ATR period
-input double   INPUT_EMA_SLOPE_ATR_WEAK = 0.005; // EMA slope weak threshold as ATR fraction per bar (symbol-agnostic)
-input double   INPUT_EMA_SLOPE_ATR_STRONG = 0.010; // EMA slope strong threshold as ATR fraction per bar (symbol-agnostic)
-input int      INPUT_ADX_PERIOD      = 14;        // ADX period
-input int      INPUT_BB_PERIOD       = 20;        // Bollinger Bands period
-input double   INPUT_BB_DEVIATION    = 2.0;       // BB deviation
-input int      INPUT_BREAKOUT_LOOKBACK = 20;      // Breakout lookback bars
-input int      INPUT_VOLUME_AVG_PERIOD = 20;      // Volume average period
+
+ int      INPUT_EMA_FAST        = 8;         // Fast EMA period
+ int      INPUT_EMA_SLOW        = 21;        // Slow EMA period
+ int      INPUT_EMA_TREND       = 200;       // Trend EMA period
+ int      INPUT_RSI_PERIOD      = 14;        // RSI period
+ int      INPUT_STOCH_K         = 14;        // Stochastic %K
+ int      INPUT_STOCH_D         = 3;         // Stochastic %D
+ int      INPUT_STOCH_SLOW      = 3;         // Stochastic slowing
+ int      INPUT_MACD_FAST       = 12;        // MACD fas int      INPUT_MACD_SLOW       = 26;       
+ int      INPUT_MACD_SLOW       = 26;      // MACD slow
+ int      INPUT_MACD_SIGNAL     = 9;         // MACD signal
+ int      INPUT_WPR_PERIOD      = 14;        // Williams %R period
+ int      INPUT_ATR_PERIOD      = 14;        // ATR period
+ double   INPUT_EMA_SLOPE_ATR_WEAK = 0.005; // EMA slope weak threshold as ATR fraction per bar (symbol-agnostic)
+ double   INPUT_EMA_SLOPE_ATR_STRONG = 0.010; // EMA slope strong threshold as ATR fraction per bar (symbol-agnostic)
+ int      INPUT_ADX_PERIOD      = 14;        // ADX period
+ int      INPUT_BB_PERIOD       = 20;        // Bollinger Bands period
+ double   INPUT_BB_DEVIATION    = 2.0;       // BB deviation
+ int      INPUT_BREAKOUT_LOOKBACK = 20;      // Breakout lookback bars
+ int      INPUT_VOLUME_AVG_PERIOD = 20;      // Volume average period
 //--- Debug & Display
-input group    "=== Debug & Display ==="
-input bool     INPUT_ENABLE_LOGGING   = true;     // Enable detailed logging
-input bool     INPUT_SHOW_PANEL       = true;     // Show on-chart panel
-input bool     INPUT_ENABLE_ALERTS    = false;    // Enable alert notifications
-input int      INPUT_REPEAT_LOG_RESTART_THRESHOLD = 50; // Restart EA when exact same log repeats this many times
-input int      INPUT_CLOSED_DEALS_MAX_ROWS = 5000; // Max rows to keep in closed deals csv (0=unlimited)
+
+  bool     INPUT_ENABLE_LOGGING   = false;     // Enable detailed logging
+ bool     INPUT_SHOW_PANEL       = false;     // Show on-chart panel
+ bool     INPUT_ENABLE_ALERTS    = false;    // Enable alert notifications
+ int      INPUT_REPEAT_LOG_RESTART_THRESHOLD = 50; // Restart EA when exact same log repeats this many times
+ int      INPUT_CLOSED_DEALS_MAX_ROWS = 5000; // Max rows to keep in closed deals csv (0=unlimited)
 //+------------------------------------------------------------------+
 //| SECTION 3: CONSTANTS                                             |
 //+------------------------------------------------------------------+
@@ -993,7 +991,19 @@ bool ComputePartialCloseLots(double currentLots, double originalLots, double clo
 {
    lotsToClose = 0.0;
    fullExit = false;
-   return false;
+   if(currentLots <= 0.0 || closePercent <= 0.0)
+      return false;
+   double basisLots = (mode == CLOSE_BASIS_ORIGINAL) ? originalLots : currentLots;
+   double candidate = basisLots * (closePercent / 100.0);
+   lotsToClose = FloorVolumeToStep(candidate);
+   if(lotsToClose < g_minLot)
+      lotsToClose = NormalizeVolumeToStep(g_minLot);
+   if(lotsToClose >= currentLots)
+   {
+      fullExit = true;
+      return false;
+   }
+   return (lotsToClose >= g_minLot && lotsToClose < currentLots);
 }
 void ResetManagedTicketsThisTick()
 {
@@ -1314,9 +1324,9 @@ bool g_effCloseHighSpreadProfit = false;
 bool g_effClose50PctDefensive = false;
 bool g_effClosePartialTP = false;
 bool g_effCloseMultiLevelPartial = false;
-bool g_effModifyMoveToBE = false; // permanently disabled
-bool g_effModifyTrailingSL = false; // permanently disabled
-bool g_effModifyTrailingTP = false; // permanently disabled
+bool g_effModifyMoveToBE = false;
+bool g_effModifyTrailingSL = false;
+bool g_effModifyTrailingTP = false;
 bool g_effModifySkipLossOnHighSpread = false;
 struct EffectiveConfig
 {
@@ -2289,13 +2299,139 @@ void OnTick()
 }
 bool ZeroTPForMainPositionsOppositeToSignal(int direction)
 {
-   // disabled: do not modify TP after entry
-   return true;
+   // V7.35: flip TP reset is now configurable (zero TP or custom reset TP with broker-distance handling).
+   bool allModified = true;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
+         continue;
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+      if(posDir == direction)
+         continue;
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double previousTP = PositionGetDouble(POSITION_TP);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double minDist = (double)MathMax(g_stopLevel, g_freezeLevel) * g_point;
+      double targetTP = INPUT_FLIP_ZERO_TP_ON ? 0.0 : NormalizeDouble(INPUT_FLIP_TP_RESET_PRICE, g_digits);
+      string mode = INPUT_FLIP_ZERO_TP_ON ? "ZERO" : "RESET_PRICE";
+      if(!INPUT_FLIP_ZERO_TP_ON && targetTP != 0.0 && minDist > 0.0)
+      {
+         double distToCurrent = MathAbs(targetTP - currentPrice);
+         if(distToCurrent < minDist)
+         {
+            if(INPUT_FLIP_TP_RESET_CLAMP_ON)
+            {
+               targetTP = (posDir == 1) ? NormalizeDouble(currentPrice - minDist, g_digits)
+                                        : NormalizeDouble(currentPrice + minDist, g_digits);
+               if(INPUT_ENABLE_LOGGING)
+                  Print("FLIP_TP_RESET CLAMPED: ticket=", ticket,
+                        " | symbol=", symbol,
+                        " | dir=", (posDir == 1 ? "BUY" : "SELL"),
+                        " | mode=", mode,
+                        " | current=", DoubleToString(currentPrice, g_digits),
+                        " | prevTP=", DoubleToString(previousTP, g_digits),
+                        " | chosenTP=", DoubleToString(targetTP, g_digits),
+                        " | minDist=", DoubleToString(minDist, g_digits));
+            }
+            else
+            {
+               if(INPUT_ENABLE_LOGGING)
+                  Print("FLIP_TP_RESET TOO_CLOSE -> FALLBACK_ZERO: ticket=", ticket,
+                        " | symbol=", symbol,
+                        " | dir=", (posDir == 1 ? "BUY" : "SELL"),
+                        " | mode=", mode,
+                        " | requestedTP=", DoubleToString(INPUT_FLIP_TP_RESET_PRICE, g_digits),
+                        " | normalizedTP=", DoubleToString(targetTP, g_digits),
+                        " | current=", DoubleToString(currentPrice, g_digits),
+                        " | minDist=", DoubleToString(minDist, g_digits));
+               targetTP = 0.0;
+               mode = "FALLBACK_ZERO";
+            }
+         }
+      }
+      if(previousTP == targetTP)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            Print("FLIP_TP_RESET NOOP: ticket=", ticket,
+                  " | symbol=", symbol,
+                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
+                  " | mode=", mode,
+                  " | prevTP=", DoubleToString(previousTP, g_digits),
+                  " | targetTP=", DoubleToString(targetTP, g_digits));
+         continue;
+      }
+      bool modified = g_trade.PositionModify(ticket, currentSL, targetTP);
+      if(modified)
+      {
+         ResetTPFailureTracker(ticket);
+         if(INPUT_ENABLE_LOGGING)
+            Print("FLIP_TP_RESET OK: ticket=", ticket,
+                  " | symbol=", symbol,
+                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
+                  " | mode=", mode,
+                  " | prevTP=", DoubleToString(previousTP, g_digits),
+                  " | newTP=", DoubleToString(targetTP, g_digits),
+                  " | FORCE_OVERRIDE=YES");
+      }
+      else
+      {
+         allModified = false;
+         if(INPUT_ENABLE_LOGGING)
+            Print("FLIP_TP_RESET FAILED: ticket=", ticket,
+                  " | symbol=", symbol,
+                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
+                  " | mode=", mode,
+                  " | prevTP=", DoubleToString(previousTP, g_digits),
+                  " | targetTP=", DoubleToString(targetTP, g_digits),
+                  " | retcode=", g_trade.ResultRetcode(),
+                  " | comment=", g_trade.ResultComment());
+      }
+   }
+   return allModified;
 }
 bool CloseMainPositionsOppositeToSignal(int direction)
 {
-   // disabled: opposite signal never force-closes existing exposure
-   return true;
+   // V7.34 FIX: Opposite signal FORCE OVERRIDE - closes ALL opposite positions unconditionally.
+   // The user requirement is that opposite signals have absolute authority to override everything.
+   // Removed: SL loss threshold check, INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN dependency.
+   // Now: Any opposite main position is closed immediately, no exceptions.
+   bool allClosed = true;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
+         continue;
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+      if(posDir == direction)
+         continue;
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double slPrice = PositionGetDouble(POSITION_SL);
+      double slDistance = MathAbs(entryPrice - slPrice);
+      double adverse = (posType == POSITION_TYPE_BUY) ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
+      double lossPctToSL = (slDistance > 0.0) ? (MathMax(adverse, 0.0) / slDistance) * 100.0 : 0.0;
+      Print("FLIP_FORCE_CLOSE: ticket=", ticket,
+            " | direction=", (posDir == 1 ? "BUY" : "SELL"),
+            " | lossPctToSL=", DoubleToString(lossPctToSL, 2),
+            " | FORCE_OVERRIDE=YES");
+      if(g_trade.PositionClose(ticket))
+      {
+         Print("FLIP_FORCE_CLOSE OK: ticket=", ticket,
+               " | lossPctToSL=", DoubleToString(lossPctToSL, 2));
+      }
+      else
+      {
+         allClosed = false;
+         Print("FLIP_FORCE_CLOSE FAILED: ticket=", ticket,
+               " | retcode=", g_trade.ResultRetcode(),
+               " | comment=", g_trade.ResultComment());
+      }
+   }
+   return allClosed;
 }
 bool CancelMainPendingStopsOppositeToDirection(int direction)
 {
@@ -2341,8 +2477,51 @@ bool CancelMainPendingStopsOppositeToDirection(int direction)
 }
 bool CleanupOppositeExposureForFlip(int direction)
 {
-   // disabled: no forced cleanup on flips
-   return true;
+   if(g_flipCleanupInProgress)
+      return true;
+   g_flipCleanupInProgress = true;
+   bool allOk = true;
+   int openMainBefore = CountMainPositionsFromBroker();
+   int pendingBuyBefore = CountMainPendingStopsByDirection(1);
+   int pendingSellBefore = CountMainPendingStopsByDirection(-1);
+   Print("FLIP_CLEANUP PRE: targetDir=", (direction == 1 ? "BUY" : "SELL"),
+         " | openMain=", openMainBefore,
+         " | pendingBuy=", pendingBuyBefore,
+         " | pendingSell=", pendingSellBefore);
+ bool tpZeroOk = ZeroTPForMainPositionsOppositeToSignal(direction); // Always clear opposite TP before close attempts.
+   if(!tpZeroOk)
+      Print("FLIP_CLEANUP WARNING: one or more opposite MAIN TP zeroing attempts failed.");
+   if(!CloseMainPositionsOppositeToSignal(direction))
+      allOk = false;
+   if(INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON)
+   {
+      if(!CancelMainPendingStopsOppositeToDirection(direction))
+         allOk = false;
+   }
+   int openMainAfter = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket))
+         continue;
+      string comment = PositionGetString(POSITION_COMMENT);
+      if(StringFind(comment, COMMENT_MAIN_PREFIX) < 0 || !IsMainEntryComment(comment))
+         continue;
+      int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      if(posDir != direction)
+         openMainAfter++;
+   }
+   int pendingBuyAfter = CountMainPendingStopsByDirection(1);
+   int pendingSellAfter = CountMainPendingStopsByDirection(-1);
+   if(openMainAfter > 0)
+      allOk = false;
+   Print("FLIP_CLEANUP POST: targetDir=", (direction == 1 ? "BUY" : "SELL"),
+         " | oppositeOpenAfter=", openMainAfter,
+         " | pendingBuy=", pendingBuyAfter,
+         " | pendingSell=", pendingSellAfter,
+         " | status=", (allOk ? "OK" : "FAILED"));
+   g_flipCleanupInProgress = false;
+   return allOk;
 }
 void OnTimer()
 {
@@ -5138,7 +5317,7 @@ bool IsPositionProfitable(ulong ticket)
 // V8.0: HandleHighSpreadOpenPositions REMOVED. Spread is entry-gate only, never closes positions.
 void HandleHighSpreadOpenPositions()
 {
-   // disabled: spread only filters new entries
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
 bool ShouldSkipStopAdjustmentsForTicket(ulong ticket)
@@ -5953,7 +6132,7 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
 // V8.0: Handle50PercentLotClose REMOVED. No fractional volume close.
 void Handle50PercentLotClose()
 {
-   // disabled: no fractional volume closes
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
 //| SECTION 24: PARTIAL CLOSE & TRAILING STOP                        |
@@ -5998,12 +6177,97 @@ void ManagePartialClose()
 // V8.0: MoveToBreakeven REMOVED. SL/TP are static after placement.
 void MoveToBreakeven(ulong ticket, double entryPrice, int posType)
 {
-   // disabled: SL/TP remain static after placement
+   return; // V8.0: disabled - SL stays fixed at order placement value
+   double currentSL = PositionGetDouble(POSITION_SL);
+   double currentTP = PositionGetDouble(POSITION_TP);
+   if(posType == POSITION_TYPE_BUY)
+   {
+      if(currentSL >= entryPrice && currentSL > 0)
+      {
+         return;
+      }
+   }
+   else
+   {
+      if(currentSL <= entryPrice && currentSL > 0)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            Print("BREAKEVEN GUARD: SELL position ticket ", ticket, 
+                  " SL already at or better than breakeven | currentSL=", 
+                  DoubleToString(currentSL, g_digits), 
+                  " | entryPrice=", DoubleToString(entryPrice, g_digits));
+         return;
+      }
+   }
+   double newSL = NormalizeDouble(entryPrice, g_digits);
+   double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+   double minDist = g_stopLevel * g_point;
+   if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY)
+   {
+      if(currentPrice - newSL < minDist)
+         newSL = currentPrice - minDist;
+   }
+   else
+   {
+      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && newSL - currentPrice < minDist)
+         newSL = currentPrice + minDist;
+   }
+   if(g_trade.PositionModify(ticket, newSL, currentTP))
+      Print("BREAKEVEN: Ticket ", ticket, " SL moved to ", newSL);
 }
 //+------------------------------------------------------------------+
 void ManageTrailingStops()
 {
-   // disabled: SL/TP remain static after placement
+  
+   if(!g_effModifyTrailingSL)
+  
+      return;
+   if(!IsStopModifyEnabled())
+      return;
+   static datetime lastTrailCheck = 0;
+   if(TimeCurrent() - lastTrailCheck < 5) return; // throttle to every 5?sec
+   lastTrailCheck = TimeCurrent();
+   double atr[];
+   if(CopyBuffer(g_hATR_M1, 0, 0, 1, atr) < 1 || atr[0] <= 0)
+      return;
+   double trailDistance = atr[0] * INPUT_TRAIL_ATR_MULTIPLIER +
+                          g_adaptive.trailAdjustPoints * g_point;
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(!IsOurPosition(ticket)) continue;
+      if(ShouldSkipStopAdjustmentsForTicket(ticket)) continue;
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double currentTP = PositionGetDouble(POSITION_TP);
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      double profit = (posType == POSITION_TYPE_BUY) ?
+                      currentPrice - entryPrice :
+                      entryPrice - currentPrice;
+      if(profit < INPUT_TRAIL_ACTIVATION_POINTS * g_point)
+         continue;
+      double newSL;
+      if(posType == POSITION_TYPE_BUY)
+         newSL = currentPrice - trailDistance;
+      else
+         newSL = currentPrice + trailDistance;
+      newSL = NormalizeDouble(newSL, g_digits);
+      double minDist = g_stopLevel * g_point;
+      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_BUY && currentPrice - newSL < minDist)
+         continue;
+      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && posType == POSITION_TYPE_SELL && newSL - currentPrice < minDist)
+         continue;
+      bool shouldMove = false;
+      if(posType == POSITION_TYPE_BUY && newSL > currentSL + INPUT_TRAIL_STEP_POINTS * g_point)
+         shouldMove = true;
+      else if(posType == POSITION_TYPE_SELL && newSL < currentSL - INPUT_TRAIL_STEP_POINTS * g_point)
+         shouldMove = true;
+      if(shouldMove && g_trade.PositionModify(ticket, newSL, currentTP))
+         Print("TRAILING: Ticket ", ticket, " SL moved from ", currentSL, " to ", newSL);
+   }
 }
 //+------------------------------------------------------------------+
 bool CanModifyPosition(ulong ticket)
@@ -6033,26 +6297,111 @@ bool HasEnoughMargin(double lots, double price, ENUM_ORDER_TYPE orderType)
 //+------------------------------------------------------------------+
 //| SECTION 25: RECOVERY MODE DISPATCHER (Part 9)                    |
 //+------------------------------------------------------------------+
-void MonitorRecoveryAveragingMode() {
-   // disabled: recovery removed
-}
+void MonitorRecoveryAveragingMode() { g_activeRecoveryPrefix = COMMENT_AVG_PREFIX; g_activeRecoverySubtype = SUBTYPE_AVERAGING; MonitorRecoveryAveraging(); }
 void MonitorRecoveryHedgingMode()
 {
-   // disabled: recovery removed
+   g_activeRecoveryPrefix = COMMENT_HEDGE_PREFIX;
+   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
+   MonitorRecoveryAveraging();
 }
 void MonitorRecoveryGridMode()
 {
-   // disabled: recovery removed
+   g_activeRecoveryPrefix = COMMENT_GRID_PREFIX;
+   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
+   MonitorRecoveryAveraging();
 }
 void MonitorRecoveryMartingaleMode()
 {
-   // disabled: recovery removed
+   g_activeRecoveryPrefix = COMMENT_RECOVERY_PREFIX;
+   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
+   MonitorRecoveryAveraging();
 }
 //| SECTION 25: RECOVERY AVERAGING SYSTEM (Part 9)                   |
 //+------------------------------------------------------------------+
 void MonitorRecoveryAveraging()
 {
-   // disabled: recovery removed
+   double threat = CalculateMarketThreat();
+   ENUM_THREAT_ZONE zone = GetThreatZone(threat);
+   double baseTriggerDepth = INPUT_RECOVERY_TRIGGER_DEPTH;
+   double triggerDepth = baseTriggerDepth;
+   if(zone == THREAT_RED)
+      triggerDepth -= 10.0;
+   else if(zone == THREAT_ORANGE)
+      triggerDepth -= 5.0;
+   if(threat >= 70.0)
+      triggerDepth -= 5.0;
+   triggerDepth = MathMax(5.0, MathMin(95.0, triggerDepth));
+   for(int i = 0; i < g_positionCount; i++)
+   {
+      if(!g_positions[i].isActive) continue;
+      if(g_positions[i].recoveryCount >= INPUT_MAX_RECOVERY_PER_POS) continue;
+      // Skip non-main positions
+      if(StringFind(g_positions[i].comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
+      if(StringFind(g_positions[i].comment, COMMENT_AVG_PREFIX)      >= 0) continue;
+      if(threat < INPUT_RECOVERY_THREAT_MIN) continue;
+      if(g_positions[i].lastRecoveryTime > 0 &&
+         TimeCurrent() - g_positions[i].lastRecoveryTime < INPUT_RECOVERY_COOLDOWN_SECONDS)
+         continue;
+      ulong ticket = g_positions[i].ticket;
+      if(!PositionSelectByTicket(ticket))
+      {
+         g_positions[i].isActive = false;
+         continue;
+      }
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double slPrice = PositionGetDouble(POSITION_SL);
+      int posType = (int)PositionGetInteger(POSITION_TYPE);
+      if(slPrice == 0) continue;
+      double slDist = MathAbs(entryPrice - slPrice);
+      if(slDist <= 0) continue;
+      double loss = 0;
+      if(posType == POSITION_TYPE_BUY)
+         loss = entryPrice - currentPrice;
+      else
+         loss = currentPrice - entryPrice;
+      if(loss <= 0) continue;
+      double depthPct = (loss / slDist) * 100.0;
+      if(depthPct >= triggerDepth && depthPct <= 70)
+      {
+         double lotRatio = INPUT_RECOVERY_LOT_RATIO_MOD;
+         if(threat < 50)
+            lotRatio = INPUT_RECOVERY_LOT_RATIO_SAFE;
+         else if(threat >= 70)
+            lotRatio = INPUT_RECOVERY_LOT_RATIO_HIGH;
+         if(INPUT_ENABLE_LOGGING)
+         {
+            Print("RECOVERY CHECK: ticket=", ticket,
+                  " depthPct=", DoubleToString(depthPct, 2),
+                  " triggerDepth=", DoubleToString(triggerDepth, 2),
+                  " lotRatio=", DoubleToString(lotRatio, 2),
+                  " threat=", DoubleToString(threat, 2));
+         }
+         double recLots = g_positions[i].originalLots * lotRatio;
+ double validatedRecoveryLot = 0.0;
+         string recoveryReason = "";
+         if(!NormalizeAndValidateOrderVolume(recLots, validatedRecoveryLot, recoveryReason))
+         {
+            Print("RECOVERY ORDER ABORTED: invalid recovery lot",
+                  " | parentTicket=", ticket,
+                  " | originalLots=", DoubleToString(g_positions[i].originalLots, g_lotDigits),
+                  " | ratio=", DoubleToString(lotRatio, 4),
+                  " | requested=", DoubleToString(recLots, g_lotDigits),
+                  " | reason=", recoveryReason);
+            continue;
+         }
+                 PlaceRecoveryOrder(ticket, posType, validatedRecoveryLot, slPrice, entryPrice);
+         g_positions[i].recoveryCount++;
+         g_positions[i].lastRecoveryTime = TimeCurrent();
+      }
+      else if(INPUT_ENABLE_LOGGING)
+      {
+         Print("RECOVERY SKIP: ticket=", ticket,
+               " depthPct=", DoubleToString(depthPct, 2),
+               " triggerDepth=", DoubleToString(triggerDepth, 2),
+               " lotRatio=0.00");
+      }
+   }
 }
 //+------------------------------------------------------------------+
 //+------------------------------------------------------------------+
@@ -6123,7 +6472,7 @@ bool BuildValidRecoveryTP(int parentType, double price, double sl,
 void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
                         double parentSL, double parentEntry)
 {
-   // disabled: recovery removed
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
 // V8.0: CheckRecoveryTimeouts REMOVED. No recovery system.
@@ -7221,7 +7570,8 @@ void UpdateAverageSpread()
 // V8.0: CloseAllPositions REMOVED. No emergency/forced liquidation.
 void CloseAllPositions(string reason)
 {
-   // disabled: no emergency liquidation path
+   Print("V8.0: CloseAllPositions disabled. reason=", reason);
+   return; // V8.0: disabled
 }
 //+------------------------------------------------------------------+
 void ArchiveRecentlyClosedPositionContext(const PositionState &state)
@@ -8181,12 +8531,227 @@ void CheckPositionAgeTimeout()
 // V8.0: ManageTrailingTP REMOVED. SL/TP are static after placement.
 void ManageTrailingTP_DISABLED()
 {
-   // disabled: SL/TP remain static after placement
+   if(!g_effModifyTrailingTP)
+      return;
+   // V7.34 FIX: Trailing TP modifies SL (not TP), so we check SL modify permission, NOT TP.
+   // Removed IsTpModifyEnabled() gate - trailing TP is an SL-based trailing mechanism.
+   if(!INPUT_ENABLE_TRAILING_TP_GAP)
+      return;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) continue;
+      // V7.34 FIX: Removed ShouldSkipStopAdjustmentsForTicket - trailing TP only fires on profitable
+      // positions, so the high-spread-loss skip is never applicable.
+      // V7.34 FIX: Removed CanAttemptTPModify - exponential backoff from TP failures should not
+      // permanently block the trailing SL mechanism. We still check CanModifyPosition for freeze level.
+      if(!CanModifyPosition(ticket)) continue;
+      if(IsTicketManagedThisTick(ticket)) continue;
+      int idx = -1;
+      for(int j = 0; j < g_positionCount; j++) if(g_positions[j].isActive && g_positions[j].ticket == ticket) { idx = j; break; }
+      if(idx < 0) continue;
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      int dir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
+      double sl = PositionGetDouble(POSITION_SL);
+      double current = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double newSL = NormalizeDouble(current - dir * INPUT_TRAILING_TP_GAP_POINTS * _Point, g_digits);
+      double stepPrice = INPUT_TRAILING_TP_STEP_POINTS * _Point;
+      double minDist = g_stopLevel * g_point;
+      // --- ACTIVATION CHECK (two modes: pips or % TP progress) ---
+      if(!g_positions[idx].trailingTPActive)
+      {
+         double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+         double tp = PositionGetDouble(POSITION_TP);
+         double profitPoints = (dir == 1) ? ((current - entry) / _Point) : ((entry - current) / _Point);
+         if(profitPoints < 0.0)
+            profitPoints = 0.0;
+         bool activateTrailingTP = false;
+         if(INPUT_TRAILING_TP_ACTIVATION_MODE == TRAILING_TP_ACTIVATE_BY_PIPS)
+         {
+            // Mode 1: Activate by pips profit
+            double pipPoints = (_Digits == 3 || _Digits == 5) ? 10.0 : 1.0;
+            double activationPoints = INPUT_TRAILING_TP_ACTIVATION_PIPS * pipPoints;
+            activateTrailingTP = (profitPoints >= activationPoints);
+            if(!activateTrailingTP && INPUT_ENABLE_LOGGING && profitPoints > 0)
+               Print("TRAILING_TP SKIP: reason=activation_not_reached",
+                     " | ticket=", ticket,
+                     " | symbol=", symbol,
+                     " | dir=", (dir == 1 ? "BUY" : "SELL"),
+                     " | current=", DoubleToString(current, g_digits),
+                     " | sl=", DoubleToString(sl, g_digits),
+                     " | newSL=", DoubleToString(newSL, g_digits),
+                     " | profitPts=", DoubleToString(profitPoints, 1),
+                     " | activationPts=", DoubleToString(activationPoints, 1),
+                     " | stepPrice=", DoubleToString(stepPrice, g_digits));
+         }
+         else
+         {
+            // Mode 2: Activate by % of TP distance reached
+            if(tp != 0.0)
+            {
+               double tpDistancePoints = MathAbs(tp - entry) / _Point;
+               if(tpDistancePoints > 0.0)
+               {
+                  double progressPct = (profitPoints / tpDistancePoints) * 100.0;
+                  activateTrailingTP = (progressPct >= INPUT_TRAILING_TP_ACTIVATION_PERCENT);
+                  if(!activateTrailingTP && INPUT_ENABLE_LOGGING && profitPoints > 0)
+                     Print("TRAILING_TP SKIP: reason=activation_not_reached",
+                           " | ticket=", ticket,
+                           " | symbol=", symbol,
+                           " | dir=", (dir == 1 ? "BUY" : "SELL"),
+                           " | current=", DoubleToString(current, g_digits),
+                           " | sl=", DoubleToString(sl, g_digits),
+                           " | newSL=", DoubleToString(newSL, g_digits),
+                           " | progressPct=", DoubleToString(progressPct, 1),
+                           " | thresholdPct=", DoubleToString(INPUT_TRAILING_TP_ACTIVATION_PERCENT, 1),
+                           " | tpDistPts=", DoubleToString(tpDistancePoints, 1));
+               }
+            }
+            else if(INPUT_ENABLE_LOGGING)
+            {
+               Print("TRAILING_TP CHECK: ticket=", ticket,
+                     " | mode=TP_PROGRESS skipped because TP is zero. Set a non-zero TP or switch activation mode to PIPS.");
+            }
+         }
+         if(!activateTrailingTP)
+            continue;
+         g_positions[idx].trailingTPActive = true;
+         g_positions[idx].closePathState = CLOSE_PATH_TRAILING_TP_MODE;
+         if(INPUT_ENABLE_LOGGING)
+            Print("TRAILING_TP ACTIVATED: ticket=", ticket,
+                  " | symbol=", symbol,
+                  " | dir=", (dir == 1 ? "BUY" : "SELL"),
+                  " | mode=", (INPUT_TRAILING_TP_ACTIVATION_MODE == TRAILING_TP_ACTIVATE_BY_PIPS ? "PIPS" : "TP_PROGRESS_PERCENT"));
+      }
+      // --- TRAILING LOGIC: Move SL behind price with gap, zero out TP ---
+      if(g_positions[idx].lastTrailingTPPrice > 0.0)
+      {
+         double advance = (dir == 1) ? (newSL - g_positions[idx].lastTrailingTPPrice)
+                                     : (g_positions[idx].lastTrailingTPPrice - newSL);
+         if(advance < stepPrice)
+         {
+            if(INPUT_ENABLE_LOGGING)
+               Print("TRAILING_TP SKIP: reason=step_not_reached",
+                     " | ticket=", ticket,
+                     " | symbol=", symbol,
+                     " | dir=", (dir == 1 ? "BUY" : "SELL"),
+                     " | current=", DoubleToString(current, g_digits),
+                     " | sl=", DoubleToString(sl, g_digits),
+                     " | newSL=", DoubleToString(newSL, g_digits),
+                     " | lastTrail=", DoubleToString(g_positions[idx].lastTrailingTPPrice, g_digits),
+                     " | advance=", DoubleToString(advance, g_digits),
+                     " | stepPrice=", DoubleToString(stepPrice, g_digits));
+            continue;
+         }
+      }
+      // V7.34 FIX: Only move SL in the favorable direction
+      bool shouldMove = (dir == 1) ? (newSL > sl) : (newSL < sl);
+      if(!shouldMove)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            Print("TRAILING_TP SKIP: reason=not_favorable_direction",
+                  " | ticket=", ticket,
+                  " | symbol=", symbol,
+                  " | dir=", (dir == 1 ? "BUY" : "SELL"),
+                  " | current=", DoubleToString(current, g_digits),
+                  " | sl=", DoubleToString(sl, g_digits),
+                  " | newSL=", DoubleToString(newSL, g_digits),
+                  " | shouldMove=false");
+         continue;
+      }
+      bool brokerGuardBlocked = false;
+      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && dir == 1 && (current - newSL) < minDist)
+         brokerGuardBlocked = true;
+      if(INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON && dir == -1 && (newSL - current) < minDist)
+         brokerGuardBlocked = true;
+      if(brokerGuardBlocked)
+      {
+         if(INPUT_ENABLE_LOGGING)
+            Print("TRAILING_TP SKIP: reason=broker_distance_guard",
+                  " | ticket=", ticket,
+                  " | symbol=", symbol,
+                  " | dir=", (dir == 1 ? "BUY" : "SELL"),
+                  " | current=", DoubleToString(current, g_digits),
+                  " | sl=", DoubleToString(sl, g_digits),
+                  " | newSL=", DoubleToString(newSL, g_digits),
+                  " | minDist=", DoubleToString(minDist, g_digits),
+                  " | stopLevelPts=", DoubleToString((double)g_stopLevel, 1));
+         continue;
+      }
+      if(g_trade.PositionModify(ticket, newSL, 0.0))
+      {
+         ResetTPFailureTracker(ticket);
+         g_positions[idx].lastTrailingTPPrice = newSL;
+         MarkTicketManagedThisTick(ticket);
+         if(INPUT_ENABLE_LOGGING)
+            Print("TRAILING_TP MOVED: ticket=", ticket,
+                  " | symbol=", symbol,
+                  " | dir=", (dir == 1 ? "BUY" : "SELL"),
+                  " | current=", DoubleToString(current, g_digits),
+                  " | prevSL=", DoubleToString(sl, g_digits),
+                  " | newSL=", DoubleToString(newSL, g_digits),
+                  " | gapPts=", DoubleToString(INPUT_TRAILING_TP_GAP_POINTS, 1),
+                  " | stepPts=", DoubleToString(INPUT_TRAILING_TP_STEP_POINTS, 1));
+      }
+      else if(INPUT_ENABLE_LOGGING)
+      {
+         // V7.34 FIX: Log failure but don't use exponential backoff for trailing TP
+         Print("TRAILING_TP MODIFY FAILED: ticket=", ticket,
+               " | symbol=", symbol,
+               " | dir=", (dir == 1 ? "BUY" : "SELL"),
+               " | current=", DoubleToString(current, g_digits),
+               " | sl=", DoubleToString(sl, g_digits),
+               " | newSL=", DoubleToString(newSL, g_digits),
+               " | retcode=", g_trade.ResultRetcode(),
+               " | comment=", g_trade.ResultComment());
+      }
+   }
 }
 //+------------------------------------------------------------------+
 //| V7.6 FIX: Multi-Level Partial Close (Missing Feature 12)        |
 //+------------------------------------------------------------------+
 void HandleMultiLevelPartial(ulong ticket)
 {
-   // disabled: no fractional volume closes
+   
+   if(!g_effCloseMultiLevelPartial)
+      return;
+       if(!IsCloseEnabled())
+      return;
+   if(ticket == 0 || IsTicketManagedThisTick(ticket)) return;
+   if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) return;
+   int idx = -1;
+   for(int i = 0; i < g_positionCount; i++) if(g_positions[i].isActive && g_positions[i].ticket == ticket) { idx = i; break; }
+   if(idx < 0 || g_positions[idx].closePathState == CLOSE_PATH_TERMINAL || g_positions[idx].trailingTPActive) return;
+   double vol = PositionGetDouble(POSITION_VOLUME);
+   double open = PositionGetDouble(POSITION_PRICE_OPEN);
+   double tp = PositionGetDouble(POSITION_TP);
+   double current = PositionGetDouble(POSITION_PRICE_CURRENT);
+   ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+   double totalDist = MathAbs(tp - open);
+   if(totalDist <= 0) return;
+   double progress = (posType == POSITION_TYPE_BUY && tp > open) ? ((current - open) / (tp - open)) : ((posType == POSITION_TYPE_SELL && tp < open) ? ((open - current) / (open - tp)) : 0.0);
+   if(progress <= 0) return;
+   bool level2 = (progress >= 0.60 && !g_positions[idx].multiPartialLevel2Done);
+   bool level1 = (progress >= 0.30 && !g_positions[idx].multiPartialLevel1Done);
+   if(!level1 && !level2) return;
+   double lotsToClose = 0.0;
+   bool fullExit = false;
+   if(!ComputePartialCloseLots(vol, g_positions[idx].originalLots, 25.0, CLOSE_BASIS_REMAINING, lotsToClose, fullExit))
+   {
+      if(fullExit)
+      {
+         g_trade.PositionClose(ticket);
+         g_positions[idx].closePathState = CLOSE_PATH_TERMINAL;
+         MarkTicketManagedThisTick(ticket);
+      }
+      return;
+   }
+   if(g_trade.PositionClosePartial(ticket, lotsToClose))
+   {
+      g_positions[idx].currentLots = PositionGetDouble(POSITION_VOLUME);
+      if(level2) { g_positions[idx].multiPartialLevel2Done = true; g_positions[idx].multiPartialLevel1Done = true; }
+      else if(level1) g_positions[idx].multiPartialLevel1Done = true;
+      MarkTicketManagedThisTick(ticket);
+   }
 }
