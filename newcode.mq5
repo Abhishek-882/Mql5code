@@ -31,7 +31,7 @@ enum ENUM_EXECUTION_MODE
    MARKET       = 0,   // Immediate market order
    PENDING_STOP = 1    // Place stop pending order
 };
-// V8.1: ENUM_RECOVERY_MODE removed — recovery system permanently disabled in V8.0
+// V8.1: Recovery system permanently removed
 enum ENUM_COMBO_RANK_MODE
 {
    COMBO_RANK_HEURISTIC = 0,
@@ -86,7 +86,7 @@ enum ENUM_MARKOV_STATE
  int      INPUT_EXPIRY_DAY   = 31;           // Expiry Day
 //--- Trading Configuration
 int      INPUT_MAX_CONCURRENT_TRADES  = 1;  // Max concurrent MAIN trades (set 1 for strict single-slot flip behavior)
- int      INPUT_MAX_CONCURRENT_RECOVERY_TRADES = 3; // Max concurrent recovery/aux trades
+ 
 int      INPUT_MAX_SAME_DIRECTION    = 2000;  // Max same-direction trades
 int      INPUT_SAME_DIRECTION_BLOCK_SECONDS = 1; // Direction-specific re-entry block in seconds (0=disable)
 double   INPUT_PROXIMITY_POINTS      = 0.0; // Proximity rule disabled (timeout-only pacing)
@@ -150,7 +150,7 @@ double   INPUT_EXTREME_ENTER_DRAWDOWN = 100.0;
  bool     INPUT_ENABLE_THREAT_HARD_BLOCK = false;
  bool     INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK = false;
  bool     INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK = false;
- bool     INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT = false;
+ 
  bool     INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT = false;
  bool     INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT = false;
  bool     INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE = false;
@@ -228,7 +228,7 @@ bool     INPUT_GATE_DAILY_LOSS_ON = true;
  bool     INPUT_THREAT_FACTOR_CONSECUTIVE_LOSS_ON = false;
  bool     INPUT_THREAT_FACTOR_VOLATILITY_RATIO_ON = false;
  bool     INPUT_THREAT_FACTOR_NEWS_WINDOW_ON = false;
- bool     INPUT_THREAT_FACTOR_RECOVERY_POSITION_ON = false;
+ 
  bool     INPUT_THREAT_FACTOR_WIN_STREAK_ON = false;
  bool     INPUT_THREAT_FRIDAY_LATE_PENALTY_ON = false;
  bool     INPUT_THREAT_END_OF_MONTH_PENALTY_ON = false;
@@ -253,7 +253,7 @@ bool     INPUT_GATE_DAILY_LOSS_ON = true;
  bool     INPUT_CLOSE_PARTIAL_TP_ON = false;
  bool     INPUT_CLOSE_MULTI_LEVEL_PARTIAL_ON = false;
  bool     INPUT_CLOSE_AGE_TIMEOUT_ON = true;
- bool     INPUT_CLOSE_RECOVERY_TIMEOUT_ON = true;
+ 
  bool     INPUT_MODIFY_BREAKEVEN_ON = false;
  bool     INPUT_MODIFY_TRAILING_SL_ON = false;
  bool     INPUT_MODIFY_TRAILING_TP_ON = false;
@@ -347,29 +347,7 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  double   INPUT_CONSEC_WIN_CONF_BOOST_CAP = 8.0;
  bool     INPUT_ENABLE_CONSEC_WIN_CONF_DECAY = false;
  int      INPUT_CONSEC_WIN_CONF_DECAY_AFTER_TRADES = 3;
-//--- Recovery Averaging System
- bool     INPUT_ENABLE_RECOVERY         = false; // Master recovery gate
- ENUM_RECOVERY_MODE INPUT_RECOVERY_MODE = RECOVERY_AVERAGING; // Recovery mode selector
- int      INPUT_RECOVERY_THREAT_MIN     = 60;   // Minimum threat to trigger recovery
- int      INPUT_MAX_RECOVERY_PER_POS    = 2;    // Max recovery orders per position
- double   INPUT_RECOVERY_LOT_RATIO_SAFE = 0.33; // Lot ratio when threat < 50
- double   INPUT_RECOVERY_LOT_RATIO_MOD  = 0.50; // Lot ratio when threat 50-70
- double   INPUT_RECOVERY_LOT_RATIO_HIGH = 0.75; // Lot ratio when threat > 70
- int      INPUT_RECOVERY_TIMEOUT_MINUTES = 120; // Recovery order timeout (minutes)
- double   INPUT_RECOVERY_TRIGGER_DEPTH  = 40.0; // Trigger at X% of SL distance
- double   INPUT_RECOVERY_TP_BUFFER_POINTS = 60.0; // Add this many points beyond combined break-even for recovery TP
- double   INPUT_RECOVERY_TP_TARGET_MULTIPLIER = 1.0; // Optional target model multiplier on (combined BE-to-SL) distance
- int      INPUT_RECOVERY_COOLDOWN_SECONDS = 30; // Cooldown between recovery attempts
- int      INPUT_RECOVERY_MAX_LAYERS = 3; // Safety cap for recovery layering
- double   INPUT_RECOVERY_EMERGENCY_STOP_PERCENT = 20.0; // Halt recovery when drawdown exceeds this
- double   INPUT_GRID_STEP_POINTS = 150.0; // Grid mode spacing
- int      INPUT_GRID_MAX_ORDERS = 3; // Grid max recovery orders
- double   INPUT_GRID_LOT_SCALING = 1.0; // Grid lot scaling
- double   INPUT_HEDGE_TRIGGER_OFFSET_POINTS = 120.0; // Hedge trigger offset in points
- double   INPUT_HEDGE_LOT_SCALING = 1.0; // Hedge lot scaling
- int      INPUT_HEDGE_MAX_ORDERS = 2; // Hedge max recovery orders
- double   INPUT_MARTINGALE_MULTIPLIER = 1.6; // Martingale lot multiplier
- int      INPUT_MARTINGALE_MAX_ORDERS = 2; // Martingale max recovery orders
+// V8.1: Recovery Averaging System permanently removed
 //--- Session Filters
  bool     INPUT_TRADE_ASIAN    = true;       // Trade Asian session
  bool     INPUT_TRADE_LONDON   = true;       // Trade London session
@@ -436,7 +414,7 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  int      INPUT_TREE_MIN_SELECTED_MATCH = 1; // Minimum selected-feature matches for entry gate
  double   INPUT_TREE_MIN_IG = 0.0001; // Minimum IG to keep feature
  double   INPUT_TREE_CONFIDENCE_WEIGHT = 0.15; // Confidence adjustment weight from selected features
- bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include recovery/aux positions in age-timeout close
+ bool     INPUT_AGE_TIMEOUT_INCLUDE_AUX = false; // Include aux positions in age-timeout close
  int      INPUT_POSITION_AGE_CHECK_SECONDS = 5; // Throttle stale-position timeout checks
  int      INPUT_HISTORY_PROCESS_INTERVAL_SECONDS = 2; // Throttle closed-deal history scan
  int      INPUT_HISTORY_BOOTSTRAP_DAYS = 7; // Initial history window (days) when no watermark exists
@@ -483,10 +461,7 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
 //| SECTION 3: CONSTANTS                                             |
 //+------------------------------------------------------------------+
 #define COMMENT_MAIN_PREFIX       "V7_MAIN_"
-#define COMMENT_RECOVERY_PREFIX   "V7_REC_"
-#define COMMENT_AVG_PREFIX        "V7_AVG_"
-#define COMMENT_HEDGE_PREFIX      "V7_HDG_"
-#define COMMENT_GRID_PREFIX       "V7_GRD_"
+// V8.1: Recovery/Averaging/Hedge/Grid comment prefixes removed
 #define COMMENT_50PCT_PREFIX      "V7_50P_"
 #define MAX_POSITIONS             100
 #define MAX_FINGERPRINTS          500
@@ -531,7 +506,7 @@ string GetErrorCategoryName(ENUM_ERROR_CATEGORY cat)
       default:                       return "UNKNOWN";
    }
 }
-void LogCategorizedError(ENUM_ERROR_CATEGORY cat, const string &context, const string &detail="")
+void LogCategorizedError(ENUM_ERROR_CATEGORY cat, const string context, const string detail="")
 {
    int idx = (int)cat;
    if(idx < 0 || idx >= (int)ERR_CAT_COUNT) idx = 0;
@@ -565,8 +540,6 @@ string GetTopErrorCategories()
 enum ENUM_POSITION_SUBTYPE
 {
    SUBTYPE_MAIN      = 0,
-   SUBTYPE_RECOVERY  = 1,
-   SUBTYPE_AVERAGING = 2,
    SUBTYPE_AUX       = 3
 };
 const long MAGIC_SUBTYPE_MULTIPLIER = 100000000;
@@ -621,8 +594,6 @@ struct PositionState
    bool     multiPartialLevel1Done; // 30% progress partial done
    bool     multiPartialLevel2Done; // 60% progress partial done
    bool     movedToBreakeven;   // SL moved to breakeven
-   int      recoveryCount;      // How many recovery orders placed
-   datetime lastRecoveryTime;   // Last recovery order time
    bool     isActive;           // Position still open
    double   maxProfit;          // Max profit seen (for trailing)
    double   maxLoss;
@@ -705,7 +676,7 @@ struct TrainingData
    double   slPrice;
    double   tpPrice;
    double   closePrice;
-   string   exitType;           // "TP", "SL", "Trailing", "Manual", "50pct", "Recovery"
+   string   exitType;           // "TP", "SL", "Trailing", "Manual", "50pct"
    double   profitLoss;
    bool     isWin;
    double   confidenceAtEntry;
@@ -1238,8 +1209,6 @@ string   g_treeSelectedFeatures[];
 int      g_treeSelectedFeatureCount = 0;
 double   g_treeParentEntropy = 0.0;
 int      g_consecWinBoostTrades = 0;
-string   g_activeRecoveryPrefix = COMMENT_AVG_PREFIX;
-ENUM_POSITION_SUBTYPE g_activeRecoverySubtype = SUBTYPE_AVERAGING;
 //--- Q-Learning System (108 states x 4 actions)
 double   g_qTable[Q_TABLE_STATES][Q_TABLE_ACTIONS];
 int      g_qVisits[Q_TABLE_STATES][Q_TABLE_ACTIONS];
@@ -1316,7 +1285,6 @@ bool  g_managedThisTickFlags[];
 // - CloseAllPositions
 // - CheckAllGates protection-state gate
 // - RunDecisionPipeline threat blocks
-// - CheckRecoveryTimeouts
 // - CheckPositionAgeTimeout
 // - HandleHighSpreadOpenPositions
 // - Handle50PercentLotClose
@@ -1347,7 +1315,6 @@ bool g_effGateProtectionBlock = false;
 bool g_effThreatHardBlock = false;
 bool g_effThreatExtremeZoneBlock = false;
 bool g_effThreatSoftLotShrink = false;
-bool g_effCloseRecoveryTimeout = false;
 bool g_effClosePositionAgeTimeout = false;
 bool g_effCloseHighSpreadProfit = false;
 bool g_effClose50PctDefensive = false;
@@ -1525,14 +1492,6 @@ bool ValidateInputsStrict(string &err)
    if(INPUT_TREE_BRANCH_MIN_SUPPORT < 1) { err = "INPUT_TREE_BRANCH_MIN_SUPPORT must be >= 1"; return false; }
    if(INPUT_TREE_MAX_SELECTED_FEATURES < 1) { err = "INPUT_TREE_MAX_SELECTED_FEATURES must be >= 1"; return false; }
    if(INPUT_TREE_MIN_SELECTED_MATCH < 0) { err = "INPUT_TREE_MIN_SELECTED_MATCH must be >= 0"; return false; }
-   if(INPUT_MAX_RECOVERY_PER_POS < 0) { err = "INPUT_MAX_RECOVERY_PER_POS must be >= 0"; return false; }
-   if(INPUT_RECOVERY_TIMEOUT_MINUTES <= 0) { err = "INPUT_RECOVERY_TIMEOUT_MINUTES must be > 0"; return false; }
-   if(INPUT_RECOVERY_TRIGGER_DEPTH < 1.0 || INPUT_RECOVERY_TRIGGER_DEPTH > 95.0) { err = "INPUT_RECOVERY_TRIGGER_DEPTH must be within 1..95"; return false; }
-   if(INPUT_RECOVERY_LOT_RATIO_SAFE <= 0 || INPUT_RECOVERY_LOT_RATIO_MOD <= 0 || INPUT_RECOVERY_LOT_RATIO_HIGH <= 0) { err = "All recovery lot ratios must be > 0"; return false; }
-   if(INPUT_RECOVERY_LOT_RATIO_SAFE > 10 || INPUT_RECOVERY_LOT_RATIO_MOD > 10 || INPUT_RECOVERY_LOT_RATIO_HIGH > 10) { err = "Recovery lot ratios exceed policy bound (10x)"; return false; }
-   if(INPUT_GRID_STEP_POINTS <= 0) { err = "INPUT_GRID_STEP_POINTS must be > 0"; return false; }
-   if(INPUT_RECOVERY_MODE == RECOVERY_MARTINGALE && INPUT_MARTINGALE_MULTIPLIER <= 1.0) { err = "INPUT_MARTINGALE_MULTIPLIER must be > 1 in martingale mode"; return false; }
-   if(INPUT_RECOVERY_MODE == RECOVERY_HEDGING && INPUT_HEDGE_TRIGGER_OFFSET_POINTS <= 0) { err = "INPUT_HEDGE_TRIGGER_OFFSET_POINTS must be > 0 in hedging mode"; return false; }
    if(INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION)
    {
       if(!IsValidHourValue(INPUT_ASIAN_START) || !IsValidHourValue(INPUT_ASIAN_END) ||
@@ -1853,7 +1812,7 @@ int OnInit()
    g_effThreatHardBlock = INPUT_ENABLE_THREAT_HARD_BLOCK;
    g_effThreatExtremeZoneBlock = INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK;
    g_effThreatSoftLotShrink = INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK;
-   g_effCloseRecoveryTimeout = INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT;
+   
    g_effClosePositionAgeTimeout = INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT;
    g_effCloseHighSpreadProfit = INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT;
    g_effClose50PctDefensive = INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE;
@@ -1989,7 +1948,7 @@ int OnInit()
    g_effThreatHardBlock = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_HARD_BLOCK);
    g_effThreatExtremeZoneBlock = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK);
    g_effThreatSoftLotShrink = ResolveRuntimeToggle(false, INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK);
-   g_effCloseRecoveryTimeout = ResolveRuntimeToggle(false, INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT);
+   
    g_effClosePositionAgeTimeout = ResolveRuntimeToggle(INPUT_POSITION_AGE_HOURS > 0, INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT);
    g_effCloseHighSpreadProfit = ResolveRuntimeToggle(INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD, INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT);
    string srcClose50 = "";
@@ -2017,7 +1976,7 @@ int OnInit()
    LogToggleMatrix("CheckAllGates.ProtectionState", false, INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE, g_effGateProtectionBlock);
    LogToggleMatrix("RunDecisionPipeline.ThreatHardBlock", false, INPUT_ENABLE_THREAT_HARD_BLOCK, g_effThreatHardBlock);
    LogToggleMatrix("RunDecisionPipeline.ThreatExtremeZone", false, INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK, g_effThreatExtremeZoneBlock);
-   LogToggleMatrix("CheckRecoveryTimeouts", false, INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT, g_effCloseRecoveryTimeout);
+   
    LogToggleMatrix("CheckPositionAgeTimeout", INPUT_POSITION_AGE_HOURS > 0, INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT, g_effClosePositionAgeTimeout);
    LogToggleMatrix("HandleHighSpreadOpenPositions", INPUT_CLOSE_PROFIT_ON_HIGH_SPREAD, INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT, g_effCloseHighSpreadProfit);
    LogToggleMatrix("Handle50PercentLotClose", INPUT_ENABLE_50PCT_CLOSE, INPUT_CLOSE_50PCT_DEFENSIVE_ON, g_effClose50PctDefensive);
@@ -2064,7 +2023,7 @@ if(!ValidateAndReportEffectiveConfig())
    Print("CHECKLIST GUARD CloseAllPositions=", (g_effCloseAllApi ? "ON" : "OFF"));
    Print("CHECKLIST GUARD CheckAllGates protection-state gate=", (g_effGateProtectionBlock ? "ON" : "OFF"));
    Print("CHECKLIST GUARD RunDecisionPipeline threat blocks=", ((g_effThreatHardBlock || g_effThreatExtremeZoneBlock || g_effThreatSoftLotShrink) ? "ON" : "OFF"));
-   Print("CHECKLIST GUARD CheckRecoveryTimeouts=", (g_effCloseRecoveryTimeout ? "ON" : "OFF"));
+   
    Print("CHECKLIST GUARD CheckPositionAgeTimeout=", (g_effClosePositionAgeTimeout ? "ON" : "OFF"));
    Print("CHECKLIST GUARD HandleHighSpreadOpenPositions=", (g_effCloseHighSpreadProfit ? "ON" : "OFF"));
    Print("CHECKLIST GUARD Handle50PercentLotClose=", (g_effClose50PctDefensive ? "ON" : "OFF"));
@@ -2165,7 +2124,7 @@ if(!ValidateAndReportEffectiveConfig())
          " ML=", (INPUT_ENABLE_ML?"ON":"OFF"),
          " ComboAdaptive=", (INPUT_ENABLE_COMBINATION_ADAPTIVE?"ON":"OFF"),
          " Adaptive=", (INPUT_ENABLE_ADAPTIVE?"ON":"OFF"),
-         " Recovery=", (INPUT_ENABLE_RECOVERY?"ON":"OFF"),
+         
          " Partial=", (INPUT_ENABLE_PARTIAL_CLOSE?"ON":"OFF"),
          " 50pct=", (INPUT_ENABLE_50PCT_CLOSE?"ON":"OFF"),
          " TrailSL=", (INPUT_ENABLE_TRAILING?"ON":"OFF"),
@@ -2416,142 +2375,8 @@ void OnTick()
    }
    g_tickMsPersistence = GetTickCount() - t0;
 }
-bool ZeroTPForMainPositionsOppositeToSignal(int direction)
-{
-   // V7.35: flip TP reset is now configurable (zero TP or custom reset TP with broker-distance handling).
-   bool allModified = true;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
-         continue;
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
-      if(posDir == direction)
-         continue;
-      string symbol = PositionGetString(POSITION_SYMBOL);
-      double currentSL = PositionGetDouble(POSITION_SL);
-      double previousTP = PositionGetDouble(POSITION_TP);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double minDist = (double)MathMax(g_stopLevel, g_freezeLevel) * g_point;
-      double targetTP = INPUT_FLIP_ZERO_TP_ON ? 0.0 : NormalizeDouble(INPUT_FLIP_TP_RESET_PRICE, g_digits);
-      string mode = INPUT_FLIP_ZERO_TP_ON ? "ZERO" : "RESET_PRICE";
-      if(!INPUT_FLIP_ZERO_TP_ON && targetTP != 0.0 && minDist > 0.0)
-      {
-         double distToCurrent = MathAbs(targetTP - currentPrice);
-         if(distToCurrent < minDist)
-         {
-            if(INPUT_FLIP_TP_RESET_CLAMP_ON)
-            {
-               targetTP = (posDir == 1) ? NormalizeDouble(currentPrice - minDist, g_digits)
-                                        : NormalizeDouble(currentPrice + minDist, g_digits);
-               if(INPUT_ENABLE_LOGGING)
-                  Print("FLIP_TP_RESET CLAMPED: ticket=", ticket,
-                        " | symbol=", symbol,
-                        " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                        " | mode=", mode,
-                        " | current=", DoubleToString(currentPrice, g_digits),
-                        " | prevTP=", DoubleToString(previousTP, g_digits),
-                        " | chosenTP=", DoubleToString(targetTP, g_digits),
-                        " | minDist=", DoubleToString(minDist, g_digits));
-            }
-            else
-            {
-               if(INPUT_ENABLE_LOGGING)
-                  Print("FLIP_TP_RESET TOO_CLOSE -> FALLBACK_ZERO: ticket=", ticket,
-                        " | symbol=", symbol,
-                        " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                        " | mode=", mode,
-                        " | requestedTP=", DoubleToString(INPUT_FLIP_TP_RESET_PRICE, g_digits),
-                        " | normalizedTP=", DoubleToString(targetTP, g_digits),
-                        " | current=", DoubleToString(currentPrice, g_digits),
-                        " | minDist=", DoubleToString(minDist, g_digits));
-               targetTP = 0.0;
-               mode = "FALLBACK_ZERO";
-            }
-         }
-      }
-      if(previousTP == targetTP)
-      {
-         if(INPUT_ENABLE_LOGGING)
-            Print("FLIP_TP_RESET NOOP: ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                  " | mode=", mode,
-                  " | prevTP=", DoubleToString(previousTP, g_digits),
-                  " | targetTP=", DoubleToString(targetTP, g_digits));
-         continue;
-      }
-      bool modified = g_trade.PositionModify(ticket, currentSL, targetTP);
-      if(modified)
-      {
-         ResetTPFailureTracker(ticket);
-         if(INPUT_ENABLE_LOGGING)
-            Print("FLIP_TP_RESET OK: ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                  " | mode=", mode,
-                  " | prevTP=", DoubleToString(previousTP, g_digits),
-                  " | newTP=", DoubleToString(targetTP, g_digits),
-                  " | FORCE_OVERRIDE=YES");
-      }
-      else
-      {
-         allModified = false;
-         if(INPUT_ENABLE_LOGGING)
-            Print("FLIP_TP_RESET FAILED: ticket=", ticket,
-                  " | symbol=", symbol,
-                  " | dir=", (posDir == 1 ? "BUY" : "SELL"),
-                  " | mode=", mode,
-                  " | prevTP=", DoubleToString(previousTP, g_digits),
-                  " | targetTP=", DoubleToString(targetTP, g_digits),
-                  " | retcode=", g_trade.ResultRetcode(),
-                  " | comment=", g_trade.ResultComment());
-      }
-   }
-   return allModified;
-}
-bool CloseMainPositionsOppositeToSignal(int direction)
-{
-   // V7.34 FIX: Opposite signal FORCE OVERRIDE - closes ALL opposite positions unconditionally.
-   // The user requirement is that opposite signals have absolute authority to override everything.
-   // Removed: SL loss threshold check, INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN dependency.
-   // Now: Any opposite main position is closed immediately, no exceptions.
-   bool allClosed = true;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
-         continue;
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      int posDir = (posType == POSITION_TYPE_BUY) ? 1 : -1;
-      if(posDir == direction)
-         continue;
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double slPrice = PositionGetDouble(POSITION_SL);
-      double slDistance = MathAbs(entryPrice - slPrice);
-      double adverse = (posType == POSITION_TYPE_BUY) ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
-      double lossPctToSL = (slDistance > 0.0) ? (MathMax(adverse, 0.0) / slDistance) * 100.0 : 0.0;
-      Print("FLIP_FORCE_CLOSE: ticket=", ticket,
-            " | direction=", (posDir == 1 ? "BUY" : "SELL"),
-            " | lossPctToSL=", DoubleToString(lossPctToSL, 2),
-            " | FORCE_OVERRIDE=YES");
-      if(g_trade.PositionClose(ticket))
-      {
-         Print("FLIP_FORCE_CLOSE OK: ticket=", ticket,
-               " | lossPctToSL=", DoubleToString(lossPctToSL, 2));
-      }
-      else
-      {
-         allClosed = false;
-         Print("FLIP_FORCE_CLOSE FAILED: ticket=", ticket,
-               " | retcode=", g_trade.ResultRetcode(),
-               " | comment=", g_trade.ResultComment());
-      }
-   }
-   return allClosed;
-}
+// V8.1: ZeroTPForMainPositionsOppositeToSignal and CloseMainPositionsOppositeToSignal removed.
+// Opposite close consolidated into PerformOneSlotOppositeReplace (single function).
 bool CancelMainPendingStopsOppositeToDirection(int direction)
 {
    bool allCanceled = true;
@@ -2594,54 +2419,7 @@ bool CancelMainPendingStopsOppositeToDirection(int direction)
    }
    return allCanceled;
 }
-bool CleanupOppositeExposureForFlip(int direction)
-{
-   if(g_flipCleanupInProgress)
-      return true;
-   g_flipCleanupInProgress = true;
-   bool allOk = true;
-   int openMainBefore = CountMainPositionsFromBroker();
-   int pendingBuyBefore = CountMainPendingStopsByDirection(1);
-   int pendingSellBefore = CountMainPendingStopsByDirection(-1);
-   Print("FLIP_CLEANUP PRE: targetDir=", (direction == 1 ? "BUY" : "SELL"),
-         " | openMain=", openMainBefore,
-         " | pendingBuy=", pendingBuyBefore,
-         " | pendingSell=", pendingSellBefore);
- bool tpZeroOk = ZeroTPForMainPositionsOppositeToSignal(direction); // Always clear opposite TP before close attempts.
-   if(!tpZeroOk)
-      Print("FLIP_CLEANUP WARNING: one or more opposite MAIN TP zeroing attempts failed.");
-   if(!CloseMainPositionsOppositeToSignal(direction))
-      allOk = false;
-   if(INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON)
-   {
-      if(!CancelMainPendingStopsOppositeToDirection(direction))
-         allOk = false;
-   }
-   int openMainAfter = 0;
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurPosition(ticket))
-         continue;
-      string comment = PositionGetString(POSITION_COMMENT);
-      if(StringFind(comment, COMMENT_MAIN_PREFIX) < 0 || !IsMainEntryComment(comment))
-         continue;
-      int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
-      if(posDir != direction)
-         openMainAfter++;
-   }
-   int pendingBuyAfter = CountMainPendingStopsByDirection(1);
-   int pendingSellAfter = CountMainPendingStopsByDirection(-1);
-   if(openMainAfter > 0)
-      allOk = false;
-   Print("FLIP_CLEANUP POST: targetDir=", (direction == 1 ? "BUY" : "SELL"),
-         " | oppositeOpenAfter=", openMainAfter,
-         " | pendingBuy=", pendingBuyAfter,
-         " | pendingSell=", pendingSellAfter,
-         " | status=", (allOk ? "OK" : "FAILED"));
-   g_flipCleanupInProgress = false;
-   return allOk;
-}
+// V8.1: CleanupOppositeExposureForFlip removed. Use PerformOneSlotOppositeReplace instead.
 void OnTimer()
 {
    if(INPUT_AI_MODE == AI_OFF || !INPUT_AI_QUERY_ON)
@@ -2746,8 +2524,6 @@ bool IsOurMagic(const long magic)
 }
 ENUM_POSITION_SUBTYPE InferSubtypeFromComment(const string &comment)
 {
-   if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) return SUBTYPE_RECOVERY;
-   if(StringFind(comment, COMMENT_AVG_PREFIX) >= 0) return SUBTYPE_AVERAGING;
    return SUBTYPE_MAIN;
 }
 bool IsAuxSubtypeByMagic(long magic)
@@ -2755,7 +2531,7 @@ bool IsAuxSubtypeByMagic(long magic)
    if(!IsOurMagic(magic))
       return false;
    long subtype=(magic/MAGIC_SUBTYPE_MULTIPLIER);
-   return (subtype==SUBTYPE_RECOVERY || subtype==SUBTYPE_AVERAGING || subtype==SUBTYPE_AUX);
+   return (subtype==SUBTYPE_AUX);
 }
 //--- Helper: returns true only if the position belongs to this EA
 bool IsOurPosition(ulong ticket)
@@ -2784,10 +2560,6 @@ bool IsOurPendingOrder(ulong ticket)
 }
 bool IsMainEntryComment(const string &comment)
 {
-   if(StringFind(comment, COMMENT_RECOVERY_PREFIX) >= 0) return false;
-   if(StringFind(comment, COMMENT_AVG_PREFIX) >= 0) return false;
-   if(StringFind(comment, COMMENT_HEDGE_PREFIX) >= 0) return false;
-   if(StringFind(comment, COMMENT_GRID_PREFIX) >= 0) return false;
    if(StringFind(comment, COMMENT_50PCT_PREFIX) >= 0) return false;
    return true;
 }
@@ -6052,29 +5824,15 @@ bool ExecuteOrder(const DecisionResult &decision)
          Print("EXECUTE ORDER SKIPPED: placement toggle disabled (INPUT_TOGGLE_PLACE_ORDERS=false)");
       return false;
    }
-   // V8.1: One-slot opposite replacement
-   if(INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE && INPUT_MAX_CONCURRENT_TRADES == 1)
+   // V8.1: Unified opposite-close via PerformOneSlotOppositeReplace
+   if((INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE || INPUT_STRICT_OPPOSITE_FLIP_MODE) && INPUT_MAX_CONCURRENT_TRADES == 1)
    {
       int currentExposure = GetEffectiveMainExposureCount();
       if(currentExposure > 0)
       {
          if(!PerformOneSlotOppositeReplace(decision.direction))
          {
-            Print("EXECUTE ORDER SKIPPED: one-slot opposite replacement failed/blocked");
-            return false;
-         }
-         // Small delay to let broker process closes
-         Sleep(100);
-      }
-   }
-   else if(INPUT_STRICT_OPPOSITE_FLIP_MODE && INPUT_MAX_CONCURRENT_TRADES == 1)
-   {
-      int currentExposure = GetEffectiveMainExposureCount();
-      if(currentExposure > 0)
-      {
-         if(!CleanupOppositeExposureForFlip(decision.direction))
-         {
-            Print("EXECUTE ORDER SKIPPED: strict flip cleanup failed");
+            Print("EXECUTE ORDER SKIPPED: opposite replacement failed/blocked");
             return false;
          }
          Sleep(100);
@@ -6346,8 +6104,6 @@ void TrackNewPosition(ulong positionTicket, const DecisionResult &decision, stri
    g_positions[idx].multiPartialLevel1Done = false;
    g_positions[idx].multiPartialLevel2Done = false;
    ResetPositionRuntimeState(g_positions[idx]);
-   g_positions[idx].recoveryCount = 0;
-   g_positions[idx].lastRecoveryTime = 0;
    g_positions[idx].isActive = true;
    g_positions[idx].maxProfit = 0;
    g_positions[idx].maxLoss = 0;
@@ -6524,192 +6280,7 @@ bool HasEnoughMargin(double lots, double price, ENUM_ORDER_TYPE orderType)
    double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
    return (marginRequired <= freeMargin * 0.95);
 }
-//+------------------------------------------------------------------+
-//| SECTION 25: RECOVERY MODE DISPATCHER (Part 9)                    |
-//+------------------------------------------------------------------+
-void MonitorRecoveryAveragingMode() { g_activeRecoveryPrefix = COMMENT_AVG_PREFIX; g_activeRecoverySubtype = SUBTYPE_AVERAGING; MonitorRecoveryAveraging(); }
-void MonitorRecoveryHedgingMode()
-{
-   g_activeRecoveryPrefix = COMMENT_HEDGE_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
-}
-void MonitorRecoveryGridMode()
-{
-   g_activeRecoveryPrefix = COMMENT_GRID_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
-}
-void MonitorRecoveryMartingaleMode()
-{
-   g_activeRecoveryPrefix = COMMENT_RECOVERY_PREFIX;
-   g_activeRecoverySubtype = SUBTYPE_RECOVERY;
-   MonitorRecoveryAveraging();
-}
-//| SECTION 25: RECOVERY AVERAGING SYSTEM (Part 9)                   |
-//+------------------------------------------------------------------+
-void MonitorRecoveryAveraging()
-{
-   double threat = CalculateMarketThreat();
-   ENUM_THREAT_ZONE zone = GetThreatZone(threat);
-   double baseTriggerDepth = INPUT_RECOVERY_TRIGGER_DEPTH;
-   double triggerDepth = baseTriggerDepth;
-   if(zone == THREAT_RED)
-      triggerDepth -= 10.0;
-   else if(zone == THREAT_ORANGE)
-      triggerDepth -= 5.0;
-   if(threat >= 70.0)
-      triggerDepth -= 5.0;
-   triggerDepth = MathMax(5.0, MathMin(95.0, triggerDepth));
-   for(int i = 0; i < g_positionCount; i++)
-   {
-      if(!g_positions[i].isActive) continue;
-      if(g_positions[i].recoveryCount >= INPUT_MAX_RECOVERY_PER_POS) continue;
-      // Skip non-main positions
-      if(StringFind(g_positions[i].comment, COMMENT_RECOVERY_PREFIX) >= 0) continue;
-      if(StringFind(g_positions[i].comment, COMMENT_AVG_PREFIX)      >= 0) continue;
-      if(threat < INPUT_RECOVERY_THREAT_MIN) continue;
-      if(g_positions[i].lastRecoveryTime > 0 &&
-         TimeCurrent() - g_positions[i].lastRecoveryTime < INPUT_RECOVERY_COOLDOWN_SECONDS)
-         continue;
-      ulong ticket = g_positions[i].ticket;
-      if(!PositionSelectByTicket(ticket))
-      {
-         g_positions[i].isActive = false;
-         continue;
-      }
-      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
-      double slPrice = PositionGetDouble(POSITION_SL);
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      if(slPrice == 0) continue;
-      double slDist = MathAbs(entryPrice - slPrice);
-      if(slDist <= 0) continue;
-      double loss = 0;
-      if(posType == POSITION_TYPE_BUY)
-         loss = entryPrice - currentPrice;
-      else
-         loss = currentPrice - entryPrice;
-      if(loss <= 0) continue;
-      double depthPct = (loss / slDist) * 100.0;
-      if(depthPct >= triggerDepth && depthPct <= 70)
-      {
-         double lotRatio = INPUT_RECOVERY_LOT_RATIO_MOD;
-         if(threat < 50)
-            lotRatio = INPUT_RECOVERY_LOT_RATIO_SAFE;
-         else if(threat >= 70)
-            lotRatio = INPUT_RECOVERY_LOT_RATIO_HIGH;
-         if(INPUT_ENABLE_LOGGING)
-         {
-            Print("RECOVERY CHECK: ticket=", ticket,
-                  " depthPct=", DoubleToString(depthPct, 2),
-                  " triggerDepth=", DoubleToString(triggerDepth, 2),
-                  " lotRatio=", DoubleToString(lotRatio, 2),
-                  " threat=", DoubleToString(threat, 2));
-         }
-         double recLots = g_positions[i].originalLots * lotRatio;
- double validatedRecoveryLot = 0.0;
-         string recoveryReason = "";
-         if(!NormalizeAndValidateOrderVolume(recLots, validatedRecoveryLot, recoveryReason))
-         {
-            Print("RECOVERY ORDER ABORTED: invalid recovery lot",
-                  " | parentTicket=", ticket,
-                  " | originalLots=", DoubleToString(g_positions[i].originalLots, g_lotDigits),
-                  " | ratio=", DoubleToString(lotRatio, 4),
-                  " | requested=", DoubleToString(recLots, g_lotDigits),
-                  " | reason=", recoveryReason);
-            continue;
-         }
-                 PlaceRecoveryOrder(ticket, posType, validatedRecoveryLot, slPrice, entryPrice);
-         g_positions[i].recoveryCount++;
-         g_positions[i].lastRecoveryTime = TimeCurrent();
-      }
-      else if(INPUT_ENABLE_LOGGING)
-      {
-         Print("RECOVERY SKIP: ticket=", ticket,
-               " depthPct=", DoubleToString(depthPct, 2),
-               " triggerDepth=", DoubleToString(triggerDepth, 2),
-               " lotRatio=0.00");
-      }
-   }
-}
-//+------------------------------------------------------------------+
-//+------------------------------------------------------------------+
-bool GetRecoveryBasketMetrics(ulong parentTicket, int parentType,
-                              double plannedRecoveryLots, double plannedRecoveryPrice,
-                              double &combinedBreakEven, double &combinedLots)
-{
-   double totalLots = 0.0;
-   double weightedPrice = 0.0;
-   int total = PositionsTotal();
-   for(int i = 0; i < total; i++)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket == 0) continue;
-      if(!PositionSelectByTicket(ticket) || !IsOurPosition(ticket)) continue;
-      int posType = (int)PositionGetInteger(POSITION_TYPE);
-      if(posType != parentType) continue;
-      string comment = PositionGetString(POSITION_COMMENT);
-      bool includePos = (ticket == parentTicket);
-      if(!includePos)
-      {
-         string parentTag = IntegerToString((int)parentTicket);
-         includePos = (StringFind(comment, COMMENT_AVG_PREFIX + parentTag) >= 0 ||
-                       StringFind(comment, COMMENT_RECOVERY_PREFIX + parentTag) >= 0);
-      }
-      if(!includePos) continue;
-      double lots = PositionGetDouble(POSITION_VOLUME);
-      double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-      totalLots += lots;
-      weightedPrice += lots * openPrice;
-   }
-   totalLots += plannedRecoveryLots;
-   weightedPrice += plannedRecoveryLots * plannedRecoveryPrice;
-   if(totalLots <= 0.0)
-      return false;
-   combinedLots = totalLots;
-   combinedBreakEven = weightedPrice / totalLots;
-   return true;
-}
-//+------------------------------------------------------------------+
-bool BuildValidRecoveryTP(int parentType, double price, double sl,
-                          double combinedBreakEven, double &targetTP)
-{
-   // Target model: combined break-even + configurable profit buffer + optional risk-distance multiplier.
-   // This keeps recovery exits mathematically consistent with the full basket rather than fixed heuristics.
-   double minProfitBuffer = INPUT_RECOVERY_TP_BUFFER_POINTS * g_point;
-   double riskDistance = MathAbs(combinedBreakEven - sl);
-   double scaledDistance = riskDistance * MathMax(0.0, INPUT_RECOVERY_TP_TARGET_MULTIPLIER);
-   double desiredMove = MathMax(minProfitBuffer, scaledDistance);
-   double minDist = (double)MathMax(g_stopLevel, g_freezeLevel) * g_point;
-   desiredMove = MathMax(desiredMove, minDist + (2.0 * g_point));
-   double tp = (parentType == POSITION_TYPE_BUY) ?
-               (combinedBreakEven + desiredMove) :
-               (combinedBreakEven - desiredMove);
-   if(parentType == POSITION_TYPE_BUY && tp <= price)
-      tp = price + desiredMove;
-   if(parentType == POSITION_TYPE_SELL && tp >= price)
-      tp = price - desiredMove;
-   targetTP = NormalizeDouble(tp, g_digits);
-   if(parentType == POSITION_TYPE_BUY && (targetTP - price) < minDist)
-      targetTP = NormalizeDouble(price + minDist + (2.0 * g_point), g_digits);
-   if(parentType == POSITION_TYPE_SELL && (price - targetTP) < minDist)
-      targetTP = NormalizeDouble(price - minDist - (2.0 * g_point), g_digits);
-   return true;
-}
-//+------------------------------------------------------------------+
-// V8.0: PlaceRecoveryOrder REMOVED. No recovery system.
-void PlaceRecoveryOrder(ulong parentTicket, int parentType, double lots,
-                        double parentSL, double parentEntry)
-{
-   return; // V8.0: disabled
-}
-//+------------------------------------------------------------------+
-// V8.0: CheckRecoveryTimeouts REMOVED. No recovery system.
-void CheckRecoveryTimeouts()
-{
-   return; // V8.0: disabled
-}
+// V8.1: SECTION 25 (Recovery System) permanently removed
 //+------------------------------------------------------------------+
 //| SECTION 26: POSITION SYNC & HISTORY PROCESSING                   |
 //+------------------------------------------------------------------+
@@ -6785,8 +6356,6 @@ void SyncPositionStates()
       g_positions[idx].multiPartialLevel1Done = false;
       g_positions[idx].multiPartialLevel2Done = false;
       ResetPositionRuntimeState(g_positions[idx]);
-      g_positions[idx].recoveryCount = 0;
-      g_positions[idx].lastRecoveryTime = 0;
       g_positions[idx].isActive = true;
       g_positions[idx].maxProfit = 0;
       g_positions[idx].maxLoss = 0;
@@ -6833,8 +6402,6 @@ void SyncExistingPositions()
       g_positions[idx].multiPartialLevel1Done = false;
       g_positions[idx].multiPartialLevel2Done = false;
       ResetPositionRuntimeState(g_positions[idx]);
-      g_positions[idx].recoveryCount = 0;
-      g_positions[idx].lastRecoveryTime = 0;
       g_positions[idx].isActive = true;
       g_positions[idx].maxProfit = 0;
       g_positions[idx].maxLoss = 0;
@@ -7182,8 +6749,6 @@ void UpsertTrackedPositionFromEntryDeal(ulong positionId, ulong dealTicket)
       g_positions[idx].multiPartialLevel1Done = false;
       g_positions[idx].multiPartialLevel2Done = false;
       ResetPositionRuntimeState(g_positions[idx]);
-      g_positions[idx].recoveryCount = 0;
-      g_positions[idx].lastRecoveryTime = 0;
       g_positions[idx].maxProfit = 0;
       g_positions[idx].maxLoss = 0;
       g_positions[idx].isActive = true;
