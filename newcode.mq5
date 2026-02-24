@@ -92,7 +92,6 @@ enum ENUM_MARKOV_STATE
  int      INPUT_EXPIRY_MONTH = 12;           // Expiry Month
  int      INPUT_EXPIRY_DAY   = 31;           // Expiry Day
 //--- Trading Configuration
-
 int      INPUT_MAX_CONCURRENT_TRADES  = 1;  // Max concurrent MAIN trades (set 1 for strict single-slot flip behavior)
  int      INPUT_MAX_CONCURRENT_RECOVERY_TRADES = 3; // Max concurrent recovery/aux trades
 int      INPUT_MAX_SAME_DIRECTION    = 2000;  // Max same-direction trades
@@ -105,32 +104,30 @@ input ENUM_EXECUTION_MODE INPUT_EXECUTION_MODE = MARKET; // Order execution mode
  int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset from market (points)
 int      INPUT_PENDING_EXPIRY_MINUTES = 600; // Pending stop expiry in minutes
  bool     INPUT_RESET_ALL_PERSISTED_STATE = false; // Delete all persisted symbol+magic files on init
-bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // Close previous position when opposite signal appears
- bool     INPUT_STRICT_OPPOSITE_FLIP_MODE = false; // When max main=1: force close/cancel opposite exposure before new opposite entry
-bool     INPUT_MAX_MAIN_HARD_CAP_ON = true; // Hard cap: INPUT_MAX_CONCURRENT_TRADES is absolute entry limit (no adaptive expansion in gating)
- bool     INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON = false; // On opposite flip, cancel opposite-direction MAIN pending stop orders
- bool     INPUT_FLIP_BYPASS_COOLDOWN_ON = false; // Confirmed opposite flip may bypass global cooldown for replacement entry
-bool     INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION = false; // Allow adaptive max-position expansion above input cap when hard-cap is OFF
-double   INPUT_FLIP_CLOSE_MAX_SL_PERCENT = 50.0; // Opposite close allowed only if adverse move is below this % of SL distance
-bool     INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN = false; // Force-close opposite MAIN positions even when SL-loss threshold block would skip
-bool     INPUT_FLIP_ZERO_TP_ON = false; // Flip TP reset mode: true=zero TP, false=reset to INPUT_FLIP_TP_RESET_PRICE
-double   INPUT_FLIP_TP_RESET_PRICE = 0.0; // TP value used when INPUT_FLIP_ZERO_TP_ON=false (normalized to symbol digits)
- bool     INPUT_FLIP_TP_RESET_CLAMP_ON = true; // If TP reset price violates stop distance: true=clamp outward, false=fallback to 0.0/
+input bool     INPUT_CLOSE_ON_OPPOSITE_SIGNAL = false; // Close previous position when opposite signal appears
+input bool     INPUT_STRICT_OPPOSITE_FLIP_MODE = false; // When max main=1: force close/cancel opposite exposure before new opposite entry
+input bool     INPUT_MAX_MAIN_HARD_CAP_ON = true; // Hard cap: INPUT_MAX_CONCURRENT_TRADES is absolute entry limit (no adaptive expansion in gating)
+input bool     INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE = false; // V8.1: When max main=1, allow closing opposite to place new direction
+input bool     INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON = false; // On opposite flip, cancel opposite-direction MAIN pending stop orders
+input bool     INPUT_FLIP_BYPASS_COOLDOWN_ON = false; // Confirmed opposite flip may bypass global cooldown for replacement entry
+input bool     INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION = false; // Allow adaptive max-position expansion above input cap when hard-cap is OFF
+input double   INPUT_FLIP_CLOSE_MAX_SL_PERCENT = 50.0; // Opposite close allowed only if adverse move is below this % of SL distance
+input bool     INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN = false; // Force-close opposite MAIN positions even when SL-loss threshold block would skip
+input bool     INPUT_FLIP_ZERO_TP_ON = false; // Flip TP reset mode: true=zero TP, false=reset to INPUT_FLIP_TP_RESET_PRICE
+input double   INPUT_FLIP_TP_RESET_PRICE = 0.0; // TP value used when INPUT_FLIP_ZERO_TP_ON=false (normalized to symbol digits)
+input bool     INPUT_FLIP_TP_RESET_CLAMP_ON = true; // If TP reset price violates stop distance: true=clamp outward, false=fallback to 0.0/
 //--- Risk Management
-
  ENUM_RISK_PROFILE INPUT_RISK_PROFILE = RISK_MEDIUM; // Risk Profile
  double   INPUT_RISK_PERCENT          = 90.0; // Risk % per trade (0=use profile)
 input double   INPUT_MAX_LOT_SIZE          = 1.0; // Maximum lot size
 input double   INPUT_MIN_LOT_SIZE          = 0.01;// Minimum lot size
  double   INPUT_MAX_TOTAL_RISK_PERCENT = 99.0;// Max total portfolio risk %
 //--- Equity Protection
-
 double   INPUT_EQUITY_FLOOR_PERCENT    = 95.0; // Equity floor % (close all below)
 double   INPUT_DAILY_LOSS_LIMIT_PERCENT = 99.0; // Max daily loss %
  int      INPUT_MAX_DAILY_TRADES        = 5000;   // Max trades per day (FIXED: Increased from 20)
  int      INPUT_MAX_CONSECUTIVE_LOSSES  = 1000;   // Max consecutive losses before pause (FIXED: Increased from 5)
 bool     INPUT_RESET_CONSEC_DAILY      = true; // Reset consecutive losses daily
-
 bool     INPUT_ENABLE_EXTREME_BY_THREAT = false;
  bool     INPUT_ENABLE_EXTREME_BY_DRAWDOWN = false;
 bool     INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT = false;
@@ -201,7 +198,6 @@ input bool     INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION = false;
 //--- V7.31 Migration Notes (Toggle Semantics)
 // New master/sub-feature toggles default to ON to preserve legacy runtime behavior.
 // Existing INPUT_ENABLE_* flags remain backward-compatible umbrella controls.
-
  bool     INPUT_TOGGLE_PLACE_ORDERS = true;
  bool     INPUT_TOGGLE_CLOSE_ORDERS = true;
  bool     INPUT_TOGGLE_MODIFY_STOPS = true;
@@ -209,7 +205,6 @@ input bool     INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION = false;
  bool     INPUT_TOGGLE_PENDING_ORDERS = true;
  bool     INPUT_TOGGLE_MARKET_ORDERS = true;
  bool     INPUT_PENDING_EXPIRY_CLEANUP_ON = true;
-
  bool     INPUT_GATE_TERMINAL_CONNECTED_ON = true;
  bool     INPUT_GATE_AUTOTRADING_ALLOWED_ON = true;
  bool     INPUT_GATE_SESSION_ON = true;
@@ -246,7 +241,6 @@ bool     INPUT_GATE_DAILY_LOSS_ON = true;
  bool     INPUT_THREAT_END_OF_MONTH_PENALTY_ON = false;
  bool     INPUT_THREAT_SOFT_LOT_SHRINK_ON = false;
  bool     INPUT_THREAT_HARD_ENTRY_BLOCK_ON = false;
-
  bool     INPUT_LOT_BASE_RISK_ON = true;
  bool     INPUT_LOT_RL_SCALING_ON = true;
  bool     INPUT_LOT_ADAPTIVE_MULTIPLIER_ON = false;
@@ -254,14 +248,12 @@ bool     INPUT_GATE_DAILY_LOSS_ON = true;
  bool     INPUT_LOT_HIGH_ADX_BOOST_ON = true;
  bool     INPUT_LOT_RISK_PARITY_CAP_ON = false;
  bool     INPUT_LOT_MARGIN_DOWNSCALE_ON = false;
-
  bool     INPUT_EXEC_MARKET_PATH_ON = true;
  bool     INPUT_EXEC_PENDING_PATH_ON = true;
  bool     INPUT_EXEC_PENDING_DUPLICATE_BLOCK_ON = true;
  bool     INPUT_EXEC_PENDING_EXPIRY_ON = true;
  bool     INPUT_EXEC_MARKET_RETRY_ON = true;
  bool     INPUT_EXEC_RECORD_RL_ON_SUBMIT = true;
-
  bool     INPUT_CLOSE_EQUITY_FLOOR_ON = true;
  bool     INPUT_CLOSE_HIGH_SPREAD_PROFIT_ON = false;
  bool     INPUT_CLOSE_50PCT_DEFENSIVE_ON = false;
@@ -269,18 +261,15 @@ bool     INPUT_GATE_DAILY_LOSS_ON = true;
  bool     INPUT_CLOSE_MULTI_LEVEL_PARTIAL_ON = false;
  bool     INPUT_CLOSE_AGE_TIMEOUT_ON = true;
  bool     INPUT_CLOSE_RECOVERY_TIMEOUT_ON = true;
-
  bool     INPUT_MODIFY_BREAKEVEN_ON = false;
  bool     INPUT_MODIFY_TRAILING_SL_ON = false;
  bool     INPUT_MODIFY_TRAILING_TP_ON = false;
  bool     INPUT_MODIFY_SUPPRESS_ON_HIGH_SPREAD_LOSS_ON = false;
  bool     INPUT_MODIFY_BROKER_DISTANCE_GUARD_ON = false; // WARNING: disable only for diagnostics
-
  bool     INPUT_SESSION_ASIAN_ON = true;
  bool     INPUT_SESSION_LONDON_ON = true;
  bool     INPUT_SESSION_NY_ON = true;
  bool     INPUT_SESSION_ALL_OFF_BLOCK_ENTRIES = true;
-
  bool     INPUT_RL_INFERENCE_ON = true;
  bool     INPUT_RL_LEARNING_ON = true;
  bool     INPUT_RL_RECORD_ON = true;
@@ -293,7 +282,6 @@ bool     INPUT_GATE_DAILY_LOSS_ON = true;
  bool     INPUT_AI_QUERY_ON = true;
  bool     INPUT_AI_BLEND_ON = true;
 //--- Entry Conditions (FIXED: Relaxed thresholds)
-
 input int      INPUT_MIN_SIGNALS       = 3;       // Minimum signals required (FIXED: Raised to prevent false entries)
  double   INPUT_MIN_CONFIDENCE    = 55.0;    // Minimum confidence % (FIXED: Raised for quality entries)
  double   INPUT_MAX_THREAT_ENTRY  = 70.0;    // Max threat for new entry
@@ -314,19 +302,16 @@ input double   INPUT_MAX_SL_POINTS     = 90000;  // Maximum SL in points
 input double   INPUT_MIN_TP_POINTS     = 5000.0;   // Minimum TP in points (FIXED: 300 pts min for viable R:R)
 input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
 //--- 50% Lot Close System
-
  bool     INPUT_ENABLE_50PCT_CLOSE      = false; // DISABLED - Use V7.33 new system (was buggy)
  double   INPUT_50PCT_TRIGGER_LOW       = 45.0; // Trigger zone lower bound %
  double   INPUT_50PCT_TRIGGER_HIGH      = 55.0; // Trigger zone upper bound %
  bool     INPUT_CONFIDENCE_BASED_CLOSE  = false; // DISABLED - This caused the 25% bug!
 //--- Partial Close at TP%
-
  bool     INPUT_ENABLE_PARTIAL_CLOSE    = false; // DISABLED - Use V7.33 new system
  double   INPUT_PARTIAL_TP_PERCENT      = 50.0; // Close portion at this % of TP
  double   INPUT_PARTIAL_CLOSE_RATIO     = 0.5;  // Close this fraction of lots
  bool     INPUT_MOVE_BE_AFTER_PARTIAL   = false; // Move SL to breakeven after partial
 //--- Trailing Stop
-
  bool     INPUT_ENABLE_TRAILING         = false; // Enable trailing stop
  double   INPUT_TRAIL_ATR_MULTIPLIER    = 1.0;  // Trail distance = ATR x this
  double   INPUT_TRAIL_STEP_POINTS       = 50.0; // Min improvement step (points)
@@ -340,13 +325,11 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
 //+------------------------------------------------------------------+
 //| V7.33 NEW: ADVANCED PARTIAL CLOSING SYSTEM                        |
 //+------------------------------------------------------------------+
-
  bool     INPUT_ENABLE_LOSS_PARTIAL_CLOSE = false;  // Enable loss partial closing
  double   INPUT_LOSS_CLOSE_PERCENT = 50.0;          // % of lots to close when loss trigger hit
  int      INPUT_LOSS_PARTS_COUNT = 1;               // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
  string   INPUT_LOSS_PARTS_PERCENTAGES = "50";      // Close percentages per part (comma-separated, e.g. "33,33,34" for 3 parts)
  string   INPUT_LOSS_PARTS_TRIGGERS = "50";         // Trigger percentages per part (comma-separated, e.g. "30,60,90")
-
  bool     INPUT_ENABLE_PROFIT_PARTIAL_CLOSE = false; // Enable profit partial closing
  double   INPUT_PROFIT_CLOSE_PERCENT = 50.0;         // % of lots to close when profit trigger hit
  int      INPUT_PROFIT_PARTS_COUNT = 1;              // Number of closing parts (1=single, 2=two-part, 3=three-part, etc.)
@@ -361,7 +344,6 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  ENUM_TRAILING_TP_ACTIVATION_MODE INPUT_TRAILING_TP_ACTIVATION_MODE = TRAILING_TP_ACTIVATE_BY_PIPS; // Activate trailing TP by pips or TP-progress
  double   INPUT_TRAILING_TP_ACTIVATION_PERCENT = 50.0; // Activation threshold when mode=TP progress
  bool     INPUT_PROGRESS_MILESTONE_ZERO_TP_ON = false; // At milestone, zero TP before trailing TP mode (backward compatible default)
-
  bool     INPUT_ENABLE_STREAK_LOT_MULTIPLIER = false; // Enable temporary lot multiplier after win streak
  int      INPUT_STREAK_TRIGGER_WINS = 2; // Consecutive wins needed to arm streak multiplier
  double   INPUT_STREAK_LOT_MULTIPLIER = 1.5; // Lot multiplier during armed streak window
@@ -373,7 +355,6 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  bool     INPUT_ENABLE_CONSEC_WIN_CONF_DECAY = false;
  int      INPUT_CONSEC_WIN_CONF_DECAY_AFTER_TRADES = 3;
 //--- Recovery Averaging System
-
  bool     INPUT_ENABLE_RECOVERY         = false; // Master recovery gate
  ENUM_RECOVERY_MODE INPUT_RECOVERY_MODE = RECOVERY_AVERAGING; // Recovery mode selector
  int      INPUT_RECOVERY_THREAT_MIN     = 60;   // Minimum threat to trigger recovery
@@ -397,7 +378,6 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  double   INPUT_MARTINGALE_MULTIPLIER = 1.6; // Martingale lot multiplier
  int      INPUT_MARTINGALE_MAX_ORDERS = 2; // Martingale max recovery orders
 //--- Session Filters
-
  bool     INPUT_TRADE_ASIAN    = true;       // Trade Asian session
  bool     INPUT_TRADE_LONDON   = true;       // Trade London session
  bool     INPUT_TRADE_NEWYORK  = true;       // Trade New York session
@@ -413,7 +393,6 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  int      INPUT_END_OF_MONTH_START_DAY = 29;   // Factor 7: apply month-end penalty from this day onward
  double   INPUT_END_OF_MONTH_PENALTY = 2.0;    // Factor 7: lower default month-end penalty
 //--- Q-Learning System
-
  bool     INPUT_ENABLE_RL          = false;  // Enable Reinforcement Learning (FIXED: Disabled for backtesting)
  double   INPUT_RL_ALPHA           = 0.1;    // Learning rate (alpha)
  double   INPUT_RL_GAMMA           = 0.9;    // Discount factor (gamma)
@@ -424,14 +403,12 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  int      INPUT_RL_PENDING_HARD_CAP = 500;   // Hard cap for pending RL entries
  bool     INPUT_STRICT_STATE_LOAD  = true;   // Strict runtime load: reset pending RL/watermarks on checksum mismatch
 //--- Markov Chain Analysis
-
  bool     INPUT_ENABLE_MARKOV      = false;  // Enable Markov chain analysis (FIXED: Disabled for backtesting)
  int      INPUT_MARKOV_LOOKBACK    = 100;    // Lookback for transition matrix
  double   INPUT_STREAK_FATIGUE_ADJ = 0.05;   // Confidence reduction per streak trade
  double   INPUT_MARKOV_WIN_R       = 0.1;    // Win threshold in normalized R units
  double   INPUT_MARKOV_LOSS_R      = -0.1;   // Loss threshold in normalized R units
 //--- Machine Learning
-
  bool     INPUT_ENABLE_ML          = false;  // Enable ML signal analysis (FIXED: Disabled for backtesting)
  bool     INPUT_ENABLE_FINGERPRINT = false;  // Enable fingerprint learning (FIXED: Disabled for backtesting)
  int      INPUT_MIN_TRADES_FOR_ML  = 10;     // Min trades before ML applies
@@ -439,14 +416,12 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  int      INPUT_MAX_TRAINING_DATA  = 1000;   // Max training records
  bool     INPUT_RESET_LEGACY_SESSION_DATA = false; // Reset legacy datasets saved with wrong session/day attribution
 //--- DeepSeek AI Integration
-
  ENUM_AI_MODE INPUT_AI_MODE = AI_OFF;        // AI Mode
  string   INPUT_AI_API_KEY  = "";            // DeepSeek API Key (sk-...)
  string   INPUT_AI_URL      = "https://api.deepseek.com/v1/chat/completions";
  int      INPUT_AI_INTERVAL_MINUTES = 15;    // API query interval (minutes)
  double   INPUT_AI_WEIGHT   = 0.2;           // AI weight in confidence (0-1)
 //--- Adaptive Parameters
-
  bool     INPUT_ENABLE_ADAPTIVE    = false;  // Enable adaptive optimization (FIXED: Disabled for backtesting)
  int      INPUT_ADAPT_INTERVAL     = 50;     // Optimize every N trades
  double   INPUT_ADAPT_UNDERPERF_LOT_REDUCE = 0.1; // Reduce lots by X when underperforming
@@ -486,7 +461,6 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  int      INPUT_DATA_WARNING_WINDOW_MINUTES = 30; // Rolling window length for anomaly kill-switch
  int      INPUT_HEAVY_BASE_INTERVAL_SECONDS = 2; // Base throttle for expensive maintenance tasks
 //--- Indicator Settings
-
  int      INPUT_EMA_FAST        = 8;         // Fast EMA period
  int      INPUT_EMA_SLOW        = 21;        // Slow EMA period
  int      INPUT_EMA_TREND       = 200;       // Trend EMA period
@@ -507,7 +481,6 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  int      INPUT_BREAKOUT_LOOKBACK = 20;      // Breakout lookback bars
  int      INPUT_VOLUME_AVG_PERIOD = 20;      // Volume average period
 //--- Debug & Display
-
   bool     INPUT_ENABLE_LOGGING   = false;     // Enable detailed logging
  bool     INPUT_SHOW_PANEL       = false;     // Show on-chart panel
  bool     INPUT_ENABLE_ALERTS    = false;    // Enable alert notifications
@@ -1791,6 +1764,44 @@ int OnInit()
    g_risk.maxTotalRisk = INPUT_MAX_TOTAL_RISK_PERCENT;
    //--- Initialize adaptive parameters
    ResetAdaptiveParamsToDefaults();
+   // V8.1: Explicitly initialize all effective toggles to match input defaults
+   g_effExtremeByThreat = INPUT_ENABLE_EXTREME_BY_THREAT;
+   g_effExtremeByDrawdown = INPUT_ENABLE_EXTREME_BY_DRAWDOWN;
+   g_effExtremeHysteresisExit = INPUT_ENABLE_EXTREME_HYSTERESIS_EXIT;
+   g_effDrawdownProtectState = INPUT_ENABLE_DRAWDOWN_PROTECT_STATE;
+   g_effExtremeOnTickHandler = INPUT_ENABLE_EXTREME_ON_TICK_HANDLER;
+   g_effExtremeOnTickEarlyReturn = INPUT_ENABLE_EXTREME_ON_TICK_EARLY_RETURN;
+   g_effExtremeCloseOldest = INPUT_ENABLE_EXTREME_CLOSE_OLDEST;
+   g_effExtremeFilterSymbol = INPUT_ENABLE_EXTREME_FILTER_SYMBOL;
+   g_effExtremeFilterMagic = INPUT_ENABLE_EXTREME_FILTER_MAGIC;
+   g_effExtremeThrottle = INPUT_ENABLE_EXTREME_THROTTLE;
+   g_effEquityFloorTrigger = INPUT_ENABLE_EQUITY_FLOOR_TRIGGER;
+   g_effEquityFloorForceState = INPUT_ENABLE_EQUITY_FLOOR_FORCE_EXTREME_STATE;
+   g_effEquityFloorCloseAll = INPUT_ENABLE_EQUITY_FLOOR_CLOSE_ALL;
+   g_effEquityFloorReturn = INPUT_ENABLE_EQUITY_FLOOR_RETURN_AFTER_ACTION;
+   g_effCloseAllApi = INPUT_ENABLE_CLOSE_ALL_POSITIONS_API;
+   g_effCloseAllOnlyOur = INPUT_ENABLE_CLOSE_ALL_ONLY_OUR_POSITIONS;
+   g_effCloseAllSymbolFilter = INPUT_ENABLE_CLOSE_ALL_SYMBOL_FILTER;
+   g_effGateProtectionBlock = INPUT_ENABLE_GATE_BLOCK_ON_PROTECTION_STATE;
+   g_effThreatHardBlock = INPUT_ENABLE_THREAT_HARD_BLOCK;
+   g_effThreatExtremeZoneBlock = INPUT_ENABLE_THREAT_EXTREME_ZONE_BLOCK;
+   g_effThreatSoftLotShrink = INPUT_ENABLE_THREAT_SOFT_LOT_SHRINK;
+   g_effCloseRecoveryTimeout = INPUT_ENABLE_CLOSE_RECOVERY_TIMEOUT;
+   g_effClosePositionAgeTimeout = INPUT_ENABLE_CLOSE_POSITION_AGE_TIMEOUT;
+   g_effCloseHighSpreadProfit = INPUT_ENABLE_CLOSE_HIGH_SPREAD_PROFIT;
+   g_effClose50PctDefensive = INPUT_ENABLE_CLOSE_50PCT_DEFENSIVE;
+   g_effClosePartialTP = INPUT_ENABLE_CLOSE_PARTIAL_TP;
+   g_effCloseMultiLevelPartial = INPUT_ENABLE_CLOSE_MULTI_LEVEL_PARTIAL;
+   g_effModifyMoveToBE = INPUT_ENABLE_MODIFY_MOVE_TO_BREAKEVEN;
+   g_effModifyTrailingSL = INPUT_ENABLE_MODIFY_TRAILING_SL;
+   g_effModifyTrailingTP = INPUT_ENABLE_MODIFY_TRAILING_TP;
+   g_effModifySkipLossOnHighSpread = INPUT_ENABLE_MODIFY_SKIP_LOSS_ON_HIGH_SPREAD;
+   Print("V8.1 EFFECTIVE TOGGLES INIT: trailSL=", (g_effModifyTrailingSL?"ON":"OFF"),
+         " trailTP=", (g_effModifyTrailingTP?"ON":"OFF"),
+         " BE=", (g_effModifyMoveToBE?"ON":"OFF"),
+         " partial=", (g_effClosePartialTP?"ON":"OFF"),
+         " 50pct=", (g_effClose50PctDefensive?"ON":"OFF"),
+         " ageTimeout=", (g_effClosePositionAgeTimeout?"ON":"OFF"));
    ZeroMemory(g_gateDiagnostics);
    //--- Setup trade object
    g_trade.SetExpertMagicNumber(BuildMagicForSubtype(SUBTYPE_MAIN));
@@ -2035,7 +2046,41 @@ if(!ValidateAndReportEffectiveConfig())
          " | cancelOppPending=", (INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON ? "ON" : "OFF"),
          " | flipBypassCooldown=", (INPUT_FLIP_BYPASS_COOLDOWN_ON ? "ON" : "OFF"),
          " | adaptiveMaxExpansion=", (INPUT_ALLOW_ADAPTIVE_MAX_POSITION_EXPANSION ? "ON" : "OFF"),
-         " | inputMaxMain=", INPUT_MAX_CONCURRENT_TRADES);
+         " | inputMaxMain=", INPUT_MAX_CONCURRENT_TRADES,
+         " | oneSlotReplace=", (INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE ? "ON" : "OFF"));
+   // V8.1: CLOSE POLICY startup log - explicit statement of what can close positions
+   Print("=== V8.1 CLOSE POLICY ===");
+   Print("CLOSE POLICY: Positions close by: SL/TP (broker-managed)");
+   if(INPUT_ENABLE_TRAILING || g_effModifyTrailingSL)
+      Print("CLOSE POLICY: + Trailing SL active");
+   else
+      Print("CLOSE POLICY: Trailing SL = OFF");
+   if(INPUT_ENABLE_TRAILING_TP || g_effModifyTrailingTP)
+      Print("CLOSE POLICY: + Trailing TP active");
+   else
+      Print("CLOSE POLICY: Trailing TP = OFF");
+   if(INPUT_ENABLE_PARTIAL_CLOSE || g_effClosePartialTP)
+      Print("CLOSE POLICY: + Partial close at TP% active");
+   else
+      Print("CLOSE POLICY: Partial close = OFF");
+   if(INPUT_ENABLE_50PCT_CLOSE || g_effClose50PctDefensive)
+      Print("CLOSE POLICY: + 50% defensive close active");
+   else
+      Print("CLOSE POLICY: 50% defensive = OFF");
+   if(g_effModifyMoveToBE)
+      Print("CLOSE POLICY: + Break-even move active");
+   else
+      Print("CLOSE POLICY: Break-even = OFF");
+   if(INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE)
+      Print("CLOSE POLICY: + One-slot opposite replacement can close opposite positions");
+   if(!(INPUT_ENABLE_TRAILING || g_effModifyTrailingSL || INPUT_ENABLE_TRAILING_TP || g_effModifyTrailingTP ||
+        INPUT_ENABLE_PARTIAL_CLOSE || g_effClosePartialTP || INPUT_ENABLE_50PCT_CLOSE || g_effClose50PctDefensive ||
+        g_effModifyMoveToBE))
+      Print("CLOSE POLICY SUMMARY: Positions can close ONLY by SL/TP/manual (no EA-managed close/modify)");
+   Print("=== END CLOSE POLICY ===");
+   Print("MTF CONFIG: shift=", INPUT_MTF_BAR_SHIFT,
+         " | failureMode=", EnumToString(INPUT_MTF_READ_FAILURE_MODE),
+         " | minScore=", INPUT_MIN_MTF_SCORE);
    Print("Q-Learning: ", INPUT_ENABLE_RL ? "ON" : "OFF", " | Markov: ", INPUT_ENABLE_MARKOV ? "ON" : "OFF");
    Print("ML: ", INPUT_ENABLE_ML ? "ON" : "OFF", " | AI: ", EnumToString(INPUT_AI_MODE));
    Print("Adaptive: ", INPUT_ENABLE_ADAPTIVE ? "ON" : "OFF");
@@ -2816,13 +2861,6 @@ int CountRecoveryPositions()
 int Count50PctReducedPositions()
 {
    return 0;
-   int count = 0;
-   for(int i = 0; i < g_positionCount; i++)
-   {
-      if(g_positions[i].isActive && g_positions[i].lotReduced)
-         count++;
-   }
-   return count;
 }
 //+------------------------------------------------------------------+
 //| SECTION 11: 9-FACTOR THREAT ASSESSMENT (Part 5 of Strategy)      |
@@ -3546,90 +3584,132 @@ string GenerateSignalCombinationString(const SignalResult &signals)
 //+------------------------------------------------------------------+
 //| SECTION 14: MTF ALIGNMENT (Weighted by timeframe)                |
 //+------------------------------------------------------------------+
+// V8.1: MTF read failure mode enum
+enum ENUM_MTF_READ_FAILURE_MODE
+{
+   MTF_FAIL_STRICT_REJECT  = 0,  // Reject entry if any TF read fails
+   MTF_FAIL_SKIP_REWEIGHT  = 1,  // Skip failed TF, reweight remaining score
+   MTF_FAIL_NEUTRAL        = 2   // Treat failed TF as neutral (don't add/subtract)
+};
+input ENUM_MTF_READ_FAILURE_MODE INPUT_MTF_READ_FAILURE_MODE = MTF_FAIL_SKIP_REWEIGHT; // MTF read failure handling
+input int INPUT_MTF_BAR_SHIFT = 1; // Bar shift for MTF reads (1=closed bar, 0=forming bar)
+// V8.1: Shared helper to read EMA fast/slow for a timeframe
+bool ReadMTFEMAPair(int hFast, int hSlow, int shift, double &fast, double &slow, string tfLabel)
+{
+   double fBuf[], sBuf[];
+   int fRead = CopyBuffer(hFast, 0, shift, 1, fBuf);
+   int sRead = CopyBuffer(hSlow, 0, shift, 1, sBuf);
+   if(fRead == 1 && sRead == 1)
+   {
+      fast = fBuf[0];
+      slow = sBuf[0];
+      return true;
+   }
+   g_mtfReadFailureThisTick = true;
+   g_gateDiagnostics.mtfDataReadRejects++;
+   if(INPUT_ENABLE_LOGGING)
+      LogWithRestartGuard("MTF DATA READ FAILED: " + tfLabel + " fastRead=" + IntegerToString(fRead) +
+                          " slowRead=" + IntegerToString(sRead) + " shift=" + IntegerToString(shift));
+   return false;
+}
 int CalculateMTFAlignment(int direction)
 {
    int score = 0;
- g_lastMtfAlignmentHadReadFailure = false;
+   int maxPossibleScore = 0;
+   int tfReadCount = 0;
+   int tfFailCount = 0;
+   g_lastMtfAlignmentHadReadFailure = false;
+   string diagLog = "MTF_ALIGN: dir=" + (direction == 1 ? "BUY" : "SELL");
+   int shift = MathMax(0, INPUT_MTF_BAR_SHIFT); // V8.1: Configurable, default closed bar
    //--- M5 (weight: 1)
-   double m5Fast[], m5Slow[];
-   
-      int m5FastRead = CopyBuffer(g_hEmaFast_M5, 0, 0, 1, m5Fast);
-   int m5SlowRead = CopyBuffer(g_hEmaSlow_M5, 0, 0, 1, m5Slow);
-   if(m5FastRead == 1 && m5SlowRead == 1)
+   double m5Fast = 0, m5Slow = 0;
+   bool m5Ok = ReadMTFEMAPair(g_hEmaFast_M5, g_hEmaSlow_M5, shift, m5Fast, m5Slow, "M5");
+   if(m5Ok)
    {
-      if((direction == 1 && m5Fast[0] > m5Slow[0]) ||
-         (direction == -1 && m5Fast[0] < m5Slow[0]))
+      tfReadCount++;
+      maxPossibleScore += 1;
+      if((direction == 1 && m5Fast > m5Slow) || (direction == -1 && m5Fast < m5Slow))
          score += 1;
+      diagLog += " | M5=OK(" + (m5Fast > m5Slow ? "BULL" : "BEAR") + ")";
    }
- else
+   else
    {
+      tfFailCount++;
       g_lastMtfAlignmentHadReadFailure = true;
-      g_mtfReadFailureThisTick = true;
-      g_gateDiagnostics.mtfDataReadRejects++;
-      if(INPUT_ENABLE_LOGGING)
-         LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment M5 fastRead=" + IntegerToString(m5FastRead) +
-                             " slowRead=" + IntegerToString(m5SlowRead));
+      if(INPUT_MTF_READ_FAILURE_MODE != MTF_FAIL_SKIP_REWEIGHT)
+         maxPossibleScore += 1;
+      diagLog += " | M5=FAIL";
    }
-   // Closed candles for higher timeframes prevent intrabar flips (start_pos=1).
    //--- H1 (weight: 2)
-   double h1Fast[], h1Slow[];
-   int h1FastRead = CopyBuffer(g_hEmaFast_H1, 0, 1, 1, h1Fast);
-   int h1SlowRead = CopyBuffer(g_hEmaSlow_H1, 0, 1, 1, h1Slow);
-   if(h1FastRead == 1 && h1SlowRead == 1)
+   double h1Fast = 0, h1Slow = 0;
+   bool h1Ok = ReadMTFEMAPair(g_hEmaFast_H1, g_hEmaSlow_H1, shift, h1Fast, h1Slow, "H1");
+   if(h1Ok)
    {
-      if((direction == 1 && h1Fast[0] > h1Slow[0]) ||
-         (direction == -1 && h1Fast[0] < h1Slow[0]))
+      tfReadCount++;
+      maxPossibleScore += 2;
+      if((direction == 1 && h1Fast > h1Slow) || (direction == -1 && h1Fast < h1Slow))
          score += 2;
+      diagLog += " | H1=OK(" + (h1Fast > h1Slow ? "BULL" : "BEAR") + ")";
    }
- else
+   else
    {
+      tfFailCount++;
       g_lastMtfAlignmentHadReadFailure = true;
-      g_mtfReadFailureThisTick = true;
-      g_gateDiagnostics.mtfDataReadRejects++;
-      if(INPUT_ENABLE_LOGGING)
-         LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment H1 fastRead=" + IntegerToString(h1FastRead) +
-                             " slowRead=" + IntegerToString(h1SlowRead));
+      if(INPUT_MTF_READ_FAILURE_MODE != MTF_FAIL_SKIP_REWEIGHT)
+         maxPossibleScore += 2;
+      diagLog += " | H1=FAIL";
    }
    //--- H4 (weight: 3)
-   double h4Fast[], h4Slow[];
-  int h4FastRead = CopyBuffer(g_hEmaFast_H4, 0, 1, 1, h4Fast);
-   int h4SlowRead = CopyBuffer(g_hEmaSlow_H4, 0, 1, 1, h4Slow);
-   if(h4FastRead == 1 && h4SlowRead == 1)
+   double h4Fast = 0, h4Slow = 0;
+   bool h4Ok = ReadMTFEMAPair(g_hEmaFast_H4, g_hEmaSlow_H4, shift, h4Fast, h4Slow, "H4");
+   if(h4Ok)
    {
-      if((direction == 1 && h4Fast[0] > h4Slow[0]) ||
-         (direction == -1 && h4Fast[0] < h4Slow[0]))
+      tfReadCount++;
+      maxPossibleScore += 3;
+      if((direction == 1 && h4Fast > h4Slow) || (direction == -1 && h4Fast < h4Slow))
          score += 3;
+      diagLog += " | H4=OK(" + (h4Fast > h4Slow ? "BULL" : "BEAR") + ")";
    }
-else
+   else
    {
+      tfFailCount++;
       g_lastMtfAlignmentHadReadFailure = true;
-      g_mtfReadFailureThisTick = true;
-      g_gateDiagnostics.mtfDataReadRejects++;
-      if(INPUT_ENABLE_LOGGING)
-         LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment H4 fastRead=" + IntegerToString(h4FastRead) +
-                             " slowRead=" + IntegerToString(h4SlowRead));
+      if(INPUT_MTF_READ_FAILURE_MODE != MTF_FAIL_SKIP_REWEIGHT)
+         maxPossibleScore += 3;
+      diagLog += " | H4=FAIL";
    }
    //--- D1 (weight: 4)
-   double d1Fast[], d1Slow[];
-  int d1FastRead = CopyBuffer(g_hEmaFast_D1, 0, 1, 1, d1Fast);
-   int d1SlowRead = CopyBuffer(g_hEmaSlow_D1, 0, 1, 1, d1Slow);
-   if(d1FastRead == 1 && d1SlowRead == 1)
-   
+   double d1Fast = 0, d1Slow = 0;
+   bool d1Ok = ReadMTFEMAPair(g_hEmaFast_D1, g_hEmaSlow_D1, shift, d1Fast, d1Slow, "D1");
+   if(d1Ok)
    {
-      if((direction == 1 && d1Fast[0] > d1Slow[0]) ||
-         (direction == -1 && d1Fast[0] < d1Slow[0]))
+      tfReadCount++;
+      maxPossibleScore += 4;
+      if((direction == 1 && d1Fast > d1Slow) || (direction == -1 && d1Fast < d1Slow))
          score += 4;
+      diagLog += " | D1=OK(" + (d1Fast > d1Slow ? "BULL" : "BEAR") + ")";
    }
-else
+   else
    {
+      tfFailCount++;
       g_lastMtfAlignmentHadReadFailure = true;
-      g_mtfReadFailureThisTick = true;
-      g_gateDiagnostics.mtfDataReadRejects++;
-      if(INPUT_ENABLE_LOGGING)
-         LogWithRestartGuard("MTF DATA READ FAILED: CalculateMTFAlignment D1 fastRead=" + IntegerToString(d1FastRead) +
-                             " slowRead=" + IntegerToString(d1SlowRead));
+      if(INPUT_MTF_READ_FAILURE_MODE != MTF_FAIL_SKIP_REWEIGHT)
+         maxPossibleScore += 4;
+      diagLog += " | D1=FAIL";
    }
-   
+   // V8.1: Handle failures according to mode
+   if(tfFailCount > 0 && INPUT_MTF_READ_FAILURE_MODE == MTF_FAIL_SKIP_REWEIGHT && tfReadCount > 0)
+   {
+      // Reweight: scale score to full 10-point range based on successfully read TFs
+      int fullMax = 10; // 1+2+3+4
+      score = (int)MathRound((double)score / (double)maxPossibleScore * (double)fullMax);
+   }
+   diagLog += " | rawScore=" + IntegerToString(score) +
+              " | reads=" + IntegerToString(tfReadCount) +
+              " | fails=" + IntegerToString(tfFailCount) +
+              " | mode=" + EnumToString(INPUT_MTF_READ_FAILURE_MODE);
+   if(INPUT_ENABLE_LOGGING)
+      Print(diagLog);
    return score;
 }
 //+------------------------------------------------------------------+
@@ -3638,64 +3718,35 @@ int GetTimeframeDirectionConsensus(int &agreeingFrames)
    agreeingFrames = 0;
    int bullishFrames = 0;
    int bearishFrames = 0;
- g_lastMtfConsensusHadReadFailure = false;
- 
-   // Consensus is intentionally based on higher-timeframe structure only.
-   // Closed candles (start_pos=1) are used on H1/H4/D1 to avoid intrabar flips.
-   double h1Fast[], h1Slow[];
-int h1FastRead = CopyBuffer(g_hEmaFast_H1, 0, 1, 1, h1Fast);
-   int h1SlowRead = CopyBuffer(g_hEmaSlow_H1, 0, 1, 1, h1Slow);
-   if(h1FastRead == 1 && h1SlowRead == 1)
+   g_lastMtfConsensusHadReadFailure = false;
+   int shift = MathMax(0, INPUT_MTF_BAR_SHIFT); // V8.1: Use same shift policy as alignment
+   // H1
+   double h1F = 0, h1S = 0;
+   if(ReadMTFEMAPair(g_hEmaFast_H1, g_hEmaSlow_H1, shift, h1F, h1S, "Consensus_H1"))
    {
-      if(h1Fast[0] > h1Slow[0]) bullishFrames++;
-      else if(h1Fast[0] < h1Slow[0]) bearishFrames++;
+      if(h1F > h1S) bullishFrames++;
+      else if(h1F < h1S) bearishFrames++;
    }
- else
-   {
+   else
       g_lastMtfConsensusHadReadFailure = true;
-      g_mtfReadFailureThisTick = true;
-      g_gateDiagnostics.mtfDataReadRejects++;
-      if(INPUT_ENABLE_LOGGING)
-         LogWithRestartGuard("MTF DATA READ FAILED: GetTimeframeDirectionConsensus H1 fastRead=" + IntegerToString(h1FastRead) +
-                             " slowRead=" + IntegerToString(h1SlowRead));
-   }
-   
-   double h4Fast[], h4Slow[];
-    int h4FastRead = CopyBuffer(g_hEmaFast_H4, 0, 1, 1, h4Fast);
-   int h4SlowRead = CopyBuffer(g_hEmaSlow_H4, 0, 1, 1, h4Slow);
-   if(h4FastRead == 1 && h4SlowRead == 1)
+   // H4
+   double h4F = 0, h4S = 0;
+   if(ReadMTFEMAPair(g_hEmaFast_H4, g_hEmaSlow_H4, shift, h4F, h4S, "Consensus_H4"))
    {
-      if(h4Fast[0] > h4Slow[0]) bullishFrames++;
-      else if(h4Fast[0] < h4Slow[0]) bearishFrames++;
+      if(h4F > h4S) bullishFrames++;
+      else if(h4F < h4S) bearishFrames++;
    }
-else
-   {
+   else
       g_lastMtfConsensusHadReadFailure = true;
-      g_mtfReadFailureThisTick = true;
-      g_gateDiagnostics.mtfDataReadRejects++;
-      if(INPUT_ENABLE_LOGGING)
-         LogWithRestartGuard("MTF DATA READ FAILED: GetTimeframeDirectionConsensus H4 fastRead=" + IntegerToString(h4FastRead) +
-                             " slowRead=" + IntegerToString(h4SlowRead));
-   }
-   
-   double d1Fast[], d1Slow[];
-    int d1FastRead = CopyBuffer(g_hEmaFast_D1, 0, 1, 1, d1Fast);
-   int d1SlowRead = CopyBuffer(g_hEmaSlow_D1, 0, 1, 1, d1Slow);
-   if(d1FastRead == 1 && d1SlowRead == 1)
+   // D1
+   double d1F = 0, d1S = 0;
+   if(ReadMTFEMAPair(g_hEmaFast_D1, g_hEmaSlow_D1, shift, d1F, d1S, "Consensus_D1"))
    {
-      if(d1Fast[0] > d1Slow[0]) bullishFrames++;
-      else if(d1Fast[0] < d1Slow[0]) bearishFrames++;
+      if(d1F > d1S) bullishFrames++;
+      else if(d1F < d1S) bearishFrames++;
    }
- else
-   {
+   else
       g_lastMtfConsensusHadReadFailure = true;
-      g_mtfReadFailureThisTick = true;
-      g_gateDiagnostics.mtfDataReadRejects++;
-      if(INPUT_ENABLE_LOGGING)
-         LogWithRestartGuard("MTF DATA READ FAILED: GetTimeframeDirectionConsensus D1 fastRead=" + IntegerToString(d1FastRead) +
-                             " slowRead=" + IntegerToString(d1SlowRead));
-   }
-   
    if(bullishFrames >= 2)
    {
       agreeingFrames = bullishFrames;
@@ -5089,11 +5140,19 @@ bool CheckAllGates(string &rejectReason)
    int currentTotalPositions = CountAllOurPositions();
    if(INPUT_GATE_MAX_POSITIONS_ON && effectiveExposure >= effectiveMaxMain)
    {
-      bool allowFlipReplacement = (INPUT_STRICT_OPPOSITE_FLIP_MODE && INPUT_MAX_CONCURRENT_TRADES == 1 && (openMain > 0 || pendingMain > 0));
+      bool allowFlipReplacement = false;
+      // V8.1: Allow opposite replacement when any of these conditions are met
+      if(INPUT_MAX_CONCURRENT_TRADES == 1 && (openMain > 0 || pendingMain > 0))
+      {
+         if(INPUT_STRICT_OPPOSITE_FLIP_MODE || INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE)
+            allowFlipReplacement = true;
+      }
       if(allowFlipReplacement)
       {
          if(INPUT_ENABLE_LOGGING)
-            Print("MAX EXPOSURE GATE DEFERRED: strict one-slot mode with existing exposure detected, allowing opposite-flip cleanup path.");
+            Print("MAX EXPOSURE GATE DEFERRED: one-slot replace mode | strict=", (INPUT_STRICT_OPPOSITE_FLIP_MODE ? "ON" : "OFF"),
+                  " | oppositeReplace=", (INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE ? "ON" : "OFF"),
+                  " | openMain=", openMain, " | pendingMain=", pendingMain);
       }
       else
       {
@@ -5850,6 +5909,58 @@ bool CheckTotalRiskBudgetForCandidate(int direction, double lotSize, double slPo
    }
    return true;
 }
+// V8.1: Perform opposite cleanup for one-slot replacement mode
+bool PerformOneSlotOppositeReplace(int newDirection)
+{
+   int openMain = CountMainPositionsFromBroker();
+   int pendingMain = CountMainPendingStopsAllDirections();
+   if(openMain == 0 && pendingMain == 0)
+      return true; // Nothing to replace
+   Print("ONE_SLOT_REPLACE: Cleaning opposite exposure for new ", (newDirection == 1 ? "BUY" : "SELL"),
+         " | openMain=", openMain, " | pendingMain=", pendingMain);
+   // Cancel opposite pending stops first
+   if(INPUT_FLIP_CANCEL_OPPOSITE_PENDING_ON || INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE)
+      CancelMainPendingStopsOppositeToDirection(newDirection);
+   // Close opposite open positions
+   bool allClosed = true;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket) || !IsOurMainPosition(ticket))
+         continue;
+      int posDir = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY) ? 1 : -1;
+      if(posDir == newDirection)
+         continue; // Same direction, keep it
+      // Check SL loss threshold unless force-close is on
+      if(!INPUT_FLIP_FORCE_CLOSE_OPPOSITE_MAIN)
+      {
+         double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+         double sl = PositionGetDouble(POSITION_SL);
+         double currentPrice = PositionGetDouble(POSITION_PRICE_CURRENT);
+         double slDist = MathAbs(entryPrice - sl);
+         double adverseMove = (posDir == 1) ? (entryPrice - currentPrice) : (currentPrice - entryPrice);
+         if(slDist > 0.0 && adverseMove > 0.0)
+         {
+            double adversePct = (adverseMove / slDist) * 100.0;
+            if(adversePct > INPUT_FLIP_CLOSE_MAX_SL_PERCENT)
+            {
+               Print("ONE_SLOT_REPLACE BLOCKED: ticket=", ticket, " | adversePct=", DoubleToString(adversePct, 1),
+                     " > maxSLPct=", DoubleToString(INPUT_FLIP_CLOSE_MAX_SL_PERCENT, 1));
+               allClosed = false;
+               continue;
+            }
+         }
+      }
+      if(g_trade.PositionClose(ticket))
+         Print("ONE_SLOT_REPLACE CLOSED: ticket=", ticket, " | dir=", (posDir == 1 ? "BUY" : "SELL"));
+      else
+      {
+         Print("ONE_SLOT_REPLACE CLOSE FAILED: ticket=", ticket, " | retcode=", g_trade.ResultRetcode());
+         allClosed = false;
+      }
+   }
+   return allClosed;
+}
 bool ExecuteOrder(const DecisionResult &decision)
 {
    if(!IsPlacementEnabled())
@@ -5858,7 +5969,35 @@ bool ExecuteOrder(const DecisionResult &decision)
          Print("EXECUTE ORDER SKIPPED: placement toggle disabled (INPUT_TOGGLE_PLACE_ORDERS=false)");
       return false;
    }
-   // V8.0: Standard cooldown check (no flip bypass)
+   // V8.1: One-slot opposite replacement
+   if(INPUT_ONE_SLOT_ALLOW_OPPOSITE_REPLACE && INPUT_MAX_CONCURRENT_TRADES == 1)
+   {
+      int currentExposure = GetEffectiveMainExposureCount();
+      if(currentExposure > 0)
+      {
+         if(!PerformOneSlotOppositeReplace(decision.direction))
+         {
+            Print("EXECUTE ORDER SKIPPED: one-slot opposite replacement failed/blocked");
+            return false;
+         }
+         // Small delay to let broker process closes
+         Sleep(100);
+      }
+   }
+   else if(INPUT_STRICT_OPPOSITE_FLIP_MODE && INPUT_MAX_CONCURRENT_TRADES == 1)
+   {
+      int currentExposure = GetEffectiveMainExposureCount();
+      if(currentExposure > 0)
+      {
+         if(!CleanupOppositeExposureForFlip(decision.direction))
+         {
+            Print("EXECUTE ORDER SKIPPED: strict flip cleanup failed");
+            return false;
+         }
+         Sleep(100);
+      }
+   }
+   // V8.0: Standard cooldown check (with optional flip bypass)
    int cooldownRemainingSec = 0;
    bool cooldownActive = IsOrderCooldownActive(cooldownRemainingSec);
    if(cooldownActive)
