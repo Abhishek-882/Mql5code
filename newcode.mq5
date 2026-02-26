@@ -92,7 +92,7 @@ int      INPUT_SAME_DIRECTION_BLOCK_SECONDS = 1; // Direction-specific re-entry 
 double   INPUT_PROXIMITY_POINTS      = 0.0; // Proximity rule disabled (timeout-only pacing)
 int      INPUT_POSITION_AGE_HOURS    = 240;  // Close stale positions after N hours (0=disabled)
 int      INPUT_MAGIC_NUMBER           = 770700; // Magic Number
- int      INPUT_ORDER_COOLDOWN_SECONDS = 300; // Cooldown between orders (seconds) — 5 minutes to prevent order clustering
+ int      INPUT_ORDER_COOLDOWN_SECONDS = 61; // Cooldown between orders (seconds) — 5 minutes to prevent order clustering
 input ENUM_EXECUTION_MODE INPUT_EXECUTION_MODE = MARKET; // Order execution mode
  int      INPUT_PENDING_STOP_OFFSET_POINTS = 30; // Stop trigger offset from market (points)
 int      INPUT_PENDING_EXPIRY_MINUTES = 600; // Pending stop expiry in minutes
@@ -112,13 +112,13 @@ input bool     INPUT_FLIP_TP_RESET_CLAMP_ON = true; // If TP reset price violate
 //--- Risk Management
  ENUM_RISK_PROFILE INPUT_RISK_PROFILE = RISK_MEDIUM; // Risk Profile
  double   INPUT_RISK_PERCENT          = 90.0; // Risk % per trade (0=use profile)
-input double   INPUT_MAX_LOT_SIZE          = 1.0; // Maximum lot size
+input double   INPUT_MAX_LOT_SIZE          = 1; // Maximum lot size
 input double   INPUT_MIN_LOT_SIZE          = 0.01;// Minimum lot size
  double   INPUT_MAX_TOTAL_RISK_PERCENT = 99.0;// Max total portfolio risk %
 //--- Equity Protection
 double   INPUT_EQUITY_FLOOR_PERCENT    = 95.0; // Equity floor % (close all below)
 double   INPUT_DAILY_LOSS_LIMIT_PERCENT = 99.0; // Max daily loss %
- int      INPUT_MAX_DAILY_TRADES        = 5000;   // Max trades per day (FIXED: Increased from 20)
+ int      INPUT_MAX_DAILY_TRADES        = 50000;   // Max trades per day (FIXED: Increased from 20)
  int      INPUT_MAX_CONSECUTIVE_LOSSES  = 1000;   // Max consecutive losses before pause (FIXED: Increased from 5)
 bool     INPUT_RESET_CONSEC_DAILY      = true; // Reset consecutive losses daily
 bool     INPUT_ENABLE_EXTREME_BY_THREAT = false;
@@ -202,7 +202,7 @@ input bool     INPUT_STRICT_EFFECTIVE_CONFIG_VALIDATION = false;
  bool     INPUT_GATE_AUTOTRADING_ALLOWED_ON = true;
  bool     INPUT_GATE_SESSION_ON = true;
  bool     INPUT_GATE_SESSION_WINDOW_ON = true;
- bool     INPUT_GATE_COOLDOWN_ON = true;
+ bool     INPUT_GATE_COOLDOWN_ON = false;
  bool     INPUT_GATE_MAX_DAILY_TRADES_ON = true;
 bool     INPUT_GATE_DAILY_LOSS_ON = true;
  bool     INPUT_GATE_CONSECUTIVE_LOSS_ON = true;
@@ -290,9 +290,9 @@ input int      INPUT_MIN_SIGNALS       = 3;       // Minimum signals required (F
 input group    "=== Stop Loss & Take Profit ==="
 input double   INPUT_SL_ATR_MULTIPLIER = 5.0;     // SL = ATR x this
 input double   INPUT_TP_ATR_MULTIPLIER = 3.0;     // TP = ATR x this
-input double   INPUT_MIN_SL_POINTS     = 50000.0;   // Minimum SL in points (FIXED: 200 pts min for XAUUSD ~$2 SL)
-input double   INPUT_MAX_SL_POINTS     = 90000;  // Maximum SL in points
-input double   INPUT_MIN_TP_POINTS     = 5000.0;   // Minimum TP in points (FIXED: 300 pts min for viable R:R)
+input double   INPUT_MIN_SL_POINTS     = 9000.0;   // Minimum SL in points (FIXED: 200 pts min for XAUUSD ~$2 SL)
+input double   INPUT_MAX_SL_POINTS     = 90009;  // Maximum SL in points
+input double   INPUT_MIN_TP_POINTS     = 50000.0;   // Minimum TP in points (FIXED: 300 pts min for viable R:R)
 input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
 //--- 50% Lot Close System
  bool     INPUT_ENABLE_50PCT_CLOSE      = false; // DISABLED - Use V7.33 new system (was buggy)
@@ -397,14 +397,14 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  int      INPUT_ADAPT_INTERVAL     = 50;     // Optimize every N trades
  double   INPUT_ADAPT_UNDERPERF_LOT_REDUCE = 0.1; // Reduce lots by X when underperforming
  double   INPUT_ADAPT_OVERPERF_TRAIL_ADD   = 2.0; // Add X pips to trail when outperforming
- bool     INPUT_ENABLE_COMBINATION_ADAPTIVE = true; // Priority 2: learn per-signal-combination behavior
- bool     INPUT_ENABLE_FULL_COMBO_UNIVERSE = true; // Pre-seed deterministic nCk universe
+ bool     INPUT_ENABLE_COMBINATION_ADAPTIVE = false; // Priority 2: learn per-signal-combination behavior
+ bool     INPUT_ENABLE_FULL_COMBO_UNIVERSE = false; // Pre-seed deterministic nCk universe
  int      INPUT_TOTAL_SIGNALS = 8;           // Total available signal factors (n)
  int      INPUT_TOTAL_SIGNAL_FACTORS = 8;    // Alias for total factors (n)
  int      INPUT_COMBO_MIN_TRADES   = 10;     // Minimum trades required per combination for analysis
  double   INPUT_COMBO_CONFIDENCE_WEIGHT = 0.3; // How strongly combo strength affects confidence
  ENUM_COMBO_RANK_MODE INPUT_COMBO_RANK_MODE = COMBO_RANK_HEURISTIC;
- bool     INPUT_LOG_COMBINATION_INSIGHTS = true; // Print best/worst combination insights
+ bool     INPUT_LOG_COMBINATION_INSIGHTS = false; // Print best/worst combination insights
  int      INPUT_COMBO_INSIGHT_TOP_N = 1;     // Number of best/worst combos to log per refresh
  bool     INPUT_ENABLE_TREE_FEATURE_MODULE = false; // Decision-tree subset feature ranking
  bool     INPUT_TREE_ADJUST_CONFIDENCE_ON = false; // Apply selected tree features to confidence
@@ -426,7 +426,7 @@ input double   INPUT_MAX_TP_POINTS     = 10000.0; // Maximum TP in points
  int      INPUT_SERVER_UTC_OFFSET_HOURS = 0; // Broker server UTC offset for DST-aware session mapping
  bool     INPUT_ENABLE_META_POLICY = true; // Blend rule policy + RL using state confidence
  int      INPUT_RL_MIN_STATE_VISITS = 8; // Minimum state visits before RL can override baseline
- bool     INPUT_ENABLE_RISK_PARITY_CAP = true; // Volatility/session normalized lot cap
+ bool     INPUT_ENABLE_RISK_PARITY_CAP = false; // Volatility/session normalized lot cap
  double   INPUT_RISK_PARITY_BASE_CAP_LOTS = 1.0; // Base lot cap for risk-parity normalizer
  int      INPUT_DATA_WARNING_KILL_SWITCH = 25; // Halt entries when rolling integrity warnings exceed threshold
  int      INPUT_DATA_WARNING_WINDOW_MINUTES = 30; // Rolling window length for anomaly kill-switch
